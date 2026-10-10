@@ -282,8 +282,7 @@ fn native_protected_path() -> PathBuf {
     #[cfg(windows)]
     {
         std::env::var_os("SystemRoot")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+            .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from)
             .join("System32")
     }
     #[cfg(not(windows))]
