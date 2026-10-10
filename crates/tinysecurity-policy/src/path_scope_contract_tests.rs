@@ -357,7 +357,10 @@ fn workspace_inside_broad_forbidden_root_keeps_access_but_nested_forbidden_root_
     let mut policy = scope(&workspace)?.policy().clone();
     policy.enabled = true;
     policy.workspace_only = true;
-    policy.forbidden_paths = vec![canonical_root.to_string_lossy().into_owned(), "private".into()];
+    policy.forbidden_paths = vec![
+        canonical_root.to_string_lossy().into_owned(),
+        "private".into(),
+    ];
     let mut registry = crate::PathPolicyRegistry::default();
     let id = registry.register(policy)?;
     let scope = registry.get(&id)?;
