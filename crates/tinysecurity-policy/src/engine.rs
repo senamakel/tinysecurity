@@ -197,3 +197,7 @@ fn scan_denial(verdict: &crate::ScanVerdict) -> Option<DenialReason> {
         crate::ScanVerdict::Blocked => Some(DenialReason::Content),
     }
 }
+
+#[cfg(test)]
+#[path = "engine_tests.rs"]
+mod tests;

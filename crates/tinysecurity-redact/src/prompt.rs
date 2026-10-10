@@ -30,7 +30,7 @@ impl Scanner {
             ),
             (
                 "exfiltrate.credentials",
-                r"\b(send|upload|transmit|post|transfer|forward|export)\s+(\S+\s+){0,2}(the|your|my|all|stored|active|internal|hidden|configured|saved|env|environment)\s+(\S+\s+){0,3}(api\s*keys?|secrets?|passwords?|private\s+keys?|credentials?|session\s+cookies?|jwts?|(access|auth|api|oauth|refresh|session|environment|stored|saved)\s+tokens?)($|\s+(to|via|over|into|onto)\b)",
+                r"\b(send|upload|transmit|post|transfer|forward|export)\s+((the|your|my|our|their|all|any|stored|active|internal|hidden|configured|saved|env|environment)\s+){0,5}(api\s*(keys?|credentials?)|secrets?|passwords?|private\s+keys?|credentials?|session\s+cookies?|jwts?|(bearer|access|auth|api|oauth|refresh|session|environment|stored|saved)\s+(tokens?|credentials?))($|\s+(to|via|over|into|onto)\b)",
                 true,
             ),
             (
