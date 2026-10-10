@@ -247,3 +247,192 @@ async fn native_worker_deadline_returns_before_a_blocked_commit_and_retry_reconc
     assert_eq!(sink.append(&batch())?, late);
     Ok(())
 }
+
+#[tokio::test]
+async fn audit_initialization_rejects_unbound_authority_and_mutable_configuration()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = tinybus::Connection::connect(bus.connect().await?).await?;
+    let connection = tinybus::Connection::connect(bus.connect().await?).await?;
+    let binding = PeerBinding::new(host.unique_name().as_ref().map(tinybus::BusName::as_str))?;
+    let registry = tinysecurity::Redactor::new(&RedactorConfig::default())?;
+    assert!(PeerBinding::new(Some("ai.unverified.Host")).is_err());
+    assert!(binding.verify_reinit(Some(":1.999")).is_err());
+    binding.verify_reinit(None)?;
+    binding.verify_reinit(host.unique_name().as_ref().map(tinybus::BusName::as_str))?;
+    assert!(
+        AuditClient::new(
+            connection.clone(),
+            PeerBinding::new(None)?,
+            config(true),
+            registry.clone()
+        )
+        .is_err()
+    );
+    for (timeout, stream) in [
+        (0, "a".repeat(32)),
+        (30_001, "a".repeat(32)),
+        (100, "a".repeat(31)),
+        (100, "g".repeat(32)),
+    ] {
+        let mut invalid = config(true);
+        invalid.timeout_ms = timeout;
+        invalid.stream_id = stream;
+        assert!(
+            AuditClient::new(
+                connection.clone(),
+                binding.clone(),
+                invalid,
+                registry.clone()
+            )
+            .is_err()
+        );
+    }
+    let client = AuditClient::new(connection, binding, config(true), registry)?;
+    client.verify_reinit(None)?;
+    client.verify_reinit(Some(&config(true)))?;
+    let mut replacement = config(true);
+    replacement.scope.user = "replacement".into();
+    assert!(client.verify_reinit(Some(&replacement)).is_err());
+    assert!(client.required());
+    assert_eq!(client.scope(), &config(true).scope);
+    assert_eq!(client.stream_id(), config(true).stream_id);
+    assert_eq!(format!("{client:?}"), "AuditClient([REDACTED])");
+    broker.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn authenticated_callback_without_transport_context_never_dispatches()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let callback = Authenticated::new(
+        Sink {
+            calls: calls.clone(),
+            wrong_receipt: false,
+        },
+        PeerBinding::new(Some(":1.900"))?,
+    );
+    assert_eq!(callback.name().as_str(), callback_names2::AUDIT_SINK);
+    let append: MemberName = callback_names2::APPEND.parse()?;
+    assert!(callback.members().contains(&append));
+    assert!(!callback.requires_confidential(&append));
+    let error = callback
+        .call(&append, serde_json::to_value((batch(),))?)
+        .await
+        .err()
+        .ok_or("direct authority must fail")?;
+    assert!(!error.to_string().contains("private-"));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_storage_returns_exact_receipts_and_capacity_denies_without_phantom_commit()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = tinybus::Connection::connect(bus.connect().await?).await?;
+    let connection = tinybus::Connection::connect(bus.connect().await?).await?;
+    let binding = PeerBinding::new(host.unique_name().as_ref().map(tinybus::BusName::as_str))?;
+    let root = tempfile::tempdir()?;
+    let path = root.path().canonicalize()?.join("audit");
+    let mut native_config = config(true);
+    native_config.native_path = Some(path.to_str().ok_or("fixture path")?.into());
+    native_config.journal_max_events = 1;
+    let registry = tinysecurity::Redactor::new(&RedactorConfig::default())?;
+    let client = AuditClient::new(
+        connection.clone(),
+        binding.clone(),
+        native_config.clone(),
+        registry.clone(),
+    )?;
+    let first = client.append(batch()).await;
+    assert!(first.committed && first.permitted);
+    assert_eq!(first.health, AuditHealth2::Healthy);
+    assert_eq!(client.append(batch()).await, first);
+    let stored = std::fs::read(&path)?;
+    let mut second = batch();
+    second.expected_tail = 1;
+    second.events[0].sequence = 2;
+    second.events[0].event_id = "d".repeat(32);
+    let denied = client.append(second.clone()).await;
+    assert!(!denied.committed && !denied.permitted);
+    assert_eq!(denied.health, AuditHealth2::Denied);
+    assert_eq!(std::fs::read(&path)?, stored);
+    native_config.required = false;
+    let optional = AuditClient::new(
+        connection.clone(),
+        binding.clone(),
+        native_config.clone(),
+        registry.clone(),
+    )?;
+    let degraded = optional.append(second).await;
+    assert!(degraded.permitted && !degraded.committed);
+    assert_eq!(degraded.health, AuditHealth2::Degraded);
+    native_config.native_path = Some("relative-untrusted-private-path".into());
+    let error = AuditClient::new(connection, binding, native_config, registry)
+        .err()
+        .ok_or("unsafe storage must fail initialization")?;
+    assert!(!error.to_string().contains("private-path"));
+    broker.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_native_worker_never_returns_a_success_receipt()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let worker = tokio::spawn(std::future::pending::<
+        tinysecurity::audit::Result<AuditSinkResponse2>,
+    >());
+    worker.abort();
+    assert!(await_native_worker(worker, 100).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn registry_replacement_sanitizes_subsequent_callback_without_changing_trusted_scope()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = tinybus::Connection::connect(bus.connect().await?).await?;
+    let module = tinybus::Connection::connect(bus.connect().await?).await?;
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    host.serve_at(
+        callback_names2::OBJECT_PATH.parse()?,
+        Sink {
+            calls: calls.clone(),
+            wrong_receipt: false,
+        },
+    )
+    .await?;
+    let binding = PeerBinding::new(host.unique_name().as_ref().map(tinybus::BusName::as_str))?;
+    let client = AuditClient::new(
+        module,
+        binding,
+        config(true),
+        tinysecurity::Redactor::new(&RedactorConfig::default())?,
+    )?;
+    let registry = tinysecurity::Redactor::new(&RedactorConfig {
+        secrets: vec![Secret("new-private-credential".into())],
+    })?;
+    client.replace_registry(registry)?;
+    let mut request = batch();
+    request.events[0].attribution = "new-private-credential".into();
+    let response = client.append(request.clone()).await;
+    assert!(response.committed && response.permitted);
+    assert_eq!(client.scope(), &config(true).scope);
+    let denied = client
+        .append_with_registry(
+            request,
+            Err(tinybus::Error::failed("private-registry-unavailable")),
+        )
+        .await;
+    assert!(!denied.committed && !denied.permitted);
+    assert!(!format!("{denied:?}").contains("private-"));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    broker.abort();
+    Ok(())
+}

@@ -77,6 +77,125 @@ fn permission_check() -> CheckRequest {
     }
 }
 #[tokio::test]
+async fn audit_dispatch_requires_configured_sink_and_preserves_exact_terminal_receipt()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = Connection::connect(bus.connect().await?).await?;
+    let module = Connection::connect(bus.connect().await?).await?;
+    let policy = Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?));
+    let terminal = AuditSinkRequest2 {
+        scope: permission_audit_config(true).scope,
+        stream_id: "a".repeat(32),
+        expected_tail: 0,
+        events: vec![AuditEvent2 {
+            sequence: 1,
+            event_id: "f".repeat(32),
+            generation: 1,
+            kind: AuditKind2::Execution,
+            attribution: "bearer private-secret".into(),
+            arguments_json: "{\"token\":\"private-secret\"}".into(),
+            rule_ids: vec![],
+        }],
+    };
+    let absent = service_for(policy.clone(), None);
+    assert!(absent.audit2(terminal.clone()).await.is_err());
+    assert!(
+        absent
+            .check_audited2(AuditedRequest2 {
+                request: permission_check(),
+                audit: AuditCorrelation2 {
+                    event_id: "b".repeat(32),
+                    expected_tail: 0,
+                    generation: 1
+                }
+            })
+            .await
+            .is_err()
+    );
+    let binding = crate::callbacks::PeerBinding::new(
+        host.unique_name().as_ref().map(tinybus::BusName::as_str),
+    )?;
+    let audit = Arc::new(crate::callbacks::AuditClient::new(
+        module.clone(),
+        binding.clone(),
+        permission_audit_config(true),
+        tinysecurity::Redactor::new(&RedactorConfig::default())?,
+    )?);
+    let rows = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    host.serve_at(
+        callback_names2::OBJECT_PATH.parse()?,
+        PermissionAuditSink {
+            rows: rows.clone(),
+            policy: policy.clone(),
+            change_generation: Arc::default(),
+        },
+    )
+    .await?;
+    module
+        .serve_at(
+            names::OBJECT_PATH.parse()?,
+            crate::callbacks::Authenticated::new(service_for(policy, Some(audit)), binding),
+        )
+        .await?;
+    let target = module.unique_name().ok_or("module peer")?;
+    let proxy = host.proxy(target.as_str(), names::OBJECT_PATH, names::INTERFACE)?;
+    let response: AuditResponse2 = proxy
+        .call(names::methods::AUDIT2, (terminal.clone(),))
+        .await?;
+    assert!(response.committed && response.permitted);
+    assert_eq!(
+        proxy
+            .call::<AuditResponse2>(names::methods::AUDIT2, (terminal,))
+            .await?,
+        response
+    );
+    assert_eq!(rows.lock().map_err(|_| "fixture rows")?.len(), 1);
+    verify_required_unbound_descriptive_calls(&proxy).await?;
+    broker.abort();
+    Ok(())
+}
+async fn verify_required_unbound_descriptive_calls(
+    proxy: &tinybus::Proxy,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let unbound: Decision = proxy
+        .call(
+            names::methods::EVALUATE,
+            (EvaluateRequest {
+                caller: permission_check().caller,
+                call: ToolCall {
+                    tool: "local_diagnostic".into(),
+                    arguments_json: "{}".into(),
+                    checks: vec![Check::LocalDiagnostic {}],
+                },
+            },),
+        )
+        .await?;
+    assert!(matches!(unbound.verdict, Verdict::Deny { .. }));
+    let id: CommandPolicyId = proxy
+        .call(
+            names::methods::REGISTER_COMMAND_POLICY,
+            (command_fixture()?,),
+        )
+        .await?;
+    let request = CommandRequest {
+        policy_id: id,
+        command: "pwd".into(),
+        declared_class: None,
+    };
+    let classified: CommandDecision = proxy
+        .call(names::methods::CLASSIFY_COMMAND, (request.clone(),))
+        .await?;
+    assert_eq!(classified.gate, CommandGate::Allow);
+    assert!(
+        proxy
+            .call::<CommandDecision>(names::methods::CHECK_COMMAND, (request,))
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+#[tokio::test]
 async fn bound_permissions_require_exact_original_payload_receipts_and_preserve_stale_commit_evidence()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let bus = MemoryBus::new();
