@@ -294,7 +294,7 @@ fn verify_restricted(file: &File, user: &str, directory: bool) -> Result<()> {
             .nth(1)
             .and_then(|dacl| dacl.split('(').next())
             .ok_or(Error::Permissions)?;
-        if flags != "P" {
+        if !crate::windows_acl::protected(flags) {
             return Err(Error::Permissions);
         }
     }

@@ -59,7 +59,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $auditRoot = Join-Path $env:RUNNER_TEMP 'tinysecurity-audit-ci'
+          # The hosted D: runner-temp ancestors fail the engine's actual owner/
+          # mutation ACL checks. Provision below the current user's normal profile;
+          # native tests still inspect and pin every ancestor, including C:\.
+          $auditRoot = Join-Path $env:USERPROFILE 'tinysecurity-audit-ci'
           New-Item -ItemType Directory -Force $auditRoot | Out-Null
           $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
           $security = [System.Security.AccessControl.DirectorySecurity]::new()

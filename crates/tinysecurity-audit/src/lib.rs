@@ -15,6 +15,8 @@ mod rotation;
 mod sink;
 #[cfg(windows)]
 mod windows;
+#[cfg(any(windows, test))]
+mod windows_acl;
 pub use error::{Error, Result};
 pub use event::{opaque_id, sanitize};
 pub use sink::JsonlSink;
