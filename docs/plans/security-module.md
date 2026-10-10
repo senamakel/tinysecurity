@@ -252,7 +252,7 @@ KeyringConsent callback and module crypto adapters; host consent/socket UX.
 Within its single cumulative PR, first add characterization tests, feature-chain
 and bus-only manifest checks, then the attested host adapter and callbacks.
 After upstream releases, pin gitlinks and copy published checksums. Preserve
-approval.*, security.*, sandbox.* and encryption.* RPC names. Consolidate config
+`approval.*`, `security.*`, `sandbox.*` and `encryption.*` RPC names. Consolidate config
 through one translator, then migrate callers in tracker order and remove their
 old engines/tests only after parity passes. The one security middleware must
 use verified context and retain TinyAgents-owned generic behavior upstream.
