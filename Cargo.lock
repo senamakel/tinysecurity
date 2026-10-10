@@ -468,26 +468,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "template"
-version = "0.2.1"
-dependencies = [
- "serde_json",
- "template-bus",
- "thiserror",
- "tinybus",
- "tinybus-module",
- "tokio",
-]
-
-[[package]]
-name = "template-bus"
-version = "0.2.1"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "thiserror"
 version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -545,6 +525,46 @@ dependencies = [
  "tinybus",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "tinysecurity"
+version = "0.2.1"
+dependencies = [
+ "serde_json",
+ "tinysecurity-bus",
+ "tinysecurity-policy",
+]
+
+[[package]]
+name = "tinysecurity-bus"
+version = "0.2.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "tinysecurity-module"
+version = "0.2.1"
+dependencies = [
+ "serde_json",
+ "tinybus",
+ "tinybus-module",
+ "tinysecurity",
+ "tinysecurity-bus",
+ "tokio",
+]
+
+[[package]]
+name = "tinysecurity-policy"
+version = "0.2.1"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tinysecurity-bus",
 ]
 
 [[package]]

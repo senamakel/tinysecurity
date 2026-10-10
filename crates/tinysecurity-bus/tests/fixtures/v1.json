@@ -1,0 +1,695 @@
+{
+  "ApprovalDecision": {
+    "request_id": "fixture",
+    "allow": false,
+    "caller": {
+      "agent": "fixture",
+      "thread": "fixture",
+      "flow": "fixture",
+      "call_id": "fixture",
+      "origin": "operator",
+      "tier": "read"
+    }
+  },
+  "ApprovalRecord": {
+    "request_id": "fixture",
+    "fingerprint": "fixture",
+    "caller": {
+      "agent": "fixture",
+      "thread": "fixture",
+      "flow": "fixture",
+      "call_id": "fixture",
+      "origin": "operator",
+      "tier": "read"
+    },
+    "expires_at_ms": 1,
+    "state": "pending"
+  },
+  "ListPendingRequest": {
+    "caller": {
+      "agent": "fixture",
+      "thread": "fixture",
+      "flow": "fixture",
+      "call_id": "fixture",
+      "origin": "operator",
+      "tier": "read"
+    }
+  },
+  "ListPendingResponse": {
+    "records": [
+      {
+        "request_id": "fixture",
+        "fingerprint": "fixture",
+        "caller": {
+          "agent": "fixture",
+          "thread": "fixture",
+          "flow": "fixture",
+          "call_id": "fixture",
+          "origin": "operator",
+          "tier": "read"
+        },
+        "expires_at_ms": 1,
+        "state": "pending"
+      }
+    ]
+  },
+  "ListDecisionsRequest": {
+    "caller": {
+      "agent": "fixture",
+      "thread": "fixture",
+      "flow": "fixture",
+      "call_id": "fixture",
+      "origin": "operator",
+      "tier": "read"
+    },
+    "limit": 1
+  },
+  "ListDecisionsResponse": {
+    "records": [
+      {
+        "request_id": "fixture",
+        "fingerprint": "fixture",
+        "caller": {
+          "agent": "fixture",
+          "thread": "fixture",
+          "flow": "fixture",
+          "call_id": "fixture",
+          "origin": "operator",
+          "tier": "read"
+        },
+        "expires_at_ms": 1,
+        "state": "pending"
+      }
+    ]
+  },
+  "RecordExecutionRequest": {
+    "request_id": "fixture",
+    "fingerprint": "fixture",
+    "caller": {
+      "agent": "fixture",
+      "thread": "fixture",
+      "flow": "fixture",
+      "call_id": "fixture",
+      "origin": "operator",
+      "tier": "read"
+    },
+    "outcome": "succeeded"
+  },
+  "RecordExecutionResponse": {
+    "committed": false
+  },
+  "PreauthorizeFlowRequest": {
+    "caller": {
+      "agent": "fixture",
+      "thread": "fixture",
+      "flow": "fixture",
+      "call_id": "fixture",
+      "origin": "operator",
+      "tier": "read"
+    },
+    "fingerprints": [
+      "fixture"
+    ],
+    "expires_at_ms": 1
+  },
+  "PreauthorizeFlowResponse": {
+    "grant_id": "fixture"
+  },
+  "ParseReplyRequest": {
+    "request_id": "fixture",
+    "reply": "fixture"
+  },
+  "ParseReplyResponse": {
+    "verdict": "allow_once"
+  },
+  "RedactRequest": {
+    "text": "fixture",
+    "mode": "text"
+  },
+  "RedactResponse": {
+    "text": "fixture",
+    "changed": false
+  },
+  "ScanPromptRequest": {
+    "text": "fixture"
+  },
+  "ScanToolDefinitionRequest": {
+    "name": "fixture",
+    "definition_json": "fixture"
+  },
+  "ScanResponse": {
+    "verdict": "clean",
+    "rule_ids": [
+      "fixture"
+    ]
+  },
+  "EgressCheckRequest": {
+    "caller": {
+      "agent": "fixture",
+      "thread": "fixture",
+      "flow": "fixture",
+      "call_id": "fixture",
+      "origin": "operator",
+      "tier": "read"
+    },
+    "privacy": "local_only",
+    "descriptor": {
+      "contains_credentials": false,
+      "contains_personal_data": false,
+      "local_only": false
+    },
+    "destination": "fixture"
+  },
+  "EgressCheckResponse": {
+    "decision": {
+      "generation": 1,
+      "verdict": {
+        "kind": "deny",
+        "reason": "floor"
+      },
+      "cacheable": false
+    }
+  },
+  "UrlGuardRequest": {
+    "url": "fixture",
+    "redirect_from": "fixture"
+  },
+  "UrlGuardResponse": {
+    "decision": {
+      "generation": 1,
+      "verdict": {
+        "kind": "deny",
+        "reason": "floor"
+      },
+      "cacheable": false
+    },
+    "hostname": "fixture",
+    "approved_addresses": [
+      "fixture"
+    ]
+  },
+  "SandboxPlanRequest": {
+    "caller": {
+      "agent": "fixture",
+      "thread": "fixture",
+      "flow": "fixture",
+      "call_id": "fixture",
+      "origin": "operator",
+      "tier": "read"
+    },
+    "source": "trusted_host",
+    "capabilities": [
+      "namespace"
+    ],
+    "grants": [
+      {
+        "path": "fixture",
+        "write": false
+      }
+    ],
+    "network": "none",
+    "limits": {
+      "memory_bytes": 1,
+      "cpu_millis": 1,
+      "processes": 1
+    }
+  },
+  "SandboxPlanResponse": {
+    "decision": {
+      "generation": 1,
+      "verdict": {
+        "kind": "deny",
+        "reason": "floor"
+      },
+      "cacheable": false
+    },
+    "backend": "namespace",
+    "grants": [
+      {
+        "path": "fixture",
+        "write": false
+      }
+    ],
+    "network": "none",
+    "limits": {
+      "memory_bytes": 1,
+      "cpu_millis": 1,
+      "processes": 1
+    }
+  },
+  "PathGrant": {
+    "path": "fixture",
+    "write": false
+  },
+  "ResourceLimits": {
+    "memory_bytes": 1,
+    "cpu_millis": 1,
+    "processes": 1
+  },
+  "DataDescriptor": {
+    "contains_credentials": false,
+    "contains_personal_data": false,
+    "local_only": false
+  },
+  "AuditRequest": {
+    "event": {
+      "generation": 1,
+      "caller": {
+        "agent": "fixture",
+        "thread": "fixture",
+        "flow": "fixture",
+        "call_id": "fixture",
+        "origin": "operator",
+        "tier": "read"
+      },
+      "kind": "policy_changed",
+      "attribution": "fixture",
+      "rule_ids": [
+        "fixture"
+      ]
+    },
+    "required": false
+  },
+  "AuditResponse": {
+    "committed": false
+  },
+  "AuditEvent": {
+    "generation": 1,
+    "caller": {
+      "agent": "fixture",
+      "thread": "fixture",
+      "flow": "fixture",
+      "call_id": "fixture",
+      "origin": "operator",
+      "tier": "read"
+    },
+    "kind": "policy_changed",
+    "attribution": "fixture",
+    "rule_ids": [
+      "fixture"
+    ]
+  },
+  "ApprovalStoreRequest": {
+    "operation": "load_pending",
+    "caller": {
+      "agent": "fixture",
+      "thread": "fixture",
+      "flow": "fixture",
+      "call_id": "fixture",
+      "origin": "operator",
+      "tier": "read"
+    },
+    "records": [
+      {
+        "request_id": "fixture",
+        "fingerprint": "fixture",
+        "caller": {
+          "agent": "fixture",
+          "thread": "fixture",
+          "flow": "fixture",
+          "call_id": "fixture",
+          "origin": "operator",
+          "tier": "read"
+        },
+        "expires_at_ms": 1,
+        "state": "pending"
+      }
+    ]
+  },
+  "ApprovalStoreResponse": {
+    "records": [
+      {
+        "request_id": "fixture",
+        "fingerprint": "fixture",
+        "caller": {
+          "agent": "fixture",
+          "thread": "fixture",
+          "flow": "fixture",
+          "call_id": "fixture",
+          "origin": "operator",
+          "tier": "read"
+        },
+        "expires_at_ms": 1,
+        "state": "pending"
+      }
+    ],
+    "committed": false
+  },
+  "ApprovalPromptRequest": {
+    "record": {
+      "request_id": "fixture",
+      "fingerprint": "fixture",
+      "caller": {
+        "agent": "fixture",
+        "thread": "fixture",
+        "flow": "fixture",
+        "call_id": "fixture",
+        "origin": "operator",
+        "tier": "read"
+      },
+      "expires_at_ms": 1,
+      "state": "pending"
+    },
+    "summary": "fixture",
+    "timeout_ms": 1
+  },
+  "ApprovalPromptResponse": {
+    "decision": {
+      "request_id": "fixture",
+      "allow": false,
+      "caller": {
+        "agent": "fixture",
+        "thread": "fixture",
+        "flow": "fixture",
+        "call_id": "fixture",
+        "origin": "operator",
+        "tier": "read"
+      }
+    }
+  },
+  "AuditSinkRequest": {
+    "events": [
+      {
+        "generation": 1,
+        "caller": {
+          "agent": "fixture",
+          "thread": "fixture",
+          "flow": "fixture",
+          "call_id": "fixture",
+          "origin": "operator",
+          "tier": "read"
+        },
+        "kind": "policy_changed",
+        "attribution": "fixture",
+        "rule_ids": [
+          "fixture"
+        ]
+      }
+    ],
+    "timeout_ms": 1
+  },
+  "AuditSinkResponse": {
+    "committed": false
+  },
+  "KeyringConsentRequest": {
+    "caller": {
+      "agent": "fixture",
+      "thread": "fixture",
+      "flow": "fixture",
+      "call_id": "fixture",
+      "origin": "operator",
+      "tier": "read"
+    },
+    "purpose": "fixture",
+    "timeout_ms": 1
+  },
+  "KeyringConsentResponse": {
+    "allowed": false
+  },
+  "CallerContext": {
+    "agent": "fixture",
+    "thread": "fixture",
+    "flow": "fixture",
+    "call_id": "fixture",
+    "origin": "operator",
+    "tier": "read"
+  },
+  "ToolCall": {
+    "tool": "path_check",
+    "arguments_json": "{}",
+    "checks": [
+      {
+        "kind": "path",
+        "path": "/home/operator/project/file",
+        "write": false
+      }
+    ]
+  },
+  "EvaluateRequest": {
+    "caller": {
+      "agent": "fixture",
+      "thread": "fixture",
+      "flow": "fixture",
+      "call_id": "fixture",
+      "origin": "operator",
+      "tier": "read"
+    },
+    "call": {
+      "tool": "fixture",
+      "arguments_json": "fixture",
+      "checks": [
+        {
+          "kind": "path",
+          "path": "/home/operator/project/file",
+          "write": false
+        }
+      ]
+    }
+  },
+  "CheckRequest": {
+    "caller": {
+      "agent": "fixture",
+      "thread": "fixture",
+      "flow": "fixture",
+      "call_id": "fixture",
+      "origin": "operator",
+      "tier": "read"
+    },
+    "checks": [
+      {
+        "kind": "path",
+        "path": "/home/operator/project/file",
+        "write": false
+      }
+    ]
+  },
+  "CheckResponse": {
+    "generation": 1,
+    "decisions": [
+      {
+        "generation": 1,
+        "verdict": {
+          "kind": "deny",
+          "reason": "floor"
+        },
+        "cacheable": false
+      }
+    ]
+  },
+  "Decision": {
+    "generation": 1,
+    "verdict": {
+      "kind": "deny",
+      "reason": "floor"
+    },
+    "cacheable": false
+  },
+  "PolicyConfig": {
+    "enabled": false,
+    "action_dir": "fixture",
+    "workspace_dir": "fixture",
+    "allowed_commands": [
+      "fixture"
+    ],
+    "forbidden_paths": [
+      "fixture"
+    ]
+  },
+  "JudgeConfig": {
+    "credential": "secret-fixture-must-not-appear-in-debug",
+    "threshold_millis": 1,
+    "timeout_ms": 1,
+    "origins": [
+      "operator"
+    ]
+  },
+  "ModuleConfig": {
+    "contract_version": [
+      1,
+      0
+    ],
+    "policy": {
+      "enabled": false,
+      "action_dir": "fixture",
+      "workspace_dir": "fixture",
+      "allowed_commands": [
+        "fixture"
+      ],
+      "forbidden_paths": [
+        "fixture"
+      ]
+    },
+    "judge": null
+  },
+  "PolicyInfo": {
+    "contract_version": [
+      1,
+      0
+    ],
+    "generation": 1,
+    "policy": {
+      "enabled": false,
+      "action_dir": "fixture",
+      "workspace_dir": "fixture",
+      "allowed_commands": [
+        "fixture"
+      ],
+      "forbidden_paths": [
+        "fixture"
+      ]
+    },
+    "capabilities": [
+      "fixture"
+    ]
+  },
+  "PolicyChanged": {
+    "generation": 1
+  },
+  "ApprovalState": "pending",
+  "ExecutionOutcome": "succeeded",
+  "ReplyVerdict": "allow_once",
+  "RedactMode": "text",
+  "ScanVerdict": "clean",
+  "PrivacyMode": "local_only",
+  "SourceTrust": "trusted_host",
+  "SandboxBackend": "namespace",
+  "NetworkPolicy": "none",
+  "AuditKind": "policy_changed",
+  "StoreOperation": "load_pending",
+  "Origin": "operator",
+  "AccessTier": "read",
+  "DenialReason": "floor",
+  "Secret": "secret-fixture-must-not-appear-in-debug",
+  "Check": {
+    "kind": "path",
+    "path": "/home/operator/project/file",
+    "write": false
+  },
+  "Verdict": {
+    "kind": "deny",
+    "reason": "floor"
+  },
+  "errors": [
+    "incompatible_version",
+    "invalid_config",
+    "invalid_arguments",
+    "unavailable",
+    "timeout",
+    "faulted",
+    "persistence",
+    "consent_denied"
+  ],
+  "variants": {
+    "ApprovalState": [
+      "pending",
+      "allowed",
+      "denied",
+      "expired",
+      "executed"
+    ],
+    "ExecutionOutcome": [
+      "succeeded",
+      "failed",
+      "cancelled"
+    ],
+    "ReplyVerdict": [
+      "allow_once",
+      "deny",
+      "unrecognized"
+    ],
+    "RedactMode": [
+      "text",
+      "structured_arguments",
+      "endpoint",
+      "home_path"
+    ],
+    "ScanVerdict": [
+      "clean",
+      "suspicious",
+      "blocked"
+    ],
+    "PrivacyMode": [
+      "local_only",
+      "standard",
+      "sensitive"
+    ],
+    "SourceTrust": [
+      "trusted_host",
+      "untrusted_mcp",
+      "untrusted_skill",
+      "downloaded"
+    ],
+    "SandboxBackend": [
+      "namespace",
+      "micro_vm",
+      "jail",
+      "docker",
+      "noop"
+    ],
+    "NetworkPolicy": [
+      "none",
+      "egress_proxy",
+      "host"
+    ],
+    "AuditKind": [
+      "policy_changed",
+      "approval",
+      "judge",
+      "execution",
+      "sandbox"
+    ],
+    "StoreOperation": [
+      "load_pending",
+      "load_decisions",
+      "persist"
+    ],
+    "Origin": [
+      "operator",
+      "copilot",
+      "sub_agent",
+      "cron",
+      "saas"
+    ],
+    "AccessTier": [
+      "read",
+      "write",
+      "full"
+    ],
+    "DenialReason": [
+      "floor",
+      "unsupported_effect",
+      "approval_unavailable",
+      "access",
+      "path_scope",
+      "path_resolution",
+      "command",
+      "invalid_context"
+    ]
+  },
+  "DecideRequest": {
+    "request_id": "fixture",
+    "allow": false,
+    "caller": {
+      "agent": "fixture",
+      "thread": "fixture",
+      "flow": "fixture",
+      "call_id": "fixture",
+      "origin": "operator",
+      "tier": "read"
+    }
+  },
+  "DecideResponse": {
+    "request_id": "fixture",
+    "fingerprint": "fixture",
+    "caller": {
+      "agent": "fixture",
+      "thread": "fixture",
+      "flow": "fixture",
+      "call_id": "fixture",
+      "origin": "operator",
+      "tier": "read"
+    },
+    "expires_at_ms": 1,
+    "state": "pending"
+  }
+}

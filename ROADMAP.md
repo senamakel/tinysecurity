@@ -1,26 +1,14 @@
-# Roadmap
+# TinySecurity roadmap
 
-Replace this file with the real plan for the crate generated from this
-template, or delete it if the project does not need a public roadmap.
+The current bootstrap PR implements conservative policy evaluation, ordered checks,
+versioned wire contracts, SDK init/reinit and native loading. Publishing those
+contracts/artifacts remains pending upstream review and release. It intentionally does
+not close the security extraction tracker.
 
-Keep it short and honest: what exists, what is next, and what is deliberately
-out of scope. A roadmap that lists everything is a roadmap nobody trusts.
+The [implementation plan](docs/plans/security-module.md) orders the remaining
+work: full host policy/command parity, unified redaction, connection-pinned
+egress, TinyBox sandbox planning, durable audit/approvals, optional Jev,
+native conformance and release gates, reviewed policy expansion, crypto last.
 
-## Shipped
-
-- module layout, crate-wide error type, and the public re-export surface
-- lint configuration in `[lints]`, enforced identically locally and in CI
-- CI: format, clippy, build, test, per-file coverage, rustdoc, MSRV, and
-  supply-chain checks
-- a manual release workflow that versions, tags, publishes to crates.io, and
-  creates a GitHub release with crate and TinyBus runtime/module assets
-
-## Next
-
-- the first real feature area, replacing the placeholder `greeting` module
-- module-level `README.md` and `docs/spec/` entries as modules grow
-
-## Out Of Scope
-
-- anything that cannot be tested deterministically
-- convenience wrappers that hide the crate's error taxonomy from callers
+Production OpenHuman callers move only after upstream capabilities are merged,
+released and validated with published checksums and native latency budgets.

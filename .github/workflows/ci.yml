@@ -19,7 +19,14 @@ env:
 jobs:
   rust:
     name: Rust
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
         with:
@@ -54,27 +61,76 @@ jobs:
         run: cargo test
 
       # `cargo build --all-targets` only *compiles* an example. `AGENTS.md`
-      # promises `cargo run -p template --example basic` works, and a compiled
+      # promises the native loader verifier works, and a compiled
       # example can still fail on its first line.
       - name: Run the bundled example
-        run: cargo run -p template --example basic
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) module=target/debug/libtinysecurity_module.so ;;
+            macOS) module=target/debug/libtinysecurity_module.dylib ;;
+          esac
+          cargo run -p tinysecurity-module --example verify_module -- "$module"
 
-      # `crates/template-bus` exists so a host can name the payload types
+      - name: Verify Windows module through the restricted native copy
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $libraryName = 'tinysecurity_module'
+          $module = "target/debug/$libraryName.dll"
+          $verifyRoot = Join-Path $env:RUNNER_TEMP 'tinysecurity-module-ci-verify'
+          New-Item -ItemType Directory -Force $verifyRoot | Out-Null
+
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+          $security = [System.Security.AccessControl.DirectorySecurity]::new()
+          $security.SetOwner($identity.User)
+          $security.SetAccessRuleProtection($true, $false)
+          $rights = [System.Security.AccessControl.FileSystemRights]::FullControl
+          $inheritance = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+          $propagation = [System.Security.AccessControl.PropagationFlags]::None
+          $access = [System.Security.AccessControl.AccessControlType]::Allow
+          foreach ($sidValue in @(
+            $identity.User.Value,
+            'S-1-5-18',
+            'S-1-5-32-544'
+          )) {
+            $sid = [System.Security.Principal.SecurityIdentifier]::new($sidValue)
+            $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+              $sid,
+              $rights,
+              $inheritance,
+              $propagation,
+              $access
+            )
+            [void]$security.AddAccessRule($rule)
+          }
+          Set-Acl -LiteralPath $verifyRoot -AclObject $security
+
+          $verifiedModule = Join-Path $verifyRoot "$libraryName.dll"
+          Copy-Item -LiteralPath $module -Destination $verifiedModule
+          cargo run --locked --package tinysecurity-module --example verify_module -- $verifiedModule
+
+      # `crates/tinysecurity-bus` exists so a host can name the payload types
       # without compiling the module. That promise is invisible in a diff,
       # because a forbidden dependency arrives transitively through a feature
       # someone enabled one crate away — so it is asserted rather than
       # documented.
       #
-      # The FORWARD form is required. `cargo tree -i <crate> -p template-bus`
+      # The FORWARD form is required. `cargo tree -i <crate> -p tinysecurity-bus`
       # discards the `-p` scope, prints the whole-workspace inverse tree, and
       # exits 0 looking clean even when this crate is the one at fault.
       - name: Assert the contract crate stays transport-free
         run: |
           set -euo pipefail
-          forbidden="$(cargo tree -p template-bus -e normal,build --prefix none \
+          cargo metadata --format-version 1 --no-deps | jq -e '
+            [.packages[] | select(.name == "tinysecurity-bus") | .dependencies[]
+             | select(.kind == null) | .name] | sort == ["serde", "thiserror"]'
+          forbidden="$(cargo tree -p tinysecurity-bus -e normal,build --prefix none \
             | grep -Ei 'tinybus|tokio|reqwest|ureq|hyper|rusqlite|git2' || true)"
           if [ -n "$forbidden" ]; then
-            echo "template-bus pulled in a dependency its manifest forbids:" >&2
+            echo "tinysecurity-bus pulled in a dependency its manifest forbids:" >&2
             echo "$forbidden" >&2
             echo >&2
             echo "The contract is what a host compiles against. It must stay free" >&2
@@ -82,14 +138,18 @@ jobs:
             exit 1
           fi
 
+      # LLVM paths on Windows use native drive prefixes while Git Bash pwd
+      # uses /d/... . The Linux lane owns the exact per-file coverage gate;
+      # all three native lanes still build, test and load the real module.
       - name: Require 90% line coverage in every source file
+        if: ${{ runner.os == 'Linux' }}
         run: .github/scripts/check-file-coverage.sh 90 coverage.json
 
       - name: Upload coverage report
-        if: ${{ always() }}
+        if: ${{ always() && runner.os == 'Linux' }}
         uses: actions/upload-artifact@v7
         with:
-          name: coverage-json
+          name: coverage-json-${{ matrix.os }}
           path: coverage.json
           if-no-files-found: ignore
 
@@ -128,7 +188,7 @@ jobs:
         run: |
           set -euo pipefail
           msrv="$(cargo metadata --format-version 1 --no-deps \
-            | jq -r '.packages[] | select(.name == "template") | .rust_version')"
+            | jq -r '.packages[] | select(.name == "tinysecurity-module") | .rust_version')"
           if [[ -z "$msrv" || "$msrv" == "null" ]]; then
             echo "workspace.package.rust-version is not set in Cargo.toml" >&2
             exit 1
