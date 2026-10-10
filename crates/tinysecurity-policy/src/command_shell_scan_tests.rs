@@ -317,3 +317,27 @@ fn unsupported_delimiter_expansions_are_never_blanked() {
         assert_eq!(strip_quoted_heredoc_bodies(command), command);
     }
 }
+
+#[test]
+fn mixed_heredocs_follow_lexical_order_without_parsing_body_operators() {
+    for (command, expected) in [
+        (
+            "cat <<A <<'B'\nlive <<'fake'\nA\ndata\nB\ntouch after",
+            "cat <<A <<'B'\nlive <<'fake'\nA\n\nB\ntouch after",
+        ),
+        (
+            "cat <<'A' <<B\ndata\nA\nlive <<'fake'\nB\ntouch after",
+            "cat <<'A' <<B\n\nA\nlive <<'fake'\nB\ntouch after",
+        ),
+        (
+            "cat <<-'A' <<-B\n\tdata\n\tA\n\tlive\n\tB\ntouch after",
+            "cat <<-'A' <<-B\n\n\tA\n\tlive\n\tB\ntouch after",
+        ),
+        (
+            "cat <<'A'x <<B\ndata\nA\nstill data\nAx\nlive\nB",
+            "cat <<'A'x <<B\n\n\n\nAx\nlive\nB",
+        ),
+    ] {
+        assert_eq!(strip_quoted_heredoc_bodies(command), expected);
+    }
+}

@@ -302,7 +302,9 @@ pub(crate) fn contains_unquoted_char(command: &str, target: char) -> bool {
 ///
 /// An **unquoted** delimiter (`<< EOF`) is deliberately left alone — expansion
 /// *is* live inside that body, so `$(rm -rf ~)` there really would execute and
-/// must keep tripping the guard.
+/// must keep tripping the guard. All delimiters on a command line are queued
+/// in lexical order, including unquoted delimiters: each body ends only at its
+/// own complete delimiter. Operators inside either kind of body are data.
 ///
 /// Body lines are replaced by empty lines rather than removed, so line counts,
 /// the surrounding command text and the `>` of the redirect are all preserved:
@@ -315,121 +317,90 @@ pub(crate) fn strip_quoted_heredoc_bodies(command: &str) -> Cow<'_, str> {
         return Cow::Borrowed(command);
     }
 
-    let mut delimiters: Vec<(String, bool)> = Vec::new();
+    let mut pending = std::collections::VecDeque::new();
+    let mut out = String::with_capacity(command.len());
     let mut quote = QuoteState::None;
     let mut escaped = false;
-    let mut chars = command.char_indices().peekable();
-    // Byte offsets of the `<<` operators whose delimiter is quoted, in order.
-    let mut operators: Vec<usize> = Vec::new();
-
-    while let Some((idx, ch)) = chars.next() {
-        match quote {
-            QuoteState::Single => {
-                if ch == '\'' {
-                    quote = QuoteState::None;
-                }
-            }
-            QuoteState::Double => {
-                if escaped {
-                    escaped = false;
-                    continue;
-                }
-                match ch {
-                    '\\' => escaped = true,
-                    '"' => quote = QuoteState::None,
-                    _ => {}
-                }
-            }
-            QuoteState::None => {
-                if escaped {
-                    escaped = false;
-                    continue;
-                }
-                match ch {
-                    '\\' => escaped = true,
-                    '\'' => quote = QuoteState::Single,
-                    '"' => quote = QuoteState::Double,
-                    '<' if chars.next_if(|(_, c)| *c == '<').is_some() => {
-                        // `<<<` is a here-string, not a heredoc: no body follows.
-                        if chars.next_if(|(_, c)| *c == '<').is_some() {
-                            continue;
-                        }
-                        let rest = &command[idx + 2..];
-                        if let Some((delim, consumed)) = quoted_heredoc_delimiter(rest) {
-                            delimiters.push((delim, rest.starts_with('-')));
-                            operators.push(idx);
-                            // Skip past the delimiter token so its quotes do not
-                            // re-enter the quote state machine.
-                            for _ in 0..consumed {
-                                chars.next();
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    if operators.is_empty() {
-        return Cow::Borrowed(command);
-    }
-
-    // Walk the lines. Once the line carrying the Nth operator ends, every
-    // following line is body until its terminator line appears.
-    let mut out = String::with_capacity(command.len());
-    let mut next_delim = 0usize;
-    let mut open: Option<(String, bool)> = None;
-    let mut consumed_bytes = 0usize;
-
     for line in command.split_inclusive('\n') {
-        let line_start = consumed_bytes;
-        consumed_bytes += line.len();
-
-        if let Some((delim, strip_tabs)) = open.clone() {
-            // Operators inside a quoted body are literal data, including ones
-            // that resemble nested heredocs. Never let them open a later body.
-            while next_delim < operators.len() && operators[next_delim] < consumed_bytes {
-                next_delim += 1;
-            }
+        if let Some((delim, strip_tabs, quoted)) = pending.front() {
+            // Every body consumes its own delimiter in lexical order. Neither
+            // expanded nor literal body text can declare another heredoc.
             let terminator = line.trim_end_matches('\n');
-            let terminator = if strip_tabs {
+            let terminator = if *strip_tabs {
                 terminator.trim_start_matches('\t')
             } else {
                 terminator
             };
             if terminator == delim {
-                open = None;
+                pending.pop_front();
                 out.push_str(line);
-            } else {
-                // Blank the body, keeping the newline so offsets stay sane.
-                if line.ends_with('\n') {
-                    out.push('\n');
-                }
+            } else if !quoted {
+                out.push_str(line);
+            } else if line.ends_with('\n') {
+                out.push('\n');
             }
             continue;
         }
-
         out.push_str(line);
-        let line_end = line_start + line.len();
-        while next_delim < operators.len() && operators[next_delim] < line_end {
-            // The last operator on a line wins: `cat << 'A' << 'B'` reads A's
-            // body first, but only tracking one at a time is enough for the
-            // guard, and a nested case simply keeps scanning as today.
-            open = Some(delimiters[next_delim].clone());
-            next_delim += 1;
+        let mut chars = line.char_indices().peekable();
+        while let Some((idx, ch)) = chars.next() {
+            match quote {
+                QuoteState::Single => {
+                    if ch == '\'' {
+                        quote = QuoteState::None;
+                    }
+                }
+                QuoteState::Double => {
+                    if escaped {
+                        escaped = false;
+                        continue;
+                    }
+                    match ch {
+                        '\\' => escaped = true,
+                        '"' => quote = QuoteState::None,
+                        _ => {}
+                    }
+                }
+                QuoteState::None => {
+                    if escaped {
+                        escaped = false;
+                        continue;
+                    }
+                    match ch {
+                        '\\' => escaped = true,
+                        '\'' => quote = QuoteState::Single,
+                        '"' => quote = QuoteState::Double,
+                        '<' if chars.next_if(|(_, c)| *c == '<').is_some() => {
+                            if chars.next_if(|(_, c)| *c == '<').is_some() {
+                                continue;
+                            }
+                            let rest = &line[idx + 2..];
+                            if let Some((delim, consumed, quoted)) = heredoc_delimiter(rest) {
+                                pending.push_back((delim, rest.starts_with('-'), quoted));
+                                for _ in 0..consumed {
+                                    chars.next();
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
     }
-
-    Cow::Owned(out)
+    if out == command {
+        Cow::Borrowed(command)
+    } else {
+        Cow::Owned(out)
+    }
 }
 
 /// Parse a heredoc delimiter token immediately after `<<`, returning the
 /// delimiter after complete quote removal and how many chars of `rest` it spans.
 /// Any quoted or escaped part disables expansion, including concatenated runs
 /// such as `'EO'"F"x`; optional `-` and whitespace precede the token.
-/// An unquoted delimiter returns `None`, because its body is still expanded.
-fn quoted_heredoc_delimiter(rest: &str) -> Option<(String, usize)> {
+/// The final flag records whether quoting disables body expansion.
+fn heredoc_delimiter(rest: &str) -> Option<(String, usize, bool)> {
     let mut consumed = 0usize;
     let mut chars = rest.chars().peekable();
 
@@ -482,7 +453,7 @@ fn quoted_heredoc_delimiter(rest: &str) -> Option<(String, usize)> {
             _ => delim.push(c),
         }
     }
-    (quoted && quote == QuoteState::None && !delim.is_empty()).then_some((delim, consumed))
+    (quote == QuoteState::None && !delim.is_empty()).then_some((delim, consumed, quoted))
 }
 
 /// The last path component of a command word, splitting on both `/` and `\`.
@@ -556,7 +527,9 @@ pub(crate) fn skip_env_assignments(s: &str) -> &str {
 }
 
 /// Parse literal shell words without expansion or execution. Adjacent quoted
-/// runs concatenate; POSIX escapes are decoded. Native Windows drive/UNC words
+/// runs concatenate; POSIX escapes are decoded. Unquoted redirect operators
+/// separate attached literal targets; quoted or escaped operators stay in the
+/// word. Native Windows drive/UNC words
 /// preserve backslashes, so a quoted executable path with spaces has one basename.
 /// Unfinished quotes/escapes fail closed. This is lexical executable recognition,
 /// not a promise that an executable is trusted or that dynamic expansion is safe.
@@ -587,6 +560,14 @@ fn parse_command_words(command: &str, preserve_windows: bool) -> Option<Vec<Stri
             (QuoteState::None, '\'') => quote = QuoteState::Single,
             (QuoteState::None, '"') => quote = QuoteState::Double,
             (QuoteState::Single, '\'') | (QuoteState::Double, '"') => quote = QuoteState::None,
+            (QuoteState::None, '<' | '>') => {
+                // Redirect operators are shell syntax even when attached to a
+                // word. Quoted and escaped operator characters remain data.
+                if active && !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+                active = false;
+            }
             (QuoteState::None, c) if c.is_whitespace() => {
                 if active {
                     words.push(std::mem::take(&mut word));

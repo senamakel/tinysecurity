@@ -214,9 +214,7 @@ impl CommandScope {
             self.policy.action_dir.join(candidate)
         };
         !protected_path(&candidate)
-            && !resolve_ancestor(&candidate)
-                .ok()
-                .is_some_and(|p| protected_path(&p))
+            && !resolve_ancestor(&candidate).is_ok_and(|p| protected_path(&p))
     }
     fn risk(&self, command: &str) -> CommandRisk {
         let mut saw_medium = false;

@@ -738,3 +738,147 @@ fn script_blocks_are_powershell_execution_but_cmd_braces_are_data()
     assert_eq!(decision(p, "echo {ordinary}")?.gate, CommandGate::Allow);
     Ok(())
 }
+
+#[test]
+fn every_expanded_heredoc_body_remains_live() -> std::result::Result<(), Box<dyn std::error::Error>>
+{
+    for command in [
+        "cat <<A <<'cat'\n$(touch review-proof)\nA\nbody\ncat",
+        "cat <<'cat' <<A\nbody\ncat\n$(touch review-proof)\nA",
+        "cat <<A <<'cat' <<B\n$(touch first)\nA\nbody\ncat\n$(touch second)\nB",
+    ] {
+        assert_eq!(
+            decision(policy(true, CommandAutonomy::Supervised)?, command)?.gate,
+            CommandGate::Block,
+            "{command}"
+        );
+        let command = command
+            .replace("touch review-proof", "cat ~/.ssh/id_rsa")
+            .replace("touch first", "cat ~/.ssh/id_rsa")
+            .replace("touch second", "cat ~/.ssh/id_rsa");
+        assert_eq!(
+            decision(policy(false, CommandAutonomy::Full)?, &command)?.denial,
+            Some(CommandDenial::Protected),
+            "{command}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn attached_redirect_targets_enforce_the_protected_floor()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    for dialect in [
+        tinysecurity_bus::ShellDialect::Posix,
+        tinysecurity_bus::ShellDialect::PowerShell,
+        tinysecurity_bus::ShellDialect::Cmd,
+    ] {
+        let mut p = policy(false, CommandAutonomy::Full)?;
+        p.shell_dialect = dialect;
+        for command in [
+            "cat</etc/shadow",
+            "cat< /etc/shadow",
+            "cat 0</etc/shadow",
+            "echo>/etc/shadow",
+            "echo 2>>/etc/shadow",
+            "cat<~/.ssh/id_rsa",
+            "cat<../outside",
+            "echo>>../outside",
+            "cat<\"/etc/shadow\"",
+        ] {
+            assert_eq!(
+                decision(p.clone(), command)?.denial,
+                Some(CommandDenial::Protected),
+                "{dialect:?}: {command}"
+            );
+        }
+        for command in [
+            "echo 'cat</etc/shadow'",
+            "echo \"cat>/etc/shadow\"",
+            "echo>ordinary",
+            "cat<ordinary",
+        ] {
+            if dialect == tinysecurity_bus::ShellDialect::Cmd && command.contains('\'') {
+                continue;
+            }
+            assert_eq!(
+                decision(p.clone(), command)?.gate,
+                CommandGate::Allow,
+                "{dialect:?}: {command}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn bash_expands_each_heredoc_even_when_later_stdin_overwrites_it()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let command = "cat <<-A <<-'B'x <<-C\n\t$(touch first)\n\tA\n\t$(touch literal) <<'fake'\n\tBx\n\t$(touch last)\n\tC";
+    let output = std::process::Command::new("bash")
+        .args(["-c", command])
+        .current_dir(root.path())
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(root.path().join("first").exists());
+    assert!(root.path().join("last").exists());
+    assert!(!root.path().join("literal").exists());
+    assert_eq!(
+        decision(policy(true, CommandAutonomy::Supervised)?, command)?.gate,
+        CommandGate::Block
+    );
+    Ok(())
+}
+
+#[test]
+fn redirect_targets_preserve_native_path_and_escape_rules()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tinysecurity_bus::ShellDialect;
+    for dialect in [
+        ShellDialect::Posix,
+        ShellDialect::PowerShell,
+        ShellDialect::Cmd,
+    ] {
+        let mut p = policy(false, CommandAutonomy::Full)?;
+        p.shell_dialect = dialect;
+        for command in [
+            r#"cat<"C:\Users\Some Person\.ssh\id_rsa""#,
+            r#"echo>>"\\server\share\.ssh\id_rsa""#,
+        ] {
+            assert_eq!(
+                decision(p.clone(), command)?.denial,
+                Some(CommandDenial::Protected),
+                "{dialect:?}: {command}"
+            );
+        }
+        for command in [
+            r#"cat<"C:\Users\Some Person\ordinary file""#,
+            r#"echo>>"\\server\share\ordinary file""#,
+        ] {
+            assert_eq!(
+                decision(p.clone(), command)?.gate,
+                CommandGate::Allow,
+                "{dialect:?}: {command}"
+            );
+        }
+        let command = match dialect {
+            ShellDialect::Posix => r"echo cat\</etc/shadow",
+            ShellDialect::PowerShell => r"echo cat`>/etc/shadow",
+            ShellDialect::Cmd => r"echo cat^>/etc/shadow",
+        };
+        assert_eq!(decision(p.clone(), command)?.gate, CommandGate::Allow);
+        let command = match dialect {
+            ShellDialect::Posix => r"cat<~/.s\sh/id_rsa",
+            ShellDialect::PowerShell => r"cat<C:\Users\u\.s`sh\id_rsa",
+            ShellDialect::Cmd => r"cat<C:\Users\u\.s^sh\id_rsa",
+        };
+        assert_eq!(decision(p, command)?.denial, Some(CommandDenial::Protected));
+    }
+    Ok(())
+}
