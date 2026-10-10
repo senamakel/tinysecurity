@@ -104,3 +104,34 @@ fn registered_rules_are_canonical_and_suffix_safe() -> Result<(), Box<dyn std::e
     ));
     Ok(())
 }
+
+#[test]
+fn protocol_reserved_ipv6_prefixes_and_boundaries_are_denied()
+-> Result<(), Box<dyn std::error::Error>> {
+    for ip in [
+        "2001:10::",
+        "2001:1f:ffff:ffff:ffff:ffff:ffff:ffff",
+        "2001:20::",
+        "2001:2f:ffff:ffff:ffff:ffff:ffff:ffff",
+        "2001:1::4",
+        "2001:100::1",
+        "2001:1ff:ffff::1",
+    ] {
+        assert!(forbidden(ip.parse()?), "{ip}");
+    }
+    for ip in [
+        "2001:1::1",
+        "2001:1::2",
+        "2001:1::3",
+        "2001:3::1",
+        "2001:4:112::1",
+        "2001:200::1",
+        "2001:4860:4860::8888",
+        "2002:808:808::1",
+        "64:ff9b::808:808",
+        "2001:0:808:808:0:0:f7f7:f7f7",
+    ] {
+        assert!(!forbidden(ip.parse()?), "{ip}");
+    }
+    Ok(())
+}

@@ -155,7 +155,17 @@ fn non_global_v6(ip: Ipv6Addr) -> bool {
         let [third, fourth] = lo.to_be_bytes();
         non_global_v4(Ipv4Addr::new(first, second, third, fourth))
     };
-    ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() || segments[0]&0xfe00==0xfc00 || segments[0]&0xffc0==0xfe80
+    // IANA special-purpose 2001::/23 is protocol/reserved space, except
+    // public Teredo (embedded addresses checked below), PCP/TURN/DNS-SD anycast,
+    // AMT 2001:3::/32 and AS112 2001:4:112::/48. ORCHID and ORCHIDv2
+    // are identifiers, never routable destination authority.
+    let protocol_reserved = segments[0] == 0x2001
+        && segments[1] < 0x200
+        && !(segments[1] == 0
+            || segments[1] == 1 && segments[2..7] == [0; 5] && (1..=3).contains(&segments[7])
+            || segments[1] == 3
+            || segments[1..3] == [4, 0x112]);
+    protocol_reserved || ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() || segments[0]&0xfe00==0xfc00 || segments[0]&0xffc0==0xfe80
     || segments[0]==0x2001 && (segments[1]==0xdb8 || segments[1]==2 && segments[2]==0) || segments[0]==0x100 && segments[1..3]==[0;2] && segments[3]<=1
     || segments[0]==0x64 && segments[1]==0xff9b && (segments[2]==1 || segments[2..6]==[0;4] && embedded(segments[6],segments[7]))
     || segments[0]==0x2002 && embedded(segments[1],segments[2]) || segments[..2]==[0x2001,0] && (embedded(!segments[6],!segments[7]) || embedded(segments[2],segments[3]))

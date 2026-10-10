@@ -6,7 +6,10 @@ use crate::{
 };
 use sha2::{Digest, Sha256};
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tinysecurity_bus::{
@@ -23,10 +26,12 @@ pub struct RegisteredEgressPolicy {
     clock: Arc<dyn EgressClock>,
     redactor: Redactor,
     state: Mutex<LeaseState>,
+    active_generation: Arc<AtomicU64>,
 }
 #[derive(Debug, Default)]
 struct LeaseState {
     last: u64,
+    generation: u64,
     faulted: bool,
     issued: Vec<TransportAuthorization>,
 }
@@ -94,10 +99,8 @@ impl RegisteredEgressPolicy {
         redactor: &Redactor,
     ) -> std::result::Result<TransportAuthorization, EgressDenial> {
         let started = self.now()?;
-        if request.policy_id != self.id
-            || request.subject != self.policy.owner
-            || request.tier != self.policy.ceiling
-        {
+        self.observe_generation(generation)?;
+        if !self.matches_scope(request) {
             return Err(EgressDenial::Scope);
         }
         if request.transport != EgressTransport::PinnedDirect {
@@ -179,6 +182,12 @@ impl RegisteredEgressPolicy {
             expires_at_ms: deadline,
         };
         let mut state = self.state.lock().map_err(|_| EgressDenial::Stale)?;
+        if state.faulted
+            || state.generation != generation
+            || self.active_generation.load(Ordering::Acquire) != generation
+        {
+            return Err(EgressDenial::Stale);
+        }
         state
             .issued
             .retain(|auth| auth.expires_at_ms > now && auth.generation == generation);
@@ -200,15 +209,15 @@ impl RegisteredEgressPolicy {
         let Ok(now) = self.now() else {
             return false;
         };
-        authorization.policy_id == self.id
+        self.active_generation.load(Ordering::Acquire) == generation
+            && authorization.policy_id == self.id
             && authorization.subject == self.policy.owner
             && subject == &self.policy.owner
             && authorization.generation == generation
             && now < authorization.expires_at_ms
-            && self
-                .state
-                .lock()
-                .is_ok_and(|state| state.issued.contains(authorization))
+            && self.state.lock().is_ok_and(|state| {
+                state.generation == generation && state.issued.contains(authorization)
+            })
     }
     /// Validate the exact outgoing original operation before consuming its grant.
     #[must_use]
@@ -219,8 +228,10 @@ impl RegisteredEgressPolicy {
         subject: &SubjectScope,
         generation: u64,
     ) -> bool {
-        request.subject == *subject
+        privacy::bounds(request).is_ok()
+            && request.subject == *subject
             && request.policy_id == self.id
+            && self.valid(authorization, subject, generation)
             && fingerprint(request).is_ok_and(|value| value == authorization.fingerprint)
             && self.consume(authorization, subject, generation)
     }
@@ -240,7 +251,12 @@ impl RegisteredEgressPolicy {
             return false;
         };
         let now = self.clock.now_ms();
-        if state.faulted || now < state.last || now >= authorization.expires_at_ms {
+        if state.faulted
+            || state.generation != generation
+            || self.active_generation.load(Ordering::Acquire) != generation
+            || now < state.last
+            || now >= authorization.expires_at_ms
+        {
             if now < state.last {
                 state.faulted = true;
             }
@@ -257,6 +273,31 @@ impl RegisteredEgressPolicy {
         state.issued.swap_remove(index);
         true
     }
+    fn matches_scope(&self, request: &ScopedEgressRequest) -> bool {
+        request.policy_id == self.id
+            && request.subject == self.policy.owner
+            && request.tier == self.policy.ceiling
+    }
+    fn observe_generation(&self, generation: u64) -> std::result::Result<(), EgressDenial> {
+        let active = self
+            .active_generation
+            .fetch_max(generation, Ordering::AcqRel);
+        if generation < active {
+            return Err(EgressDenial::Stale);
+        }
+        let mut state = self.state.lock().map_err(|_| EgressDenial::Stale)?;
+        if state.faulted
+            || generation < state.generation
+            || self.active_generation.load(Ordering::Acquire) != generation
+        {
+            return Err(EgressDenial::Stale);
+        }
+        if generation > state.generation {
+            state.generation = generation;
+            state.issued.clear();
+        }
+        Ok(())
+    }
     fn now(&self) -> std::result::Result<u64, EgressDenial> {
         let mut state = self.state.lock().map_err(|_| EgressDenial::Stale)?;
         let now = self.clock.now_ms();
@@ -269,6 +310,7 @@ impl RegisteredEgressPolicy {
     }
 }
 fn fingerprint(request: &ScopedEgressRequest) -> Result<String> {
+    privacy::bounds(request)?;
     let serialized = serde_json::to_vec(request).map_err(|_| Error::InvalidArguments)?;
     Ok(hex(&Sha256::digest(serialized)))
 }
@@ -293,6 +335,7 @@ fn same_origin(a: &Endpoint, b: &Endpoint) -> bool {
 pub struct EgressPolicyRegistry {
     scopes: Vec<(EgressPolicyId, Arc<RegisteredEgressPolicy>)>,
     clock: Arc<dyn EgressClock>,
+    active_generation: Arc<AtomicU64>,
 }
 impl Default for EgressPolicyRegistry {
     fn default() -> Self {
@@ -306,7 +349,23 @@ impl EgressPolicyRegistry {
         Self {
             scopes: vec![],
             clock,
+            active_generation: Arc::new(AtomicU64::new(0)),
         }
+    }
+    /// Advance the shared generation atomically with host activation, invalidating
+    /// old leases and preventing late old-generation DNS calls from issuing grants.
+    /// Faulted scopes retain their own latch without preventing other scopes' reload.
+    /// # Errors
+    /// Refuse generation rollback.
+    pub fn advance_generation(&self, generation: u64) -> Result<()> {
+        if self
+            .active_generation
+            .fetch_max(generation, Ordering::AcqRel)
+            > generation
+        {
+            return Err(Error::Faulted);
+        }
+        Ok(())
     }
     /// Register an immutable host-verified policy. Invalid candidates never change
     /// another subject's settings or invalidate previously accepted scopes.
@@ -369,6 +428,7 @@ impl EgressPolicyRegistry {
                     clock: Arc::clone(&self.clock),
                     redactor,
                     state: Mutex::default(),
+                    active_generation: Arc::clone(&self.active_generation),
                 }),
             ));
             return Ok(id);

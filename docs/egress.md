@@ -17,7 +17,11 @@ endpoint and data category. Sensitive additionally refuses credentials,
 identifiers, unknown classification and original payloads, URLs or headers the
 shared redactor changes. Complete actual headers include host-injected credentials;
 Host/authority/routing overrides and unsupported HTTP methods are refused.
-Native calls use the active SDK exact-secret registry. Transformation grants are
+Sensitive inspects UTF-8 plain text, JSON and form bodies. Form fields are
+percent/+ decoded before independent credential/identifier checks; malformed
+escapes or UTF-8, duplicate representation headers, unsupported media/charset
+parameters and compressed encodings deny. Native calls use the active SDK
+exact-secret registry. Transformation grants are
 refused until a genuine approval and transformation engine exists.
 
 Legacy `UrlGuard` and `EgressCheck` retain their strict serialized shapes and
@@ -38,7 +42,11 @@ the UTF-8 `serde_json::to_vec` encoding in the contract field declaration order;
 no caller URL, HTTP method, header order/value, payload or scope may change.
 Expired, modified, replayed or previous-generation grants deny. Clock rollback
 latches that scope closed. DNS authorizations are never cacheable across calls.
-Invalid reinit retains the effective policy and registries.
+Successful reinit advances one shared generation before activation, so late old
+DNS calls cannot issue grants or remove current ones. Invalid reinit retains the
+effective policy and registries. Consume enforces the same URL/body/header and
+aggregate bounds before checking membership and hashing; serialization/hashing
+run off the sole SDK worker without registry locks.
 
 This module does not implement generic HTTP execution. TinyTools and each other
 transport owner must connect only to the approved sockets, preserve URL Host,

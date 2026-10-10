@@ -252,7 +252,7 @@ impl std::fmt::Debug for TransportAuthorization {
     }
 }
 /// Consume one exact issued authorization before transport execution. Replays deny.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumeEgressAuthorizationRequest {
     /// Complete original operation the executor will send; changes invalidate the grant.
@@ -275,5 +275,15 @@ pub struct EgressHeader {
 impl std::fmt::Debug for EgressHeader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("EgressHeader([REDACTED])")
+    }
+}
+
+#[cfg(test)]
+#[path = "egress_tests.rs"]
+mod tests;
+
+impl std::fmt::Debug for ConsumeEgressAuthorizationRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ConsumeEgressAuthorizationRequest([REDACTED])")
     }
 }

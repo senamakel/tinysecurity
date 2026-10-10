@@ -129,6 +129,7 @@ async fn sdk_setup_accepts_generation_and_rejects_invalid_reinit()
     let client = Connection::connect(bus.connect().await?).await?;
     let proxy = client.proxy(names::INTERFACE, names::OBJECT_PATH, names::INTERFACE)?;
     verify_invalid_registry_retains_redaction(&server, &proxy).await?;
+    let (retained_egress, stale_egress) = issue_reinit_egress_grants(&proxy).await?;
     let before: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
     let command_id: CommandPolicyId = proxy
         .call(
@@ -152,35 +153,28 @@ async fn sdk_setup_accepts_generation_and_rejects_invalid_reinit()
         .call(names::methods::REGISTER_PATH_POLICY, (policy,))
         .await?;
 
-    assert!(
-        setup(
-            server.clone(),
-            ModuleConfig {
-                contract_version: (2, 0),
-                ..Default::default()
-            }
-        )
-        .await
-        .is_err()
-    );
-    assert!(
-        setup(
-            server.clone(),
-            ModuleConfig {
-                redactor: RedactorConfig {
-                    secrets: vec![Secret("abc".into())]
-                },
-                ..Default::default()
-            }
-        )
-        .await
-        .is_err()
-    );
+    assert_invalid_sdk_reinitializations(&server).await?;
     let unchanged: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
     assert_eq!(unchanged, before);
+    assert!(
+        proxy
+            .call::<bool>(
+                names::methods::CONSUME_EGRESS_AUTHORIZATION,
+                (retained_egress,)
+            )
+            .await?
+    );
     setup(server.clone(), ModuleConfig::default()).await?;
     let after: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
     assert_eq!(after.generation, before.generation + 1);
+    assert!(
+        !proxy
+            .call::<bool>(
+                names::methods::CONSUME_EGRESS_AUTHORIZATION,
+                (stale_egress,)
+            )
+            .await?
+    );
     let exhausted: CommandDecision = proxy
         .call(names::methods::CHECK_COMMAND, (command_request,))
         .await?;
@@ -877,6 +871,7 @@ async fn native_egress_dispatch_binds_scope_and_denies_legacy_or_generic_local_c
             .await?
     );
     assert_legacy_egress_is_denied(&proxy).await?;
+    assert_native_review_regressions(&proxy).await?;
     task.abort();
     Ok(())
 }
@@ -928,6 +923,262 @@ async fn assert_legacy_egress_is_denied(
             )
             .await
             .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn consumption_work_runs_off_the_sole_sdk_worker_without_registry_locks()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let service = PolicyService {
+        policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
+        paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
+        commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
+        egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+    };
+    let subject = SubjectScope {
+        user: "user".into(),
+        workspace: "workspace".into(),
+        agent: "agent".into(),
+    };
+    let id = service
+        .register_egress_policy(EgressPolicy {
+            owner: subject.clone(),
+            ceiling: AccessTier::Full,
+            privacy: PrivacyMode::Standard,
+            destinations: vec![],
+            data_categories: vec![DataCategory::HostMetadata],
+            local_capabilities: vec![LocalEgressCapability {
+                origin: "http://127.0.0.1:11434".into(),
+                path: "/health".into(),
+                category: DataCategory::HostMetadata,
+            }],
+            validity_ms: 30000,
+        })
+        .await?;
+    let request = ScopedEgressRequest {
+        policy_id: id,
+        subject: subject.clone(),
+        tier: AccessTier::Full,
+        url: "http://127.0.0.1:11434/health".into(),
+        method: "GET".into(),
+        category: DataCategory::HostMetadata,
+        payload: "health".into(),
+        headers: vec![],
+        transport: EgressTransport::PinnedDirect,
+        local_capability: Some(0),
+        transformation: None,
+    };
+    let auth = service
+        .scoped_egress_check(request.clone())
+        .await?
+        .authorization
+        .ok_or("grant missing")?;
+    let consume = ConsumeEgressAuthorizationRequest {
+        request,
+        subject,
+        authorization: auth,
+    };
+    let runtime_thread = std::thread::current().id();
+    let egress = service.egress.clone();
+    let policy = service.policy.clone();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let blocked = service.clone();
+    let pending = tokio::spawn(async move {
+        blocked
+            .consume_egress_with(consume, move |scope, request, generation| {
+                // The assertion fails immediately if a future refactor moves this onto
+                // the sole worker; no clock or scheduling deadline is used as proof.
+                assert_ne!(std::thread::current().id(), runtime_thread);
+                assert!(egress.try_lock().is_ok());
+                assert!(policy.try_write().is_ok());
+                let _ = entered_tx.send(());
+                let _ = release_rx.recv();
+                scope.consume_request(
+                    &request.request,
+                    &request.authorization,
+                    &request.subject,
+                    generation,
+                )
+            })
+            .await
+    });
+    let entered = entered_rx.await;
+    let info = service.policy_info().await;
+    let _ = release_tx.send(());
+    let consumed = pending.await?;
+    entered?;
+    assert_eq!(info?.generation, 1);
+    assert!(consumed?);
+    Ok(())
+}
+
+async fn assert_native_review_regressions(
+    proxy: &tinybus::Proxy,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let subject = SubjectScope {
+        user: "native-user".into(),
+        workspace: "native-workspace".into(),
+        agent: "native-agent".into(),
+    };
+    let policy = EgressPolicy {
+        owner: subject.clone(),
+        ceiling: AccessTier::Full,
+        privacy: PrivacyMode::Sensitive,
+        destinations: vec![DestinationRule {
+            scheme: "https".into(),
+            hostname: "2606:4700:4700::1111".into(),
+            port: 443,
+            include_subdomains: false,
+        }],
+        data_categories: vec![DataCategory::UserContent],
+        local_capabilities: vec![],
+        validity_ms: 30000,
+    };
+    let id: EgressPolicyId = proxy
+        .call(names::methods::REGISTER_EGRESS_POLICY, (policy,))
+        .await?;
+    let mut request = ScopedEgressRequest {
+        policy_id: id,
+        subject: subject.clone(),
+        tier: AccessTier::Full,
+        url: "https://[2606:4700:4700::1111]/".into(),
+        method: "POST".into(),
+        category: DataCategory::UserContent,
+        payload: "email=person%40example.com".into(),
+        headers: vec![EgressHeader {
+            name: "Content-Type".into(),
+            value: "Application/X-WWW-Form-Urlencoded; charset=UTF-8".into(),
+        }],
+        transport: EgressTransport::PinnedDirect,
+        local_capability: None,
+        transformation: None,
+    };
+    let denied: ScopedEgressResponse = proxy
+        .call(names::methods::SCOPED_EGRESS_CHECK, (request.clone(),))
+        .await?;
+    assert_eq!(denied.denial, Some(EgressDenial::Privacy));
+    request.payload = "message=ordinary+content".into();
+    request.url = "https://[2001:10::1]/".into();
+    let denied: ScopedEgressResponse = proxy
+        .call(names::methods::SCOPED_URL_GUARD, (request.clone(),))
+        .await?;
+    assert_eq!(denied.denial, Some(EgressDenial::Address));
+    request.url = "https://[2606:4700:4700::1111]/".into();
+    let allowed: ScopedEgressResponse = proxy
+        .call(names::methods::SCOPED_EGRESS_CHECK, (request.clone(),))
+        .await?;
+    assert_eq!(allowed.denial, None);
+    let consume = ConsumeEgressAuthorizationRequest {
+        request,
+        subject,
+        authorization: allowed.authorization.ok_or("native grant missing")?,
+    };
+    let mut oversized = consume.clone();
+    oversized.request.payload = "x".repeat(65_537);
+    assert!(
+        !proxy
+            .call::<bool>(names::methods::CONSUME_EGRESS_AUTHORIZATION, (oversized,))
+            .await?
+    );
+    assert!(
+        proxy
+            .call::<bool>(names::methods::CONSUME_EGRESS_AUTHORIZATION, (consume,))
+            .await?
+    );
+    Ok(())
+}
+
+async fn issue_reinit_egress_grants(
+    proxy: &tinybus::Proxy,
+) -> std::result::Result<
+    (
+        ConsumeEgressAuthorizationRequest,
+        ConsumeEgressAuthorizationRequest,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let subject = SubjectScope {
+        user: "reinit-user".into(),
+        workspace: "reinit-workspace".into(),
+        agent: "reinit-agent".into(),
+    };
+    let policy = EgressPolicy {
+        owner: subject.clone(),
+        ceiling: AccessTier::Full,
+        privacy: PrivacyMode::LocalOnly,
+        destinations: vec![],
+        data_categories: vec![DataCategory::HostMetadata],
+        local_capabilities: vec![LocalEgressCapability {
+            origin: "http://127.0.0.1:11434".into(),
+            path: "/health".into(),
+            category: DataCategory::HostMetadata,
+        }],
+        validity_ms: 30000,
+    };
+    let id: EgressPolicyId = proxy
+        .call(names::methods::REGISTER_EGRESS_POLICY, (policy,))
+        .await?;
+    let request = ScopedEgressRequest {
+        policy_id: id,
+        subject: subject.clone(),
+        tier: AccessTier::Full,
+        url: "http://127.0.0.1:11434/health".into(),
+        method: "GET".into(),
+        category: DataCategory::HostMetadata,
+        payload: "health".into(),
+        headers: vec![],
+        transport: EgressTransport::PinnedDirect,
+        local_capability: Some(0),
+        transformation: None,
+    };
+    let first: ScopedEgressResponse = proxy
+        .call(names::methods::SCOPED_EGRESS_CHECK, (request.clone(),))
+        .await?;
+    let second: ScopedEgressResponse = proxy
+        .call(names::methods::SCOPED_EGRESS_CHECK, (request.clone(),))
+        .await?;
+    Ok((
+        ConsumeEgressAuthorizationRequest {
+            request: request.clone(),
+            subject: subject.clone(),
+            authorization: first.authorization.ok_or("first grant missing")?,
+        },
+        ConsumeEgressAuthorizationRequest {
+            request,
+            subject,
+            authorization: second.authorization.ok_or("second grant missing")?,
+        },
+    ))
+}
+
+async fn assert_invalid_sdk_reinitializations(
+    server: &Connection,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    assert!(
+        setup(
+            server.clone(),
+            ModuleConfig {
+                contract_version: (2, 0),
+                ..Default::default()
+            }
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        setup(
+            server.clone(),
+            ModuleConfig {
+                redactor: RedactorConfig {
+                    secrets: vec![Secret("abc".into())]
+                },
+                ..Default::default()
+            }
+        )
+        .await
+        .is_err()
     );
     Ok(())
 }

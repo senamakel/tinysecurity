@@ -65,6 +65,32 @@ impl PolicyService {
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
     }
 
+    async fn consume_egress_with<F>(
+        &self,
+        request: tinysecurity_bus::ConsumeEgressAuthorizationRequest,
+        operation: F,
+    ) -> BusResult<bool>
+    where
+        F: FnOnce(
+                &tinysecurity::RegisteredEgressPolicy,
+                &tinysecurity_bus::ConsumeEgressAuthorizationRequest,
+                u64,
+            ) -> bool
+            + Send
+            + 'static,
+    {
+        let scope = self
+            .egress
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .get_owned(&request.authorization.policy_id)
+            .map_err(|error| failure(&error))?;
+        let generation = self.read()?.info().generation;
+        tokio::task::spawn_blocking(move || operation(&scope, &request, generation))
+            .await
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))
+    }
+
     fn read(&self) -> BusResult<std::sync::RwLockReadGuard<'_, Policy>> {
         self.policy
             .read()
@@ -237,20 +263,15 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::ConsumeEgressAuthorizationRequest,
     ) -> BusResult<bool> {
-        let scope = self
-            .egress
-            .lock()
-            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
-            .get_owned(&request.authorization.policy_id)
-            .map_err(|error| failure(&error))?;
-        let generation = self.read()?.info().generation;
-        let result = scope.consume_request(
-            &request.request,
-            &request.authorization,
-            &request.subject,
-            generation,
-        );
-        std::future::ready(Ok(result)).await
+        self.consume_egress_with(request, |scope, request, generation| {
+            scope.consume_request(
+                &request.request,
+                &request.authorization,
+                &request.subject,
+                generation,
+            )
+        })
+        .await
     }
     // Legacy shapes cannot provide immutable scope/owner/transport authority.
     async fn url_guard(
@@ -369,6 +390,12 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
         // Queue publication before activation while holding the state lock.
         // A full/closed outbox rejects reinit and leaves the old state intact.
         connection.try_send(signal)?;
+        EGRESS_SCOPES
+            .get_or_init(|| Arc::new(Mutex::new(EgressPolicyRegistry::default())))
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .advance_generation(candidate.info().generation)
+            .map_err(|error| failure(&error))?;
         *guard = candidate;
         return Ok(());
     }

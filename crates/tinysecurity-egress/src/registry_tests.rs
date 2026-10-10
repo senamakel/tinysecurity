@@ -485,6 +485,372 @@ fn actual_outgoing_operation_changes_invalidate_the_grant()
         value: "Bearer private-token".into(),
     }];
     assert!(!scope.consume_request(&changed, &auth, &owner(), 7));
+    for (url, method) in [
+        ("https://example.com:8443/a%20b?q=1", "POST"),
+        (req.url.as_str(), "PUT"),
+    ] {
+        changed = req.clone();
+        changed.url = url.into();
+        changed.method = method.into();
+        assert!(!scope.consume_request(&changed, &auth, &owner(), 7));
+    }
     assert!(scope.consume_request(&req, &auth, &owner(), 7));
+    Ok(())
+}
+
+#[test]
+fn reserved_protocol_addresses_cannot_be_allowlisted_or_mixed_into_dns()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut registry = EgressPolicyRegistry::with_clock(Arc::new(Clock));
+    let id = registry.register(policy())?;
+    let scope = registry.get_owned(&id)?;
+    for ip in [
+        "2001:10::1",
+        "2001:1f:ffff::1",
+        "2001:20::1",
+        "2001:2f:ffff::1",
+        "2001:1::4",
+        "2001:1ff::1",
+    ] {
+        let mut config = policy();
+        config.destinations[0].hostname = ip.into();
+        config.destinations[0].include_subdomains = false;
+        assert!(registry.register(config).is_err(), "{ip}");
+        let mut req = request(id.clone());
+        req.url = format!("https://[{ip}]:8443/");
+        assert_eq!(
+            scope.check(&req, 1, &Failed).denial,
+            Some(EgressDenial::Address)
+        );
+        for answers in [vec![ip, "8.8.8.8"], vec!["8.8.8.8", ip]] {
+            let dns = Dns {
+                calls: AtomicUsize::new(0),
+                answers: answers
+                    .into_iter()
+                    .map(str::parse)
+                    .collect::<std::result::Result<_, _>>()?,
+            };
+            assert_eq!(
+                scope.check(&request(id.clone()), 1, &dns).denial,
+                Some(EgressDenial::Address)
+            );
+        }
+    }
+    Ok(())
+}
+#[derive(Debug)]
+struct PausedDns {
+    entered: Arc<std::sync::Barrier>,
+    release: Arc<std::sync::Barrier>,
+}
+impl Resolver for PausedDns {
+    fn resolve(
+        &self,
+        _: &str,
+        _: Duration,
+        _: usize,
+    ) -> std::result::Result<Vec<IpAddr>, crate::ResolveFailure> {
+        self.entered.wait();
+        self.release.wait();
+        Ok(vec![IpAddr::V4(std::net::Ipv4Addr::new(8, 8, 8, 8))])
+    }
+}
+#[test]
+fn late_old_generation_dns_cannot_revoke_new_generation_grants()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut registry = EgressPolicyRegistry::with_clock(Arc::new(Clock));
+    let id = registry.register(policy())?;
+    let scope = registry.get_owned(&id)?;
+    let req = request(id);
+    let entered = Arc::new(std::sync::Barrier::new(2));
+    let release = Arc::new(std::sync::Barrier::new(2));
+    let old_scope = scope.clone();
+    let old_req = req.clone();
+    let dns = PausedDns {
+        entered: entered.clone(),
+        release: release.clone(),
+    };
+    let pending = std::thread::spawn(move || old_scope.check(&old_req, 1, &dns));
+    entered.wait();
+    registry.advance_generation(2)?;
+    let current = scope
+        .check(
+            &req,
+            2,
+            &Dns {
+                calls: AtomicUsize::new(0),
+                answers: vec!["8.8.8.8".parse()?],
+            },
+        )
+        .authorization
+        .ok_or("current missing")?;
+    release.wait();
+    let old = pending.join().map_err(|_| "old resolver panicked")?;
+    assert_eq!(old.denial, Some(EgressDenial::Stale));
+    assert!(scope.consume_request(&req, &current, &owner(), 2));
+    assert!(!scope.consume_request(&req, &current, &owner(), 2));
+    Ok(())
+}
+#[test]
+fn sensitive_inspects_decoded_form_body_and_refuses_unsupported_codings()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut registry = EgressPolicyRegistry::with_clock(Arc::new(Clock));
+    let mut config = policy();
+    config.privacy = PrivacyMode::Sensitive;
+    let id = registry.register(config)?;
+    let scope = registry.get_owned(&id)?;
+    let mut req = request(id);
+    req.url = "https://example.com:8443/path".into();
+    let redactor = Redactor::new(&RedactorConfig {
+        secrets: vec![tinysecurity_bus::Secret("exact-private-credential".into())],
+    })?;
+    for content_type in [
+        "application/x-www-form-urlencoded",
+        "Application/X-WWW-Form-Urlencoded; Charset=UTF-8",
+    ] {
+        req.headers = vec![tinysecurity_bus::EgressHeader {
+            name: "cOnTeNt-TyPe".into(),
+            value: content_type.into(),
+        }];
+        for body in [
+            "email=person%40example.com",
+            "name=person%40example.com+extra",
+            "data=exact%2dprivate%2dcredential",
+            "email=%FF",
+            "value=%",
+            "value=%0G",
+        ] {
+            req.payload = body.into();
+            assert_eq!(
+                scope
+                    .check_with_redactor(&req, 1, &Failed, &redactor)
+                    .denial,
+                Some(EgressDenial::Privacy),
+                "{body}"
+            );
+        }
+        req.payload = "message=ordinary+content&count=42&value=%E2%9C%93".into();
+        assert_eq!(
+            scope
+                .check_with_redactor(
+                    &req,
+                    1,
+                    &Dns {
+                        calls: AtomicUsize::new(0),
+                        answers: vec!["8.8.8.8".parse()?]
+                    },
+                    &redactor
+                )
+                .denial,
+            None
+        );
+    }
+    for (name, value) in [
+        ("Content-Encoding", "gzip"),
+        ("Content-Encoding", "br"),
+        ("Content-Type", "application/octet-stream"),
+        (
+            "Content-Type",
+            "application/x-www-form-urlencoded; charset=iso-8859-1",
+        ),
+    ] {
+        req.headers = vec![tinysecurity_bus::EgressHeader {
+            name: name.into(),
+            value: value.into(),
+        }];
+        req.payload = "ordinary".into();
+        assert_eq!(
+            scope.check(&req, 1, &Failed).denial,
+            Some(EgressDenial::Privacy)
+        );
+    }
+    req.headers = vec![
+        tinysecurity_bus::EgressHeader {
+            name: "Content-Type".into(),
+            value: "text/plain".into()
+        };
+        2
+    ];
+    assert_eq!(
+        scope.check(&req, 1, &Failed).denial,
+        Some(EgressDenial::Privacy)
+    );
+    Ok(())
+}
+#[test]
+fn fingerprint_rejects_oversized_operations_before_serializing() {
+    let req = request(EgressPolicyId("test".into()));
+    let mut body = req.clone();
+    body.payload = "x".repeat(65_537);
+    let mut url = req.clone();
+    url.url = "x".repeat(8193);
+    let mut headers = req.clone();
+    headers.headers = vec![
+        tinysecurity_bus::EgressHeader {
+            name: "X".into(),
+            value: "x".into()
+        };
+        65
+    ];
+    let mut aggregate = req;
+    aggregate.headers = vec![
+        tinysecurity_bus::EgressHeader {
+            name: "X".into(),
+            value: "x".repeat(4096)
+        };
+        4
+    ];
+    for invalid in [body, url, headers, aggregate] {
+        assert!(fingerprint(&invalid).is_err());
+    }
+}
+
+#[test]
+fn activation_revokes_old_leases_even_without_new_generation_issuance()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut registry = EgressPolicyRegistry::with_clock(Arc::new(Clock));
+    let id = registry.register(policy())?;
+    let scope = registry.get_owned(&id)?;
+    let req = request(id);
+    let dns = Dns {
+        calls: AtomicUsize::new(0),
+        answers: vec!["8.8.8.8".parse()?],
+    };
+    let old = scope
+        .check(&req, 1, &dns)
+        .authorization
+        .ok_or("missing old")?;
+    registry.advance_generation(2)?;
+    assert!(!scope.consume_request(&req, &old, &owner(), 1));
+    assert_eq!(scope.check(&req, 1, &dns).denial, Some(EgressDenial::Stale));
+    assert_eq!(dns.calls.load(Ordering::SeqCst), 1);
+    assert!(registry.advance_generation(1).is_err());
+    let new = scope
+        .check(&req, 2, &dns)
+        .authorization
+        .ok_or("missing new")?;
+    assert!(scope.consume_request(&req, &new, &owner(), 2));
+    Ok(())
+}
+#[test]
+fn sensitive_content_representation_controls_and_duplicate_codings()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut registry = EgressPolicyRegistry::with_clock(Arc::new(Clock));
+    let mut config = policy();
+    config.privacy = PrivacyMode::Sensitive;
+    let id = registry.register(config)?;
+    let scope = registry.get_owned(&id)?;
+    let mut req = request(id);
+    req.url = "https://example.com:8443/path".into();
+    let dns = Dns {
+        calls: AtomicUsize::new(0),
+        answers: vec!["8.8.8.8".parse()?],
+    };
+    for (media, body) in [
+        ("text/plain; charset=\"UTF-8\"", "ordinary"),
+        ("application/json; charset=utf-8", "{\"value\":42}"),
+        (
+            "application/x-www-form-urlencoded",
+            "flag&message=ordinary+content",
+        ),
+    ] {
+        req.headers = vec![
+            tinysecurity_bus::EgressHeader {
+                name: "Content-Type".into(),
+                value: media.into(),
+            },
+            tinysecurity_bus::EgressHeader {
+                name: "Content-Encoding".into(),
+                value: "Identity".into(),
+            },
+        ];
+        req.payload = body.into();
+        assert_eq!(scope.check(&req, 1, &dns).denial, None);
+    }
+    for headers in [
+        vec![
+            ("Content-Encoding", "identity"),
+            ("content-encoding", "identity"),
+        ],
+        vec![("Content-Type", "text/plain; charset=utf-8; charset=utf-8")],
+        vec![("Content-Type", "text/plain; boundary=x")],
+        vec![("Content-Type", "text/plain; broken")],
+    ] {
+        req.headers = headers
+            .into_iter()
+            .map(|(name, value)| tinysecurity_bus::EgressHeader {
+                name: name.into(),
+                value: value.into(),
+            })
+            .collect();
+        assert_eq!(
+            scope.check(&req, 1, &dns).denial,
+            Some(EgressDenial::Privacy)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn every_address_floor_class_denies_all_mixed_dns_orders()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut registry = EgressPolicyRegistry::with_clock(Arc::new(Clock));
+    let id = registry.register(policy())?;
+    let scope = registry.get_owned(&id)?;
+    for forbidden in [
+        "0.0.0.0",
+        "10.0.0.1",
+        "172.16.0.1",
+        "192.168.0.1",
+        "127.0.0.1",
+        "169.254.169.254",
+        "100.64.0.0",
+        "100.127.255.255",
+        "224.0.0.1",
+        "240.0.0.1",
+        "192.0.0.1",
+        "192.0.2.1",
+        "192.88.99.1",
+        "198.18.0.1",
+        "198.19.255.255",
+        "198.51.100.1",
+        "203.0.113.1",
+        "::",
+        "::1",
+        "fe80::1",
+        "fc00::1",
+        "fd00::1",
+        "ff02::1",
+        "::ffff:10.0.0.1",
+        "64:ff9b::a00:1",
+        "64:ff9b:1::1",
+        "2002:a00:1::1",
+        "2001:0:808:808:0:0:f5ff:fffe",
+        "2001:db8::1",
+        "2001:2::1",
+        "100::1",
+        "100:0:0:1::1",
+        "3fff::1",
+        "5f00::1",
+        "fec0::1",
+    ] {
+        for answers in [
+            vec!["8.8.8.8", forbidden],
+            vec![forbidden, "2606:4700:4700::1111"],
+        ] {
+            let dns = Dns {
+                calls: AtomicUsize::new(0),
+                answers: answers
+                    .into_iter()
+                    .map(str::parse)
+                    .collect::<std::result::Result<_, _>>()?,
+            };
+            assert_eq!(
+                scope.check(&request(id.clone()), 1, &dns).denial,
+                Some(EgressDenial::Address),
+                "{forbidden}"
+            );
+        }
+    }
     Ok(())
 }
