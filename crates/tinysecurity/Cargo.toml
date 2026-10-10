@@ -11,6 +11,8 @@ categories = ["authentication"]
 publish = false
 
 [dependencies]
+# Ordered sanitized durable audit engine, never host-linked.
+tinysecurity-audit.workspace = true
 # Native scoped network policy, never host-linked.
 tinysecurity-egress.workspace = true
 # Native redaction/scanning shares policy activation, never host linkage.

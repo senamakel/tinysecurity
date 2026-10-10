@@ -4,3 +4,5 @@ pub use tinysecurity_policy::*;
 pub use tinysecurity_redact::Redactor;
 
 pub use tinysecurity_egress::*;
+
+pub use tinysecurity_audit as audit;

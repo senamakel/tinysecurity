@@ -67,3 +67,159 @@ impl<T: Interface> Interface for Authenticated<T> {
         self.inner.call(member, args).await
     }
 }
+
+/// Exact audit forwarding; scope derives only from trusted immutable SDK config.
+pub(crate) struct AuditClient {
+    connection: tinybus::Connection,
+    binding: PeerBinding,
+    config: tinysecurity_bus::AuditConfig2,
+    redactor: std::sync::RwLock<tinysecurity::Redactor>,
+    native: Option<std::sync::Arc<tinysecurity::audit::JsonlSink>>,
+}
+impl std::fmt::Debug for AuditClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AuditClient([REDACTED])")
+    }
+}
+impl AuditClient {
+    pub(crate) fn new(
+        connection: tinybus::Connection,
+        binding: PeerBinding,
+        config: tinysecurity_bus::AuditConfig2,
+        redactor: tinysecurity::Redactor,
+    ) -> Result<Self> {
+        if binding.0.is_none()
+            || config.timeout_ms == 0
+            || config.timeout_ms > 30_000
+            || config.stream_id.len() != 32
+            || !config
+                .stream_id
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(tinybus::Error::failed("invalid audit initialization"));
+        }
+        let native = config
+            .native_path
+            .as_ref()
+            .map(|path| {
+                tinysecurity::audit::JsonlSink::with_redactor(
+                    std::path::Path::new(path),
+                    config.max_bytes,
+                    config.max_archives,
+                    redactor.clone(),
+                )
+                .map(std::sync::Arc::new)
+            })
+            .transpose()
+            .map_err(|_| tinybus::Error::failed("unavailable restricted audit storage"))?;
+        Ok(Self {
+            connection,
+            binding,
+            config,
+            redactor: std::sync::RwLock::new(redactor),
+            native,
+        })
+    }
+    fn registry(&self) -> Result<tinysecurity::Redactor> {
+        self.redactor
+            .read()
+            .map(|registry| registry.clone())
+            .map_err(|_| tinybus::Error::failed("audit registry unavailable"))
+    }
+    pub(crate) fn verify_reinit(
+        &self,
+        config: Option<&tinysecurity_bus::AuditConfig2>,
+    ) -> Result<()> {
+        if config.is_some_and(|config| config != &self.config) {
+            return Err(tinybus::Error::failed("immutable audit initialization"));
+        }
+        Ok(())
+    }
+    pub(crate) fn replace_registry(&self, registry: tinysecurity::Redactor) -> Result<()> {
+        *self
+            .redactor
+            .write()
+            .map_err(|_| tinybus::Error::failed("audit registry unavailable"))? = registry;
+        Ok(())
+    }
+    pub(crate) async fn append(
+        &self,
+        batch: tinysecurity_bus::AuditSinkRequest2,
+    ) -> tinysecurity_bus::AuditResponse2 {
+        use tinysecurity_bus::{AuditHealth2, AuditResponse2};
+        let clean = self.registry().and_then(|registry| {
+            tinysecurity::audit::sanitize(&batch, &registry)
+                .map_err(|_| tinybus::Error::failed("audit sanitation failed"))
+        });
+        if batch.scope != self.config.scope
+            || batch.stream_id != self.config.stream_id
+            || clean.is_err()
+        {
+            return AuditResponse2 {
+                permitted: false,
+                committed: false,
+                health: AuditHealth2::Denied,
+                receipt: None,
+            };
+        }
+        let result = match clean {
+            Ok(clean) => self.append_exact(clean).await,
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(receipt) => AuditResponse2 {
+                permitted: true,
+                committed: true,
+                health: AuditHealth2::Healthy,
+                receipt: Some(receipt),
+            },
+            Err(_) => AuditResponse2 {
+                permitted: !self.config.required,
+                committed: false,
+                health: if self.config.required {
+                    AuditHealth2::Denied
+                } else {
+                    AuditHealth2::Degraded
+                },
+                receipt: None,
+            },
+        }
+    }
+    async fn append_exact(
+        &self,
+        batch: tinysecurity_bus::AuditSinkRequest2,
+    ) -> Result<tinysecurity_bus::AuditSinkResponse2> {
+        use tinysecurity_bus::callback_names2 as names;
+        let clean = batch;
+        let receipt = if let Some(native) = &self.native {
+            let sink = std::sync::Arc::clone(native);
+            let request = clean.clone();
+            tokio::task::spawn_blocking(move || sink.append(&request))
+                .await
+                .map_err(|_| tinybus::Error::failed("audit worker unavailable"))?
+                .map_err(|_| tinybus::Error::failed("audit storage unavailable"))?
+        } else {
+            let peer = self
+                .binding
+                .0
+                .as_ref()
+                .ok_or_else(|| tinybus::Error::failed("audit authority unavailable"))?;
+            // Fixed unique destination: replacement of a well-known name grants no authority.
+            self.connection
+                .proxy(peer.as_str(), names::OBJECT_PATH, names::AUDIT_SINK)?
+                .with_timeout(std::time::Duration::from_millis(u64::from(
+                    self.config.timeout_ms,
+                )))
+                .call(names::APPEND, (clean.clone(),))
+                .await?
+        };
+        clean
+            .verify_receipt(&receipt)
+            .map_err(|_| tinybus::Error::failed("invalid exact audit receipt"))?;
+        Ok(receipt)
+    }
+}
+#[cfg(test)]
+#[path = "callbacks_tests.rs"]
+mod tests;

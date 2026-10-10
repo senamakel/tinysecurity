@@ -9,11 +9,13 @@ use tinysecurity_bus::{
 static PATH_SCOPES: OnceLock<Arc<Mutex<PathPolicyRegistry>>> = OnceLock::new();
 static COMMAND_SCOPES: OnceLock<Arc<Mutex<CommandPolicyRegistry>>> = OnceLock::new();
 static EGRESS_SCOPES: OnceLock<Arc<Mutex<EgressPolicyRegistry>>> = OnceLock::new();
+static AUDIT_CLIENT: OnceLock<Option<Arc<crate::callbacks::AuditClient>>> = OnceLock::new();
 static HOST_BINDING: OnceLock<crate::callbacks::PeerBinding> = OnceLock::new();
 static ACTIVE: OnceLock<Arc<RwLock<Policy>>> = OnceLock::new();
 #[derive(Clone)]
 struct PolicyService {
     policy: Arc<RwLock<Policy>>,
+    audit: Option<Arc<crate::callbacks::AuditClient>>,
     paths: Arc<Mutex<PathPolicyRegistry>>,
     commands: Arc<Mutex<CommandPolicyRegistry>>,
     egress: Arc<Mutex<EgressPolicyRegistry>>,
@@ -345,14 +347,43 @@ impl PolicyService {
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
     }
 
+    async fn audit2(
+        &self,
+        request: tinysecurity_bus::AuditSinkRequest2,
+    ) -> BusResult<tinysecurity_bus::AuditResponse2> {
+        let client = self
+            .audit
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("audit unavailable"))?;
+        Ok(client.append(request).await)
+    }
     async fn policy_info(&self) -> BusResult<PolicyInfo> {
         let info = { self.read()?.info() };
         std::future::ready(Ok(info)).await
     }
 }
+fn service_for(
+    policy: Arc<RwLock<Policy>>,
+    audit: Option<Arc<crate::callbacks::AuditClient>>,
+) -> PolicyService {
+    PolicyService {
+        policy,
+        audit,
+        egress: Arc::clone(
+            EGRESS_SCOPES.get_or_init(|| Arc::new(Mutex::new(EgressPolicyRegistry::default()))),
+        ),
+        commands: Arc::clone(
+            COMMAND_SCOPES.get_or_init(|| Arc::new(Mutex::new(CommandPolicyRegistry::default()))),
+        ),
+        paths: Arc::clone(
+            PATH_SCOPES.get_or_init(|| Arc::new(Mutex::new(PathPolicyRegistry::default()))),
+        ),
+    }
+}
 async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
     // Validate before activation. The SDK serializes reinitializations and
     // preserves a fault latch; this adapter never provides retry RPCs.
+    let audit_config = config.audit.clone();
     let requested_host = config.trusted_host.as_deref();
     let binding = if let Some(binding) = HOST_BINDING.get() {
         binding.verify_reinit(requested_host)?;
@@ -381,6 +412,26 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
     })
     .await
     .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
+    let audit = if let Some(active) = AUDIT_CLIENT.get() {
+        if let Some(client) = active {
+            client.verify_reinit(audit_config.as_ref())?;
+        } else if audit_config.is_some() {
+            return Err(tinybus::Error::failed("immutable audit initialization"));
+        }
+        active.clone()
+    } else {
+        audit_config
+            .map(|config| {
+                crate::callbacks::AuditClient::new(
+                    connection.clone(),
+                    binding.clone(),
+                    config,
+                    candidate.redactor(),
+                )
+                .map(Arc::new)
+            })
+            .transpose()?
+    };
     if let Some(active) = ACTIVE.get() {
         let mut guard = active
             .write()
@@ -404,6 +455,9 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
             .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
             .advance_generation(candidate.info().generation)
             .map_err(|error| failure(&error))?;
+        if let Some(client) = &audit {
+            client.replace_registry(candidate.redactor())?;
+        }
         *guard = candidate;
         return Ok(());
     }
@@ -412,26 +466,15 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
         .serve_at(
             names::OBJECT_PATH.try_into()?,
             crate::callbacks::Authenticated::new(
-                PolicyService {
-                    policy: Arc::clone(&policy),
-                    egress: Arc::clone(
-                        EGRESS_SCOPES
-                            .get_or_init(|| Arc::new(Mutex::new(EgressPolicyRegistry::default()))),
-                    ),
-                    commands: Arc::clone(
-                        COMMAND_SCOPES
-                            .get_or_init(|| Arc::new(Mutex::new(CommandPolicyRegistry::default()))),
-                    ),
-                    paths: Arc::clone(
-                        PATH_SCOPES
-                            .get_or_init(|| Arc::new(Mutex::new(PathPolicyRegistry::default()))),
-                    ),
-                },
+                service_for(Arc::clone(&policy), audit.clone()),
                 binding.clone(),
             ),
         )
         .await?;
     connection.request_name(names::INTERFACE).await?;
+    AUDIT_CLIENT
+        .set(audit)
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
     HOST_BINDING
         .set(binding)
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
@@ -445,7 +488,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["Evaluate", "Check", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
+    methods = ["Audit2", "Evaluate", "Check", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = [],

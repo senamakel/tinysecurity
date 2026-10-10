@@ -25,6 +25,8 @@ license = "GPL-3.0-only"
 repository = "https://github.com/tinyhumansai/tinysecurity"
 
 [workspace.dependencies]
+# Native audit engine remains internal to the module.
+tinysecurity-audit = { path = "crates/tinysecurity-audit" }
 # The wire contract. `crates/tinysecurity-module` depends on it and re-exports it, so a
 # host that only makes calls takes this crate alone.
 # No `version` requirement on purpose: the workspace version moves on every

@@ -1,0 +1,33 @@
+[package]
+name = "tinysecurity-audit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+[dependencies]
+tinysecurity-bus.workspace = true
+tinysecurity-redact.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# Maintained safe OS locks on one stable sibling file across rotation.
+fs4 = { version = "1", default-features = false, features = ["sync"] }
+# Opaque retry identities, never derived from secrets.
+getrandom.workspace = true
+[target.'cfg(unix)'.dependencies]
+# Safe fd-relative nofollow creation, ownership checks and rename under a pinned directory.
+rustix = { version = "1", default-features = false, features = ["fs", "process", "std"] }
+[dev-dependencies]
+tempfile.workspace = true
+[lints]
+workspace = true
+
+[features]
+# Real subprocess fixture, built explicitly in the native CI lane.
+native-fixture = []
+
+[[bin]]
+name = "audit-process-fixture"
+path = "fixtures/audit_process.rs"
+required-features = ["native-fixture"]

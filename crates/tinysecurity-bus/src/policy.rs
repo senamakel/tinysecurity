@@ -234,6 +234,9 @@ pub struct ModuleConfig {
     /// Absent legacy initialization remains load-compatible but cannot invoke privileged members.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trusted_host: Option<String>,
+    /// Init-only ordered audit configuration; absent preserves legacy wire shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit: Option<crate::AuditConfig2>,
 }
 impl Default for ModuleConfig {
     fn default() -> Self {
@@ -243,6 +246,7 @@ impl Default for ModuleConfig {
             judge: None,
             redactor: crate::RedactorConfig::default(),
             trusted_host: None,
+            audit: None,
         }
     }
 }

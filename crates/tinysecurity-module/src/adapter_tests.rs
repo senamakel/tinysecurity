@@ -7,6 +7,7 @@ use tinysecurity_bus::*;
 fn only_implemented_members_are_advertised() -> std::result::Result<(), Box<dyn std::error::Error>>
 {
     let service = PolicyService {
+        audit: None,
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
@@ -33,6 +34,7 @@ async fn native_dispatch_rejects_malformed_args_and_serves_ordered_checks()
         .serve_at(
             names::OBJECT_PATH.try_into()?,
             PolicyService {
+                audit: None,
                 policy: Arc::new(RwLock::new(Policy::new(review_regression_config())?)),
                 paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
                 commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
@@ -110,25 +112,9 @@ async fn native_dispatch_rejects_malformed_args_and_serves_ordered_checks()
     task.abort();
     Ok(())
 }
-#[tokio::test]
-async fn sdk_setup_accepts_generation_and_rejects_invalid_reinit()
--> std::result::Result<(), Box<dyn std::error::Error>> {
-    let bus = MemoryBus::new();
-    let task = Broker::new().spawn(bus.clone());
-    let server = Connection::connect(bus.connect().await?).await?;
-    let client = Connection::connect(bus.connect().await?).await?;
-    setup(
-        server.clone(),
-        ModuleConfig {
-            trusted_host: client.unique_name().map(|peer| peer.to_string()),
-            redactor: RedactorConfig {
-                secrets: vec![Secret("literal-reinit-private".into())],
-            },
-            ..Default::default()
-        },
-    )
-    .await?;
-    let proxy = client.proxy(names::INTERFACE, names::OBJECT_PATH, names::INTERFACE)?;
+async fn verify_untrusted_peer_denied(
+    bus: &MemoryBus,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let malicious = Connection::connect(bus.connect().await?).await?;
     let forged = malicious.proxy(names::INTERFACE, names::OBJECT_PATH, names::INTERFACE)?;
     let attempt = forged
@@ -149,6 +135,28 @@ async fn sdk_setup_accepts_generation_and_rejects_invalid_reinit()
         attempt.is_err(),
         "serialized host claims from a second bus peer must not authorize checks"
     );
+    Ok(())
+}
+#[tokio::test]
+async fn sdk_setup_accepts_generation_and_rejects_invalid_reinit()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let task = Broker::new().spawn(bus.clone());
+    let server = Connection::connect(bus.connect().await?).await?;
+    let client = Connection::connect(bus.connect().await?).await?;
+    setup(
+        server.clone(),
+        ModuleConfig {
+            trusted_host: client.unique_name().map(|peer| peer.to_string()),
+            redactor: RedactorConfig {
+                secrets: vec![Secret("literal-reinit-private".into())],
+            },
+            ..Default::default()
+        },
+    )
+    .await?;
+    let proxy = client.proxy(names::INTERFACE, names::OBJECT_PATH, names::INTERFACE)?;
+    verify_untrusted_peer_denied(&bus).await?;
     verify_invalid_registry_retains_redaction(&server, &proxy).await?;
     let (retained_egress, stale_egress) = issue_reinit_egress_grants(&proxy).await?;
     let before: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
@@ -355,6 +363,7 @@ async fn blocked_filesystem_query_does_not_block_policy_info_or_another_scope()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let service = PolicyService {
+        audit: None,
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
@@ -422,6 +431,7 @@ async fn blocked_registration_does_not_block_policy_info_or_another_scope()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let service = PolicyService {
+        audit: None,
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
@@ -819,6 +829,7 @@ async fn native_egress_dispatch_binds_scope_and_denies_legacy_or_generic_local_c
         .serve_at(
             names::OBJECT_PATH.try_into()?,
             PolicyService {
+                audit: None,
                 policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
                 paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
                 commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
@@ -952,6 +963,7 @@ async fn assert_legacy_egress_is_denied(
 async fn consumption_work_runs_off_the_sole_sdk_worker_without_registry_locks()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let service = PolicyService {
+        audit: None,
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),

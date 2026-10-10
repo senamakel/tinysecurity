@@ -57,6 +57,8 @@ pub mod methods {
     pub const URL_GUARD: &str = "UrlGuard";
     /// Plan member.
     pub const PLAN: &str = "Plan";
+    /// Exact durable version-two audit member.
+    pub const AUDIT2: &str = "Audit2";
     /// Audit member.
     pub const AUDIT: &str = "Audit";
 }
@@ -80,6 +82,7 @@ pub const METHODS: &[&str] = &[
     methods::REDACT,
     methods::SCAN_PROMPT,
     methods::SCAN_TOOL_DEFINITION,
+    methods::AUDIT2,
     methods::POLICY_INFO,
 ];
 /// Accepted policy activation event.
