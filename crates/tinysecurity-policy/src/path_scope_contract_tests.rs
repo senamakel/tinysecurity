@@ -185,3 +185,88 @@ fn missing_forbidden_roots_resolve_through_existing_symlink_ancestors()
     assert!(!scope.string_allowed(&target.to_string_lossy()));
     Ok(())
 }
+
+#[test]
+fn windows_stream_aliases_match_reserved_base_filename() {
+    assert_eq!(
+        windows_denial_fold(".env:payload"),
+        windows_denial_fold(".env")
+    );
+    assert_eq!(
+        windows_denial_fold(".env. :payload"),
+        windows_denial_fold(".env")
+    );
+}
+
+#[test]
+fn windows_nonabsolute_inputs_that_can_replace_join_base_are_ambiguous() {
+    for value in ["\\workspace\\secret", "/workspace/secret", "D:secret", "c:"] {
+        assert!(windows_ambiguous_relative(value));
+    }
+    for value in ["secret", ".\\secret", "nested/secret"] {
+        assert!(!windows_ambiguous_relative(value));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_ambiguous_roots_and_reserved_streams_are_denied()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let mut policy = scope(root.path())?.policy().clone();
+    policy.enabled = true;
+    policy.workspace_only = true;
+    policy.action_dir = root.path().join("acting");
+    std::fs::create_dir(&policy.action_dir)?;
+    policy.reserved_names = vec![".env".into()];
+    policy.readonly_paths = vec![policy.action_dir.join("outputs")];
+    let scope = PathScope::registered(policy);
+    for path in ["\\workspace\\secret", "D:secret"] {
+        assert!(!scope.string_allowed(path));
+        assert_eq!(
+            scope.validate(path, true),
+            PathValidationResult::Denied {
+                category: Rejection::InvalidPath
+            }
+        );
+    }
+    for path in [".env:payload", ".\\.env:payload", ".env. :payload"] {
+        assert!(!scope.string_allowed(path));
+        // NTFS stream support depends on the fixture volume. Unsupported
+        // stream spellings can also fail filesystem resolution, still denied.
+        assert!(matches!(
+            scope.validate(path, true),
+            PathValidationResult::Denied { .. }
+        ));
+    }
+    assert!(matches!(
+        scope.validate("outputs. :payload", true),
+        PathValidationResult::Denied { .. }
+    ));
+    assert!(protected_path(Path::new(".ssh:payload")));
+    assert!(protected_path(Path::new(".ssh. :payload")));
+    Ok(())
+}
+
+#[test]
+fn windows_denial_folding_preserves_drive_prefix_components() {
+    assert_eq!(windows_denial_fold("C:"), "C:");
+    assert_ne!(windows_denial_fold("C:"), windows_denial_fold("C"));
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_colon_filename_is_not_a_windows_stream_alias() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let mut policy = scope(root.path())?.policy().clone();
+    policy.reserved_names = vec![".env".into()];
+    let scope = PathScope::registered(policy);
+    assert!(scope.string_allowed(".env:payload"));
+    assert_eq!(
+        scope.validate(".env:payload", true),
+        PathValidationResult::Allowed {
+            resolved: root.path().canonicalize()?.join(".env:payload")
+        }
+    );
+    Ok(())
+}

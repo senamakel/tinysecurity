@@ -98,7 +98,35 @@ fn denial_fold(value: &str) -> String {
 }
 #[cfg(any(windows, test))]
 fn windows_denial_fold(value: &str) -> String {
-    denial_fold(value.trim_end_matches(['.', ' ']))
+    // Prefix components are not filenames (C: and extended/UNC prefixes).
+    if (value.len() == 2 && value.as_bytes()[0].is_ascii_alphabetic() && value.ends_with(':'))
+        || value.starts_with('\\')
+    {
+        return denial_fold(value);
+    }
+    denial_fold(
+        value
+            .split(':')
+            .next()
+            .unwrap_or(value)
+            .trim_end_matches(['.', ' ']),
+    )
+}
+#[cfg(any(windows, test))]
+fn windows_ambiguous_relative(value: &str) -> bool {
+    value.starts_with(['/', '\\'])
+        || (value.as_bytes().get(1) == Some(&b':') && value.as_bytes()[0].is_ascii_alphabetic())
+}
+fn ambiguous_native(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        !path.is_absolute() && windows_ambiguous_relative(&path.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        false
+    }
 }
 fn deny_component_eq(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> bool {
     #[cfg(windows)]
@@ -263,7 +291,7 @@ impl PathScope {
             return false;
         }
         let expanded = expand(self, input);
-        if protected_path(&expanded) {
+        if ambiguous_native(&expanded) || protected_path(&expanded) {
             return false;
         }
         if !expanded.is_absolute()
@@ -321,7 +349,10 @@ impl PathScope {
         }
     }
     fn validate_inner(&self, input: &str, write: bool) -> std::result::Result<PathBuf, Rejection> {
-        if input.is_empty() || (write && expand(self, input).file_name().is_none()) {
+        if input.is_empty()
+            || ambiguous_native(&expand(self, input))
+            || (write && expand(self, input).file_name().is_none())
+        {
             return Err(Rejection::InvalidPath);
         }
         if protected_path(&expand(self, input)) {

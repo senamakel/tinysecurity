@@ -86,3 +86,9 @@ Authorization returns a resolved path, not an opened file or directory handle.
 Filesystem changes after the response can race with the host's subsequent I/O.
 Hosts requiring atomic containment must use directory handles/no-follow I/O or
 an execution sandbox; this policy module does not perform the file operation.
+
+Windows action-relative requests reject drive-relative or root-relative forms
+before joining the action directory. Denial filename comparisons include NTFS
+stream aliases (split the stream suffix, then trim dots/spaces), while drive and
+UNC prefix components stay intact. Exact grants remain unchanged, and Unix
+colon filenames do not acquire Windows stream semantics.
