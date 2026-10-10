@@ -799,6 +799,7 @@ version = "0.2.3"
 dependencies = [
  "serde_json",
  "tinysecurity-bus",
+ "tinysecurity-egress",
  "tinysecurity-policy",
  "tinysecurity-redact",
 ]
@@ -810,6 +811,20 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "tinysecurity-egress"
+version = "0.2.3"
+dependencies = [
+ "getrandom 0.3.4",
+ "percent-encoding",
+ "rustls",
+ "serde_json",
+ "sha2",
+ "tinysecurity-bus",
+ "tinysecurity-redact",
+ "url",
 ]
 
 [[package]]

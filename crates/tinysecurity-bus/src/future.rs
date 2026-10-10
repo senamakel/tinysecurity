@@ -42,17 +42,7 @@ pub enum ReplyVerdict {
     /// Unrecognized state.
     Unrecognized,
 }
-/// `PrivacyMode` vocabulary, reserved until its engine is implemented.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PrivacyMode {
-    /// `LocalOnly` state.
-    LocalOnly,
-    /// Standard state.
-    Standard,
-    /// Sensitive state.
-    Sensitive,
-}
+
 /// `SourceTrust` vocabulary, reserved until its engine is implemented.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -228,46 +218,7 @@ pub struct ParseReplyResponse {
     /// Parsed intent, not permission by itself.
     pub verdict: ReplyVerdict,
 }
-/// `EgressCheckRequest` payload, reserved until its engine is implemented.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EgressCheckRequest {
-    /// Verified origin.
-    pub caller: CallerContext,
-    /// Configured privacy policy.
-    pub privacy: PrivacyMode,
-    /// Outgoing data categories.
-    pub descriptor: DataDescriptor,
-    /// Destination URL.
-    pub destination: String,
-}
-/// `EgressCheckResponse` payload, reserved until its engine is implemented.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EgressCheckResponse {
-    /// Permission over the supplied data and destination.
-    pub decision: Decision,
-}
-/// `UrlGuardRequest` payload, reserved until its engine is implemented.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UrlGuardRequest {
-    /// URL to resolve.
-    pub url: String,
-    /// Previous hop for redirect checks.
-    pub redirect_from: Option<String>,
-}
-/// `UrlGuardResponse` payload, reserved until its engine is implemented.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UrlGuardResponse {
-    /// Authorization result.
-    pub decision: Decision,
-    /// TLS verification hostname.
-    pub hostname: String,
-    /// Addresses the transport MUST pin; this response alone is not rebinding protection.
-    pub approved_addresses: Vec<String>,
-}
+
 /// `SandboxPlanRequest` payload, reserved until its engine is implemented.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -320,17 +271,7 @@ pub struct ResourceLimits {
     /// Process count ceiling.
     pub processes: u32,
 }
-/// `DataDescriptor` payload, reserved until its engine is implemented.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DataDescriptor {
-    /// Whether credentials are present.
-    pub contains_credentials: bool,
-    /// Whether personal identifiers are present.
-    pub contains_personal_data: bool,
-    /// Whether data must stay local.
-    pub local_only: bool,
-}
+
 /// `AuditRequest` payload, reserved until its engine is implemented.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

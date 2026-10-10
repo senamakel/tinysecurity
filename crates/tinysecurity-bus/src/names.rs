@@ -25,6 +25,14 @@ pub mod methods {
     pub const CLASSIFY_COMMAND: &str = "ClassifyCommand";
     /// Noncacheable execution check and atomic action reservation.
     pub const CHECK_COMMAND: &str = "CheckCommand";
+    /// Register immutable host-only destination and data policy.
+    pub const REGISTER_EGRESS_POLICY: &str = "RegisterEgressPolicy";
+    /// Owner-bound pinned destination authorization.
+    pub const SCOPED_URL_GUARD: &str = "ScopedUrlGuard";
+    /// Original-payload privacy and pinned destination authorization.
+    pub const SCOPED_EGRESS_CHECK: &str = "ScopedEgressCheck";
+    /// Consume an exact live grant once before sending.
+    pub const CONSUME_EGRESS_AUTHORIZATION: &str = "ConsumeEgressAuthorization";
     /// Decide member.
     pub const DECIDE: &str = "Decide";
     /// `ListPending` member.
@@ -63,6 +71,12 @@ pub const METHODS: &[&str] = &[
     methods::REGISTER_COMMAND_POLICY,
     methods::CLASSIFY_COMMAND,
     methods::CHECK_COMMAND,
+    methods::REGISTER_EGRESS_POLICY,
+    methods::SCOPED_URL_GUARD,
+    methods::SCOPED_EGRESS_CHECK,
+    methods::CONSUME_EGRESS_AUTHORIZATION,
+    methods::URL_GUARD,
+    methods::EGRESS_CHECK,
     methods::REDACT,
     methods::SCAN_PROMPT,
     methods::SCAN_TOOL_DEFINITION,

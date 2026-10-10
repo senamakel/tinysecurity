@@ -10,6 +10,7 @@ fn only_implemented_members_are_advertised() -> std::result::Result<(), Box<dyn 
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
+        egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
     };
     assert_eq!(service.name().as_str(), names::INTERFACE);
     assert_eq!(
@@ -35,6 +36,7 @@ async fn native_dispatch_rejects_malformed_args_and_serves_ordered_checks()
                 policy: Arc::new(RwLock::new(Policy::new(review_regression_config())?)),
                 paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
                 commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
+                egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
             },
         )
         .await?;
@@ -341,6 +343,7 @@ async fn blocked_filesystem_query_does_not_block_policy_info_or_another_scope()
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
+        egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
     };
     let bus = MemoryBus::new();
     let broker = Broker::new().spawn(bus.clone());
@@ -407,6 +410,7 @@ async fn blocked_registration_does_not_block_policy_info_or_another_scope()
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
+        egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
     };
     let bus = MemoryBus::new();
     let broker = Broker::new().spawn(bus.clone());
@@ -788,5 +792,142 @@ async fn verify_direct_credential_transfers(
         );
         assert!(!decision.cacheable);
     }
+    Ok(())
+}
+#[tokio::test]
+async fn native_egress_dispatch_binds_scope_and_denies_legacy_or_generic_local_calls()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let task = Broker::new().spawn(bus.clone());
+    let server = Connection::connect(bus.connect().await?).await?;
+    server
+        .serve_at(
+            names::OBJECT_PATH.try_into()?,
+            PolicyService {
+                policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
+                paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
+                commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
+                egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+            },
+        )
+        .await?;
+    server.request_name(names::INTERFACE).await?;
+    let client = Connection::connect(bus.connect().await?).await?;
+    let proxy = client.proxy(names::INTERFACE, names::OBJECT_PATH, names::INTERFACE)?;
+    let subject = SubjectScope {
+        user: "user".into(),
+        workspace: "workspace".into(),
+        agent: "agent".into(),
+    };
+    let policy = EgressPolicy {
+        owner: subject.clone(),
+        ceiling: AccessTier::Full,
+        privacy: PrivacyMode::LocalOnly,
+        destinations: vec![],
+        data_categories: vec![DataCategory::HostMetadata],
+        local_capabilities: vec![LocalEgressCapability {
+            origin: "http://127.0.0.1:11434".into(),
+            path: "/health".into(),
+            category: DataCategory::HostMetadata,
+        }],
+        validity_ms: 30000,
+    };
+    let id: EgressPolicyId = proxy
+        .call(names::methods::REGISTER_EGRESS_POLICY, (policy,))
+        .await?;
+    let request = ScopedEgressRequest {
+        policy_id: id,
+        subject: subject.clone(),
+        tier: AccessTier::Full,
+        url: "http://127.0.0.1:11434/health".into(),
+        method: "GET".into(),
+        category: DataCategory::HostMetadata,
+        payload: "health".into(),
+        headers: vec![],
+        transport: EgressTransport::PinnedDirect,
+        local_capability: Some(0),
+        transformation: None,
+    };
+    let generic: ScopedEgressResponse = proxy
+        .call(names::methods::SCOPED_URL_GUARD, (request.clone(),))
+        .await?;
+    assert_eq!(generic.denial, Some(EgressDenial::Address));
+    let trusted: ScopedEgressResponse = proxy
+        .call(names::methods::SCOPED_EGRESS_CHECK, (request.clone(),))
+        .await?;
+    assert_eq!(trusted.denial, None);
+    let consume = ConsumeEgressAuthorizationRequest {
+        request: request.clone(),
+        subject,
+        authorization: trusted
+            .authorization
+            .ok_or("missing local capability grant")?,
+    };
+    assert!(
+        proxy
+            .call::<bool>(
+                names::methods::CONSUME_EGRESS_AUTHORIZATION,
+                (consume.clone(),)
+            )
+            .await?
+    );
+    assert!(
+        !proxy
+            .call::<bool>(names::methods::CONSUME_EGRESS_AUTHORIZATION, (consume,))
+            .await?
+    );
+    assert_legacy_egress_is_denied(&proxy).await?;
+    task.abort();
+    Ok(())
+}
+
+async fn assert_legacy_egress_is_denied(
+    proxy: &tinybus::Proxy,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let legacy: UrlGuardResponse = proxy
+        .call(
+            names::methods::URL_GUARD,
+            (UrlGuardRequest {
+                url: "http://127.0.0.1/".into(),
+                redirect_from: None,
+            },),
+        )
+        .await?;
+    assert!(matches!(
+        legacy.decision.verdict,
+        Verdict::Deny {
+            reason: DenialReason::InvalidContext
+        }
+    ));
+    let legacy: EgressCheckResponse = proxy
+        .call(
+            names::methods::EGRESS_CHECK,
+            (EgressCheckRequest {
+                caller: CallerContext::default(),
+                privacy: PrivacyMode::Standard,
+                descriptor: DataDescriptor {
+                    contains_credentials: false,
+                    contains_personal_data: false,
+                    local_only: false,
+                },
+                destination: "https://example.com".into(),
+            },),
+        )
+        .await?;
+    assert!(matches!(
+        legacy.decision.verdict,
+        Verdict::Deny {
+            reason: DenialReason::InvalidContext
+        }
+    ));
+    assert!(
+        proxy
+            .call::<ScopedEgressResponse>(
+                names::methods::SCOPED_URL_GUARD,
+                (serde_json::json!({"url":"https://example.com","privacy":"standard"}),)
+            )
+            .await
+            .is_err()
+    );
     Ok(())
 }

@@ -33,6 +33,8 @@ repository = "https://github.com/tinyhumansai/tinysecurity"
 tinysecurity-bus = { path = "crates/tinysecurity-bus" }
 # Policy implementation and internal umbrella, never linked by hosts.
 tinysecurity-policy = { path = "crates/tinysecurity-policy" }
+# Private native DNS, destination and privacy engine.
+tinysecurity-egress = { path = "crates/tinysecurity-egress" }
 tinysecurity = { path = "crates/tinysecurity" }
 # Unified bounded native registry, never linked by hosts.
 tinysecurity-redact = { path = "crates/tinysecurity-redact" }

@@ -1,19 +1,21 @@
 //! SDK-configured native policy service, with no lifecycle RPC members.
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use tinybus::{Connection, Result as BusResult};
-use tinysecurity::{CommandPolicyRegistry, PathPolicyRegistry, Policy};
+use tinysecurity::{CommandPolicyRegistry, EgressPolicyRegistry, PathPolicyRegistry, Policy};
 use tinysecurity_bus::{
     CheckRequest, CheckResponse, Decision, EvaluateRequest, ModuleConfig, PolicyInfo, names,
 };
 
 static PATH_SCOPES: OnceLock<Arc<Mutex<PathPolicyRegistry>>> = OnceLock::new();
 static COMMAND_SCOPES: OnceLock<Arc<Mutex<CommandPolicyRegistry>>> = OnceLock::new();
+static EGRESS_SCOPES: OnceLock<Arc<Mutex<EgressPolicyRegistry>>> = OnceLock::new();
 static ACTIVE: OnceLock<Arc<RwLock<Policy>>> = OnceLock::new();
 #[derive(Clone)]
 struct PolicyService {
     policy: Arc<RwLock<Policy>>,
     paths: Arc<Mutex<PathPolicyRegistry>>,
     commands: Arc<Mutex<CommandPolicyRegistry>>,
+    egress: Arc<Mutex<EgressPolicyRegistry>>,
 }
 fn failure(error: &tinysecurity_bus::Error) -> tinybus::Error {
     tinybus::Error::failed(error.to_string())
@@ -163,6 +165,126 @@ impl PolicyService {
             .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
     }
 
+    // Private host-only configuration. SubjectScope is a trusted-adapter claim,
+    // not JSON authentication. Never expose these members to model/public callers.
+    async fn register_egress_policy(
+        &self,
+        policy: tinysecurity_bus::EgressPolicy,
+    ) -> BusResult<tinysecurity_bus::EgressPolicyId> {
+        let registry = Arc::clone(&self.egress);
+        tokio::task::spawn_blocking(move || {
+            registry
+                .lock()
+                .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+                .register(policy)
+                .map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+    }
+    async fn scoped_url_guard(
+        &self,
+        request: tinysecurity_bus::ScopedEgressRequest,
+    ) -> BusResult<tinysecurity_bus::ScopedEgressResponse> {
+        let scope = self
+            .egress
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .get_owned(&request.policy_id)
+            .map_err(|error| failure(&error))?;
+        let (generation, redactor) = {
+            let policy = self.read()?;
+            (policy.info().generation, policy.redactor())
+        };
+        // Drop every state lock before parsing, payload checks and bounded DNS.
+        tokio::task::spawn_blocking(move || {
+            scope.url_guard(
+                &request,
+                generation,
+                &tinysecurity::SystemResolver,
+                &redactor,
+            )
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))
+    }
+    async fn scoped_egress_check(
+        &self,
+        request: tinysecurity_bus::ScopedEgressRequest,
+    ) -> BusResult<tinysecurity_bus::ScopedEgressResponse> {
+        let scope = self
+            .egress
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .get_owned(&request.policy_id)
+            .map_err(|error| failure(&error))?;
+        let (generation, redactor) = {
+            let policy = self.read()?;
+            (policy.info().generation, policy.redactor())
+        };
+        tokio::task::spawn_blocking(move || {
+            scope.check_with_redactor(
+                &request,
+                generation,
+                &tinysecurity::SystemResolver,
+                &redactor,
+            )
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))
+    }
+    async fn consume_egress_authorization(
+        &self,
+        request: tinysecurity_bus::ConsumeEgressAuthorizationRequest,
+    ) -> BusResult<bool> {
+        let scope = self
+            .egress
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .get_owned(&request.authorization.policy_id)
+            .map_err(|error| failure(&error))?;
+        let generation = self.read()?.info().generation;
+        let result = scope.consume_request(
+            &request.request,
+            &request.authorization,
+            &request.subject,
+            generation,
+        );
+        std::future::ready(Ok(result)).await
+    }
+    // Legacy shapes cannot provide immutable scope/owner/transport authority.
+    async fn url_guard(
+        &self,
+        _request: tinysecurity_bus::UrlGuardRequest,
+    ) -> BusResult<tinysecurity_bus::UrlGuardResponse> {
+        let decision = Decision {
+            generation: self.read()?.info().generation,
+            verdict: tinysecurity_bus::Verdict::Deny {
+                reason: tinysecurity_bus::DenialReason::InvalidContext,
+            },
+            cacheable: false,
+        };
+        std::future::ready(Ok(tinysecurity_bus::UrlGuardResponse {
+            decision,
+            hostname: String::new(),
+            approved_addresses: vec![],
+        }))
+        .await
+    }
+    async fn egress_check(
+        &self,
+        _request: tinysecurity_bus::EgressCheckRequest,
+    ) -> BusResult<tinysecurity_bus::EgressCheckResponse> {
+        let decision = Decision {
+            generation: self.read()?.info().generation,
+            verdict: tinysecurity_bus::Verdict::Deny {
+                reason: tinysecurity_bus::DenialReason::InvalidContext,
+            },
+            cacheable: false,
+        };
+        std::future::ready(Ok(tinysecurity_bus::EgressCheckResponse { decision })).await
+    }
+
     async fn redact(
         &self,
         request: tinysecurity_bus::RedactRequest,
@@ -256,6 +378,10 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
             names::OBJECT_PATH.try_into()?,
             PolicyService {
                 policy: Arc::clone(&policy),
+                egress: Arc::clone(
+                    EGRESS_SCOPES
+                        .get_or_init(|| Arc::new(Mutex::new(EgressPolicyRegistry::default()))),
+                ),
                 commands: Arc::clone(
                     COMMAND_SCOPES
                         .get_or_init(|| Arc::new(Mutex::new(CommandPolicyRegistry::default()))),
@@ -277,7 +403,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["Evaluate", "Check", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "Redact", "ScanPrompt", "ScanToolDefinition"],
+    methods = ["Evaluate", "Check", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = [],

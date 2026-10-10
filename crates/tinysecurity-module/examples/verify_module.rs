@@ -16,25 +16,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let broker = Broker::new();
     let task = broker.spawn(bus.clone());
     let host = ModuleHost::new(broker);
-    let config = review_regression_config()?;
-    let info = match args.as_slice() {
-        [path] => {
-            let path = PathBuf::from(path);
-            verify_bad_digests(&path)?;
-            assert!(
-                host.load_file(&path).is_err(),
-                "missing init configuration must reject"
-            );
-            host.load_file_with_config(path, config)?
-        }
-        [url, archive, digest] => host.load_github_release(url, archive, Some(digest), config)?,
-        _ => {
-            return Err(io::Error::other(
-                "usage: verify_module <native-path> OR <release-url> <archive> <sha256>",
-            )
-            .into());
-        }
-    };
+    let info = load_native_module(&host, &args)?;
     if info.name != "tinysecurity-module" {
         return Err(io::Error::other("unexpected module identity").into());
     }
@@ -85,11 +67,26 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .await
             .is_err()
     );
+    let (egress_request, stale_authorization) = verify_native_egress(&proxy).await?;
     verify_native_redaction(&proxy).await?;
     verify_native_review_regressions(&proxy).await?;
     let (path_scope, fixture) = register_native_scope(&proxy).await?;
     let command_scope = register_native_command_scope(&proxy).await?;
     verify_reconfiguration(&host, &proxy, &info.name).await?;
+    let stale = tinysecurity_bus::ConsumeEgressAuthorizationRequest {
+        request: egress_request.clone(),
+        subject: egress_request.subject.clone(),
+        authorization: stale_authorization,
+    };
+    assert!(
+        !proxy
+            .call::<bool>(names::methods::CONSUME_EGRESS_AUTHORIZATION, (stale,))
+            .await?
+    );
+    let fresh: tinysecurity_bus::ScopedEgressResponse = proxy
+        .call(names::methods::SCOPED_URL_GUARD, (egress_request.clone(),))
+        .await?;
+    assert_eq!(fresh.denial, None);
     verify_native_scope(&proxy, path_scope, fixture.path()).await?;
     verify_native_commands(&proxy, command_scope).await?;
     let evaluate = EvaluateRequest {
@@ -101,13 +98,58 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         },
     };
     benchmark(&proxy, &evaluate, &checks).await?;
+    verify_unavailable_egress(&host, &proxy, &info.name, egress_request).await?;
+    task.abort();
+    Ok(())
+}
+
+fn load_native_module(
+    host: &ModuleHost,
+    args: &[String],
+) -> std::result::Result<tinybus::module::ModuleInfo, Box<dyn std::error::Error>> {
+    let config = review_regression_config()?;
+    let info = match args {
+        [path] => {
+            let path = PathBuf::from(path);
+            verify_bad_digests(&path)?;
+            assert!(
+                host.load_file(&path).is_err(),
+                "missing init configuration must reject"
+            );
+            host.load_file_with_config(path, config)?
+        }
+        [url, archive, digest] => host.load_github_release(url, archive, Some(digest), config)?,
+        _ => {
+            return Err(io::Error::other(
+                "usage: verify_module <native-path> OR <release-url> <archive> <sha256>",
+            )
+            .into());
+        }
+    };
+    Ok(info)
+}
+
+async fn verify_unavailable_egress(
+    host: &ModuleHost,
+    proxy: &tinybus::Proxy,
+    module: &str,
+    egress_request: tinysecurity_bus::ScopedEgressRequest,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
     host.shutdown(Duration::from_secs(1)).await;
     assert!(
-        host.reinitialize(&info.name, serde_json::to_value(ModuleConfig::default())?)
+        host.reinitialize(module, serde_json::to_value(ModuleConfig::default())?)
             .await
             .is_err()
     );
-    task.abort();
+    let unavailable = tokio::time::timeout(
+        Duration::from_secs(1),
+        proxy.call::<tinysecurity_bus::ScopedEgressResponse>(
+            names::methods::SCOPED_URL_GUARD,
+            (egress_request,),
+        ),
+    )
+    .await;
+    assert!(!matches!(unavailable, Ok(Ok(_))));
     Ok(())
 }
 
@@ -625,4 +667,139 @@ fn diagnostic_caller() -> CallerContext {
         call_id: "smoke-1".into(),
         ..Default::default()
     }
+}
+
+async fn verify_native_egress(
+    proxy: &tinybus::Proxy,
+) -> std::result::Result<
+    (
+        tinysecurity_bus::ScopedEgressRequest,
+        tinysecurity_bus::TransportAuthorization,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    use tinysecurity_bus::{
+        AccessTier, ConsumeEgressAuthorizationRequest, DataCategory, DestinationRule, EgressDenial,
+        EgressPolicy, EgressPolicyId, EgressTransport, PrivacyMode, ScopedEgressRequest,
+        ScopedEgressResponse, SubjectScope,
+    };
+    let owner = SubjectScope {
+        user: "native-user".into(),
+        workspace: "native-workspace".into(),
+        agent: "native-agent".into(),
+    };
+    let policy = EgressPolicy {
+        owner: owner.clone(),
+        ceiling: AccessTier::Full,
+        privacy: PrivacyMode::Standard,
+        destinations: vec![DestinationRule {
+            scheme: "https".into(),
+            hostname: "8.8.8.8".into(),
+            port: 443,
+            include_subdomains: false,
+        }],
+        data_categories: vec![DataCategory::UserContent],
+        local_capabilities: vec![],
+        validity_ms: 30000,
+    };
+    let id: EgressPolicyId = proxy
+        .call(names::methods::REGISTER_EGRESS_POLICY, (policy.clone(),))
+        .await?;
+    let mut request = ScopedEgressRequest {
+        policy_id: id,
+        subject: owner.clone(),
+        tier: AccessTier::Full,
+        url: "https://8.8.8.8/fixture".into(),
+        method: "POST".into(),
+        category: DataCategory::UserContent,
+        payload: "ordinary content".into(),
+        headers: vec![],
+        transport: EgressTransport::PinnedDirect,
+        local_capability: None,
+        transformation: None,
+    };
+    let response: ScopedEgressResponse = proxy
+        .call(names::methods::SCOPED_URL_GUARD, (request.clone(),))
+        .await?;
+    assert_eq!(response.denial, None);
+    assert!(!response.cacheable);
+    let authorization = response
+        .authorization
+        .ok_or("missing native authorization")?;
+    assert_eq!(authorization.hostname, "8.8.8.8");
+    assert_eq!(authorization.addresses, vec!["8.8.8.8:443".parse()?]);
+    let consume = ConsumeEgressAuthorizationRequest {
+        request: request.clone(),
+        subject: owner,
+        authorization,
+    };
+    assert!(
+        proxy
+            .call::<bool>(
+                names::methods::CONSUME_EGRESS_AUTHORIZATION,
+                (consume.clone(),)
+            )
+            .await?
+    );
+    assert!(
+        !proxy
+            .call::<bool>(names::methods::CONSUME_EGRESS_AUTHORIZATION, (consume,))
+            .await?
+    );
+    let previous: ScopedEgressResponse = proxy
+        .call(names::methods::SCOPED_URL_GUARD, (request.clone(),))
+        .await?;
+    let stale_authorization = previous
+        .authorization
+        .ok_or("missing issued authorization")?;
+    let preserved_request = request.clone();
+    let mut invalid = policy.clone();
+    invalid.destinations[0].hostname = "*.example.com".into();
+    assert!(
+        proxy
+            .call::<EgressPolicyId>(names::methods::REGISTER_EGRESS_POLICY, (invalid,))
+            .await
+            .is_err()
+    );
+    request.subject.user = "other-user".into();
+    let denied: ScopedEgressResponse = proxy
+        .call(names::methods::SCOPED_EGRESS_CHECK, (request.clone(),))
+        .await?;
+    assert_eq!(denied.denial, Some(EgressDenial::Scope));
+    request.subject = policy.owner;
+    request.url = "http://169.254.169.254/".into();
+    let denied: ScopedEgressResponse = proxy
+        .call(names::methods::SCOPED_URL_GUARD, (request,))
+        .await?;
+    assert_eq!(denied.denial, Some(EgressDenial::Address));
+    verify_legacy_egress_denies(proxy).await?;
+    Ok((preserved_request, stale_authorization))
+}
+
+async fn verify_legacy_egress_denies(
+    proxy: &tinybus::Proxy,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tinysecurity_bus::{ScopedEgressResponse, UrlGuardRequest, UrlGuardResponse};
+    let legacy: UrlGuardResponse = proxy
+        .call(
+            names::methods::URL_GUARD,
+            (UrlGuardRequest {
+                url: "https://8.8.8.8/".into(),
+                redirect_from: None,
+            },),
+        )
+        .await?;
+    assert!(matches!(legacy.decision.verdict, Verdict::Deny { .. }));
+    assert_eq!(legacy.hostname, "");
+    assert_eq!(legacy.approved_addresses, Vec::<String>::new());
+    assert!(
+        proxy
+            .call::<ScopedEgressResponse>(
+                names::methods::SCOPED_URL_GUARD,
+                (serde_json::json!({"url":"https://8.8.8.8/","privacy":"standard"}),)
+            )
+            .await
+            .is_err()
+    );
+    Ok(())
 }
