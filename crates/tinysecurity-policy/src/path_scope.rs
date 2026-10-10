@@ -87,7 +87,7 @@ fn canonical_or_original(path: &Path) -> PathBuf {
     resolve_ancestor(path).unwrap_or_else(|_| path.to_path_buf())
 }
 fn within(path: &Path, root: &Path) -> bool {
-    path.starts_with(canonical_or_original(root))
+    resolve_ancestor(root).is_ok_and(|resolved| path.starts_with(resolved))
 }
 // Denial comparisons fold conservatively on Windows/macOS, including normalizing
 // filesystems. Grants and reservation exceptions remain canonical exact matches.
@@ -96,8 +96,17 @@ fn denial_fold(value: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
     value.nfc().collect::<String>().to_uppercase()
 }
+#[cfg(any(windows, test))]
+fn windows_denial_fold(value: &str) -> String {
+    denial_fold(value.trim_end_matches(['.', ' ']))
+}
 fn deny_component_eq(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> bool {
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        windows_denial_fold(&left.to_string_lossy())
+            == windows_denial_fold(&right.to_string_lossy())
+    }
+    #[cfg(target_os = "macos")]
     {
         denial_fold(&left.to_string_lossy()) == denial_fold(&right.to_string_lossy())
     }
@@ -276,7 +285,7 @@ impl PathScope {
             return false;
         }
         if !self.enabled {
-            return resolve_ancestor(&absolute).map_or(true, |resolved| !protected_path(&resolved));
+            return resolve_ancestor(&absolute).is_ok_and(|resolved| !protected_path(&resolved));
         }
         if self.internal(&absolute) {
             return false;
@@ -285,19 +294,20 @@ impl PathScope {
         if self.workspace_only && expanded.is_absolute() && !trusted {
             return false;
         }
-        if let Ok(resolved) = resolve_ancestor(&absolute) {
-            if protected_path(&resolved) || self.internal(&resolved) {
-                return false;
-            }
-            if self.workspace_only
-                && !within(&resolved, &self.workspace_dir)
-                && !self.trusted(&resolved, false)
-            {
-                return false;
-            }
-            if self.forbidden(&resolved, false) {
-                return false;
-            }
+        let Ok(resolved) = resolve_ancestor(&absolute) else {
+            return false;
+        };
+        if protected_path(&resolved) || self.internal(&resolved) {
+            return false;
+        }
+        if self.workspace_only
+            && !within(&resolved, &self.workspace_dir)
+            && !self.trusted(&resolved, false)
+        {
+            return false;
+        }
+        if self.forbidden(&resolved, false) {
+            return false;
         }
         true
     }
@@ -311,14 +321,18 @@ impl PathScope {
         }
     }
     fn validate_inner(&self, input: &str, write: bool) -> std::result::Result<PathBuf, Rejection> {
-        if input.is_empty() {
+        if input.is_empty() || (write && expand(self, input).file_name().is_none()) {
             return Err(Rejection::InvalidPath);
         }
         if protected_path(&expand(self, input)) {
             return Err(Rejection::Protected);
         }
         if !self.string_allowed(input) {
-            return Err(Rejection::PolicyDenied);
+            return Err(if resolve_ancestor(&self.absolute(input)).is_err() {
+                Rejection::Resolution
+            } else {
+                Rejection::PolicyDenied
+            });
         }
         let absolute = self.absolute(input);
         let resolved = if write {

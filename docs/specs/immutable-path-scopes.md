@@ -73,3 +73,16 @@ The real native loader verifier calls every new member and verifies that a scope
 survives an accepted SDK reinitialization. This completes filesystem capability
 migration support; command policy, redaction, approvals, egress, audit and crypto
 remain separate capabilities.
+
+Boolean string queries fail closed if existing-ancestor resolution fails, even
+when configurable policy is disabled. Prospective missing paths remain valid
+when their existing ancestor resolves. Grant/exception comparisons never fall
+back to an unresolvable lexical root. On Windows, denial comparisons also trim
+ordinary Win32 trailing-dot/space component aliases; grants remain exact.
+`ValidateParent` requires an input filename: current-directory-only inputs such
+as `.` and `./` are invalid, while `ValidatePath` can read that directory.
+
+Authorization returns a resolved path, not an opened file or directory handle.
+Filesystem changes after the response can race with the host's subsequent I/O.
+Hosts requiring atomic containment must use directory handles/no-follow I/O or
+an execution sandbox; this policy module does not perform the file operation.
