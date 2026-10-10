@@ -349,14 +349,15 @@ fn aliases_to_protected_roots_keep_the_protected_denial_category()
 fn workspace_inside_broad_forbidden_root_keeps_access_but_nested_forbidden_root_denies()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let workspace = root.path().join("workspace");
+    let canonical_root = root.path().canonicalize()?;
+    let workspace = canonical_root.join("workspace");
     std::fs::create_dir_all(workspace.join("private"))?;
     std::fs::write(workspace.join("file"), "fixture")?;
     std::fs::write(workspace.join("private/file"), "fixture")?;
     let mut policy = scope(&workspace)?.policy().clone();
     policy.enabled = true;
     policy.workspace_only = true;
-    policy.forbidden_paths = vec![root.path().to_string_lossy().into_owned(), "private".into()];
+    policy.forbidden_paths = vec![canonical_root.to_string_lossy().into_owned(), "private".into()];
     let mut registry = crate::PathPolicyRegistry::default();
     let id = registry.register(policy)?;
     let scope = registry.get(&id)?;
