@@ -19,10 +19,13 @@ tinysecurity-bus = { workspace = true }
 tinybus = { workspace = true }
 tinybus-module = { workspace = true }
 serde_json = { workspace = true }
+# Filesystem policy runs on blocking workers without blocking the module runtime.
+tokio = { workspace = true }
 
 [dev-dependencies]
+# Disposable native filesystem policy scopes.
+tempfile.workspace = true
 serde_json = { workspace = true }
-tokio = { workspace = true }
 
 [lints]
 workspace = true

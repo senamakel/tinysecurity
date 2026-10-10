@@ -1,16 +1,18 @@
 //! Versioned, transport-free `TinySecurity` wire contract.
 //!
 //! Hosts link this crate; the policy engine and native module stay isolated.
-//! Only Evaluate, Check and `PolicyInfo` are implemented in the bootstrap.
+//! Implements bootstrap checks plus immutable native filesystem scope contracts.
 mod error;
 mod future;
+mod path_policy;
 mod policy;
 pub use error::*;
 pub use future::*;
+pub use path_policy::*;
 pub use policy::*;
 pub mod names;
 /// Current wire vocabulary version, independent of the artifact version.
-pub const CONTRACT_VERSION: (u32, u32) = (1, 0);
+pub const CONTRACT_VERSION: (u32, u32) = (1, 1);
 /// Whether a remote module's advertised version supplies this host's vocabulary.
 ///
 /// `version` is the provider version received by the host, not a host requirement

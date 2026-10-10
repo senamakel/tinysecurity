@@ -1,0 +1,283 @@
+//! Native filesystem authorization for immutable host scopes.
+use std::path::{Path, PathBuf};
+use tinysecurity_bus::{
+    PathAccess, PathCheckKind, PathErrorCategory as Rejection, PathPolicy, PathValidationResult,
+};
+
+fn expand(scope: &PathPolicy, path: &str) -> PathBuf {
+    path.strip_prefix("~/")
+        .and_then(|tail| {
+            scope.home_dir.as_ref().map(|home| {
+                tail.split('/').filter(|part| !part.is_empty()).fold(
+                    home.clone(),
+                    |mut path, part| {
+                        path.push(part);
+                        path
+                    },
+                )
+            })
+        })
+        .unwrap_or_else(|| PathBuf::from(path))
+}
+/// Unconditional filesystem correctness and credential/system floor.
+#[must_use]
+pub fn protected_path(path: &Path) -> bool {
+    let normalized = path
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .replace('\\', "/");
+    let normalized = crate::path::strip_native_namespace(&normalized);
+    let segments: Vec<_> = normalized.split('/').filter(|s| !s.is_empty()).collect();
+    if normalized.contains('\0')
+        || normalized.contains("..%2f")
+        || normalized.contains("%2f..")
+        || segments.contains(&"..")
+        || crate::path::credential_store(&segments)
+    {
+        return true;
+    }
+    [
+        "/etc",
+        "/root",
+        "/boot",
+        "/proc",
+        "/sys",
+        "/system",
+        "/private/etc",
+        "/private/var/root",
+    ]
+    .iter()
+    .any(|prefix| normalized == *prefix || normalized.starts_with(&format!("{prefix}/")))
+        || crate::path::windows_system_root(normalized)
+}
+/// Resolve prospective paths through their deepest existing ancestor.
+///
+/// # Errors
+/// Returns the filesystem error for broken symlinks, permission errors, or missing roots.
+pub fn resolve_ancestor(path: &Path) -> std::io::Result<PathBuf> {
+    let mut ancestor = path.to_path_buf();
+    let mut suffix = Vec::new();
+    loop {
+        match ancestor.canonicalize() {
+            Ok(mut resolved) => {
+                for part in suffix.iter().rev() {
+                    resolved.push(part);
+                }
+                return Ok(resolved);
+            }
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound
+                    || ancestor.symlink_metadata().is_ok()
+                {
+                    return Err(error);
+                }
+                suffix.push(ancestor.file_name().ok_or(error)?.to_os_string());
+                if !ancestor.pop() {
+                    return Err(std::io::Error::other("no resolvable ancestor"));
+                }
+            }
+        }
+    }
+}
+fn canonical_or_original(path: &Path) -> PathBuf {
+    resolve_ancestor(path).unwrap_or_else(|_| path.to_path_buf())
+}
+fn within(path: &Path, root: &Path) -> bool {
+    path.starts_with(root) || path.starts_with(canonical_or_original(root))
+}
+/// Compiled immutable filesystem scope.
+#[derive(Clone, Debug)]
+pub struct PathScope(pub PathPolicy);
+impl std::ops::Deref for PathScope {
+    type Target = PathPolicy;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl PathScope {
+    /// Whether the path is under a host state reservation, including aliased/missing descendants.
+    #[must_use]
+    pub fn internal(&self, path: &Path) -> bool {
+        let resolved = canonical_or_original(path);
+        self.reserved_paths.iter().any(|reservation| {
+            within(&resolved, &reservation.path)
+                && (!reservation.children_only
+                    || resolved != canonical_or_original(&reservation.path))
+                && !reservation
+                    .exceptions
+                    .iter()
+                    .any(|exception| within(&resolved, exception))
+        }) || self.reserved_prefixes.iter().any(|reservation| {
+            let root = canonical_or_original(&reservation.root);
+            resolved
+                .strip_prefix(&root)
+                .ok()
+                .and_then(|relative| relative.components().next())
+                .is_some_and(|component| {
+                    let name = component.as_os_str().to_string_lossy();
+                    name.strip_prefix(&reservation.prefix)
+                        .is_some_and(|suffix| !suffix.is_empty())
+                })
+        })
+    }
+    /// Whether an explicitly trusted root grants this operation.
+    #[must_use]
+    pub fn trusted(&self, path: &Path, write: bool) -> bool {
+        !protected_path(path)
+            && self.trusted_roots.iter().any(|root| {
+                (!write || root.access == PathAccess::ReadWrite) && within(path, &root.path)
+            })
+    }
+    /// Resolved-path containment check, independent of approval policy.
+    #[must_use]
+    pub fn resolved_allowed(&self, path: &Path, write: bool) -> bool {
+        if protected_path(path) {
+            return false;
+        }
+        if !self.enabled {
+            return true;
+        }
+        if self.internal(path)
+            || (write && self.readonly_paths.iter().any(|root| within(path, root)))
+        {
+            return false;
+        }
+        within(path, &self.workspace_dir) || self.trusted(path, write)
+    }
+    fn forbidden(&self, path: &Path) -> bool {
+        if !self.enabled || self.trusted(path, false) {
+            return false;
+        }
+        let workspace = canonical_or_original(&self.workspace_dir);
+        self.forbidden_paths.iter().any(|entry| {
+            let forbidden = expand(self, entry);
+            if forbidden.is_absolute() && workspace.starts_with(&forbidden) {
+                return false;
+            }
+            let forbidden = if forbidden.is_absolute() {
+                forbidden
+            } else {
+                workspace.join(forbidden)
+            };
+            within(path, &forbidden)
+        })
+    }
+    fn absolute(&self, input: &str) -> PathBuf {
+        let expanded = expand(self, input);
+        if expanded.is_absolute() {
+            expanded
+        } else {
+            self.action_dir.join(expanded)
+        }
+    }
+    /// String and existing-ancestor policy checks; actual I/O must also use validation.
+    #[must_use]
+    pub fn string_allowed(&self, input: &str) -> bool {
+        let expanded = expand(self, input);
+        if protected_path(&expanded) {
+            return false;
+        }
+        if !expanded.is_absolute()
+            && expanded.components().count() == 1
+            && self.reserved_names.iter().any(|name| {
+                expanded
+                    .file_name()
+                    .is_some_and(|file| file == std::ffi::OsStr::new(name))
+            })
+        {
+            return false;
+        }
+        let absolute = self.absolute(input);
+        if protected_path(&absolute) {
+            return false;
+        }
+        if !self.enabled {
+            return resolve_ancestor(&absolute).map_or(true, |resolved| !protected_path(&resolved));
+        }
+        if self.internal(&absolute) {
+            return false;
+        }
+        let trusted = self.trusted(&expanded, false);
+        if self.workspace_only && expanded.is_absolute() && !trusted {
+            return false;
+        }
+        if !trusted
+            && self
+                .forbidden_paths
+                .iter()
+                .any(|entry| expanded.starts_with(expand(self, entry)))
+        {
+            return false;
+        }
+        if let Ok(resolved) = resolve_ancestor(&absolute) {
+            if protected_path(&resolved) || self.internal(&resolved) {
+                return false;
+            }
+            if self.workspace_only
+                && !within(&resolved, &self.workspace_dir)
+                && !self.trusted(&resolved, false)
+            {
+                return false;
+            }
+            if !within(&resolved, &self.workspace_dir) && self.forbidden(&resolved) {
+                return false;
+            }
+        }
+        true
+    }
+    /// Validate an existing read target or prospective write target.
+    #[must_use]
+    pub fn validate(&self, input: &str, write: bool) -> PathValidationResult {
+        let result = self.validate_inner(input, write);
+        match result {
+            Ok(resolved) => PathValidationResult::Allowed { resolved },
+            Err(category) => PathValidationResult::Denied { category },
+        }
+    }
+    fn validate_inner(&self, input: &str, write: bool) -> std::result::Result<PathBuf, Rejection> {
+        if protected_path(&expand(self, input)) {
+            return Err(Rejection::Protected);
+        }
+        if !self.string_allowed(input) {
+            return Err(Rejection::PolicyDenied);
+        }
+        let absolute = self.absolute(input);
+        let resolved = if write {
+            let parent = absolute.parent().ok_or(Rejection::InvalidPath)?;
+            let filename = absolute.file_name().ok_or(Rejection::InvalidPath)?;
+            // Existing target symlinks must also be checked: writing follows them.
+            if absolute.symlink_metadata().is_ok() {
+                absolute.canonicalize().map_err(|_| Rejection::Resolution)?
+            } else {
+                resolve_ancestor(parent)
+                    .map_err(|_| Rejection::Resolution)?
+                    .join(filename)
+            }
+        } else {
+            absolute.canonicalize().map_err(|_| Rejection::Resolution)?
+        };
+        if protected_path(&resolved) {
+            return Err(Rejection::Protected);
+        }
+        if !self.resolved_allowed(&resolved, write) || self.forbidden(&resolved) {
+            return Err(Rejection::PolicyDenied);
+        }
+        Ok(resolved)
+    }
+    /// Evaluate a content-free boolean path query.
+    #[must_use]
+    pub fn check_path(&self, path: &Path, kind: PathCheckKind) -> bool {
+        match kind {
+            PathCheckKind::StringAllowed => self.string_allowed(&path.to_string_lossy()),
+            PathCheckKind::ResolvedRead => self.resolved_allowed(path, false),
+            PathCheckKind::ResolvedWrite => self.resolved_allowed(path, true),
+            PathCheckKind::Internal => self.internal(path),
+            PathCheckKind::TrustedRead => self.trusted(path, false),
+            PathCheckKind::TrustedWrite => self.trusted(path, true),
+            PathCheckKind::Protected => protected_path(path),
+        }
+    }
+}
+#[cfg(test)]
+#[path = "path_scope_tests.rs"]
+mod tests;

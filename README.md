@@ -4,6 +4,8 @@ TinySecurity supplies security policy through a native TinyBus module. Hosts
 compile the transport-free `tinysecurity-bus` contract and load the isolated
 `tinysecurity-module` artifact. The bootstrap implements `Evaluate`, batched
 `Check`, `PolicyInfo`, validated SDK configuration and policy generations.
+Contract 1.1 also supplies immutable native [filesystem scopes](docs/specs/immutable-path-scopes.md)
+through `RegisterPathPolicy`, `ValidatePath`, `ValidateParent` and `CheckPath`.
 
 The engine denies unknown tools and unsupported effects. Argument-free `pwd`,
 `date`, `uname`, and `whoami` are its supported shell diagnostics. Paths pass

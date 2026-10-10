@@ -89,7 +89,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .await
             .is_err()
     );
+    let path_scope = register_native_scope(&proxy).await?;
     verify_reconfiguration(&host, &proxy, &info.name).await?;
+    verify_native_scope(&proxy, path_scope).await?;
     let evaluate = EvaluateRequest {
         caller,
         call: ToolCall {
@@ -195,5 +197,66 @@ async fn verify_reconfiguration(
         .await?;
     let after: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
     assert_eq!(after.generation, before.generation + 1);
+    Ok(())
+}
+
+async fn register_native_scope(
+    proxy: &tinybus::Proxy,
+) -> std::result::Result<tinysecurity_bus::PathPolicyId, Box<dyn std::error::Error>> {
+    let root = std::env::current_dir()?.canonicalize()?;
+    let policy = tinysecurity_bus::PathPolicy {
+        enabled: true,
+        workspace_only: true,
+        workspace_dir: root.clone(),
+        action_dir: root,
+        home_dir: None,
+        forbidden_paths: vec![],
+        trusted_roots: vec![],
+        reserved_paths: vec![],
+        reserved_prefixes: vec![],
+        readonly_paths: vec![],
+        reserved_names: vec![],
+    };
+    Ok(proxy
+        .call(names::methods::REGISTER_PATH_POLICY, (policy,))
+        .await?)
+}
+async fn verify_native_scope(
+    proxy: &tinybus::Proxy,
+    policy_id: tinysecurity_bus::PathPolicyId,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tinysecurity_bus::{
+        PathCheckKind, PathCheckRequest, PathValidationRequest, PathValidationResult,
+    };
+    let request = PathValidationRequest {
+        policy_id: policy_id.clone(),
+        path: "Cargo.toml".into(),
+    };
+    let read: PathValidationResult = proxy
+        .call(names::methods::VALIDATE_PATH, (request,))
+        .await?;
+    assert!(matches!(read, PathValidationResult::Allowed { .. }));
+    let write: PathValidationResult = proxy
+        .call(
+            names::methods::VALIDATE_PARENT,
+            (PathValidationRequest {
+                policy_id: policy_id.clone(),
+                path: "target/prospective/path/file".into(),
+            },),
+        )
+        .await?;
+    assert!(matches!(write, PathValidationResult::Allowed { .. }));
+    let protected: bool = proxy
+        .call(
+            names::methods::CHECK_PATH,
+            (PathCheckRequest {
+                policy_id,
+                path: "/etc/passwd".into(),
+                kind: PathCheckKind::Protected,
+            },),
+        )
+        .await?;
+    assert!(protected);
+    println!("native immutable path scope survives accepted SDK reinitialization");
     Ok(())
 }

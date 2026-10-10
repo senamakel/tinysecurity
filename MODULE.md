@@ -2,7 +2,8 @@
 
 The artifact is `tinysecurity-module`, exporting TinyBus ABI v1. Its interface
 is `ai.tinyhumans.tinysecurity.Policy`, with object
-`/ai/tinyhumans/tinysecurity/Policy` and methods `Evaluate`, `Check`, `PolicyInfo`.
+`/ai/tinyhumans/tinysecurity/Policy`. Its methods are `Evaluate`, `Check`,
+`PolicyInfo`, `RegisterPathPolicy`, `ValidatePath`, `ValidateParent`, and `CheckPath`.
 Accepted SDK reinit advances a generation and emits `PolicyChanged`; rejected
 configurations retain the old policy and generation. There are no Init/Reinit
 RPC methods. Configuration requires `contract_version` and `policy`. The optional
@@ -10,7 +11,7 @@ RPC methods. Configuration requires `contract_version` and `policy`. The optiona
 
 ```json
 {
-  "contract_version": [1, 0],
+  "contract_version": [1, 1],
   "policy": {
     "enabled": false,
     "action_dir": "",
@@ -56,11 +57,21 @@ argument-free `pwd`, `date`, `uname`, `whoami` through a trusted host executable
 search path. Compound commands, expansions, heredocs, arguments, executable
 paths and unrecognized commands deny conservatively on every OS.
 
-Enabled writes deny with `approval_unavailable`; no unusable request IDs are
+Enabled bootstrap Evaluate/Check writes deny with `approval_unavailable`; no unusable request IDs are
 minted. Unknown tools/effects deny. Cron writes deny even with disabled policy.
 Readonly callers cannot write. Decisions include generation and are uncached.
 The host must reject stale generations and never retry/fallback after module
 faults/timeouts. SDK faults remain latched; ordinary denials do not fault.
+
+## Immutable filesystem scopes
+
+Contract 1.1's filesystem members register independent immutable agent scopes.
+They accept host-owned native roots and state reservations, preserve scope IDs
+across SDK reinit, and authorize canonical reads or prospective writes without
+requesting approval. Approval gating remains the caller's separate responsibility.
+See [the scope contract](docs/specs/immutable-path-scopes.md) for configurable
+floor differences from conservative bootstrap checks, registry bounds, symlink
+handling and read-only grants. These members do not add command grammar parity.
 
 ## Reserved capabilities
 
