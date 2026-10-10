@@ -460,3 +460,21 @@ fn literal_body_backslashes_do_not_continue_physical_lines() {
         assert_eq!(strip_quoted_heredoc_bodies(command), expected);
     }
 }
+
+#[test]
+fn only_posix_blanks_separate_comment_and_delimiter_tokens() {
+    for literal in ['\u{a0}', '\r', '\u{b}', '\u{c}'] {
+        let prefix = format!("echo word{literal}#");
+        let command = format!("{prefix} <<'A'\nbody\nA");
+        assert_eq!(
+            strip_quoted_heredoc_bodies(&command),
+            format!("{prefix} <<'A'\n\nA")
+        );
+        let command =
+            format!("cat <<'A'{literal}x\nA\ncat <<'C'\nA{literal}x\ncat ~/.ssh/id_rsa\nC");
+        assert_eq!(
+            strip_quoted_heredoc_bodies(&command),
+            format!("cat <<'A'{literal}x\n\n\nA{literal}x\ncat ~/.ssh/id_rsa\nC")
+        );
+    }
+}

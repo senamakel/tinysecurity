@@ -466,7 +466,7 @@ fn scan_heredoc_header(
                     }
                     header.token_boundary = false;
                 }
-                _ => header.token_boundary = ch.is_whitespace() || ";&|<>()".contains(ch),
+                _ => header.token_boundary = matches!(ch, ' ' | '\t') || ";&|<>()".contains(ch),
             },
         }
     }
@@ -509,7 +509,7 @@ fn heredoc_delimiter(rest: &str) -> Option<(String, usize, bool)> {
     let mut quote = QuoteState::None;
     let mut quoted = false;
     while let Some(c) = chars.next() {
-        if quote == QuoteState::None && (c.is_whitespace() || ";&|<>()".contains(c)) {
+        if quote == QuoteState::None && (matches!(c, ' ' | '\t' | '\n') || ";&|<>()".contains(c)) {
             break;
         }
         consumed += 1;
