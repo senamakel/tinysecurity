@@ -237,6 +237,9 @@ impl PathScope {
     /// String and existing-ancestor policy checks; actual I/O must also use validation.
     #[must_use]
     pub fn string_allowed(&self, input: &str) -> bool {
+        if input.is_empty() {
+            return false;
+        }
         let expanded = expand(self, input);
         if protected_path(&expanded) {
             return false;
@@ -295,6 +298,9 @@ impl PathScope {
         }
     }
     fn validate_inner(&self, input: &str, write: bool) -> std::result::Result<PathBuf, Rejection> {
+        if input.is_empty() {
+            return Err(Rejection::InvalidPath);
+        }
         if protected_path(&expand(self, input)) {
             return Err(Rejection::Protected);
         }

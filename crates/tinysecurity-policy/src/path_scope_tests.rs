@@ -1,5 +1,26 @@
 use super::*;
 use tinysecurity_bus::{PathAccess, PathReservation, PathTrustedRoot};
+
+#[test]
+fn empty_validation_requests_never_authorize_the_action_directory()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let mut policy = scope(root.path());
+    for enabled in [true, false] {
+        policy.0.enabled = enabled;
+        for write in [true, false] {
+            assert_eq!(
+                policy.validate("", write),
+                PathValidationResult::Denied {
+                    category: Rejection::InvalidPath
+                },
+            );
+        }
+        assert!(!policy.string_allowed(""));
+    }
+    Ok(())
+}
+
 fn scope(root: &Path) -> PathScope {
     PathScope(PathPolicy {
         enabled: true,
