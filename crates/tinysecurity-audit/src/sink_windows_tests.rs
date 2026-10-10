@@ -72,17 +72,32 @@ fn fixture() -> std::result::Result<(tempfile::TempDir, PathBuf), Box<dyn std::e
     Ok((dir, path))
 }
 
+fn stage<T>(name: &'static str, result: Result<T>) -> Result<T> {
+    match &result {
+        Ok(_) => eprintln!("audit-stage={name} result=ok"),
+        Err(error) => eprintln!("audit-stage={name} result={error:?}"),
+    }
+    result
+}
+
 #[test]
 fn windows_protected_preprovisioned_namespace_commits_exact_retry()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (root, path) = fixture()?;
-    let sink = JsonlSink::open(&path, 700, 3)?;
+    crate::windows::diagnose(root.path());
+    let sink = stage("sink-open", JsonlSink::open(&path, 700, 3))?;
     let first = batch(0);
-    let receipt = sink.append(&first)?;
+    let receipt = stage("first-append", sink.append(&first))?;
     first.verify_receipt(&receipt)?;
-    assert_eq!(sink.append(&first)?, receipt);
+    assert_eq!(stage("exact-replay", sink.append(&first))?, receipt);
     drop(sink);
-    assert_eq!(JsonlSink::open(&path, 700, 3)?.append(&first)?, receipt);
+    assert_eq!(
+        stage(
+            "restart-append",
+            stage("restart-open", JsonlSink::open(&path, 700, 3))?.append(&first)
+        )?,
+        receipt
+    );
     let expected: LocalBox<windows_permissions::Sid> = identity()?.parse()?;
     for entry in std::fs::read_dir(root.path())? {
         let file = OpenOptions::new()
@@ -108,21 +123,28 @@ fn windows_protected_preprovisioned_namespace_commits_exact_retry()
 #[test]
 fn windows_rename_denied_before_commit_then_same_retry_commits_once()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let (_root, path) = fixture()?;
-    let sink = JsonlSink::open(&path, 700, 3)?;
-    sink.append(&batch(0))?;
+    let (root, path) = fixture()?;
+    crate::windows::diagnose(root.path());
+    let sink = stage("rotation-sink-open", JsonlSink::open(&path, 700, 3))?;
+    stage("rotation-first-append", sink.append(&batch(0)))?;
     let journal = path.with_file_name("audit.journal");
     let before = std::fs::read(&journal)?;
     let pin = OpenOptions::new().read(true).share_mode(3).open(&path)?;
-    assert_eq!(sink.append(&batch(1)), Err(Error::Storage));
+    assert_eq!(
+        stage("blocked-rotation", sink.append(&batch(1))),
+        Err(Error::Storage)
+    );
     assert_eq!(
         std::fs::read(&journal)?,
         before,
         "failed precommit rotation must not journal a candidate"
     );
     drop(pin);
-    let second = sink.append(&batch(1))?;
-    assert_eq!(sink.append(&batch(1))?, second);
+    let second = stage("released-rotation", sink.append(&batch(1)))?;
+    assert_eq!(
+        stage("rotation-exact-replay", sink.append(&batch(1)))?,
+        second
+    );
     batch(1).verify_receipt(&second)?;
     let records = crate::journal::recover(
         &mut OpenOptions::new().read(true).write(true).open(journal)?,

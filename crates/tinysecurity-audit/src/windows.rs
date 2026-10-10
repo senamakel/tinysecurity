@@ -300,3 +300,8 @@ fn verify_restricted(file: &File, user: &str, directory: bool) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(test)]
+pub(crate) use tests::diagnose;
+#[cfg(test)]
+#[path = "windows_tests.rs"]
+mod tests;
