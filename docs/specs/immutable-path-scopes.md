@@ -53,8 +53,9 @@ extended aliases, administrative UNC shares and GLOBALROOT device namespaces. Un
 acting scopes leave `/usr`, `/bin`, `/dev` and library roots to configurable
 forbidden roots, preserving explicit grants for legitimate tool workloads. Enabled scopes also protect host state regardless of
 trusted grants. To preserve the host contract, an absolute forbidden root containing the entire
-workspace does not revoke workspace access; a forbidden subtree inside the
-workspace still denies access. Trusted grants override configurable forbidden roots only for operations their
+workspace does not revoke workspace access, whether configured directly or
+through a symlink alias resolving to that ancestor. A forbidden subtree inside
+the workspace still denies access. Trusted grants override configurable forbidden roots only for operations their
 access permits; read-only
 grants cannot authorize writes outside the workspace. Relative requests resolve
 against the action root, while relative forbidden roots resolve against the

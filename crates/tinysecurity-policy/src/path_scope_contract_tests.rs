@@ -378,3 +378,55 @@ fn workspace_inside_broad_forbidden_root_keeps_access_but_nested_forbidden_root_
     }
     Ok(())
 }
+
+#[test]
+fn ancestor_resolution_propagates_uninspectable_component_errors() {
+    use std::io::{Error, ErrorKind};
+    let root = PathBuf::from("root");
+    let target = root.join("component");
+    for kind in [
+        ErrorKind::PermissionDenied,
+        ErrorKind::Interrupted,
+        ErrorKind::Other,
+    ] {
+        let result = resolve_ancestor_with(
+            &target,
+            |path| {
+                if path == target {
+                    Err(Error::from(ErrorKind::NotFound))
+                } else {
+                    Ok(root.clone())
+                }
+            },
+            |_| Err(Error::from(kind)),
+        );
+        assert_eq!(result.map_err(|error| error.kind()), Err(kind));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn forbidden_root_alias_containing_workspace_preserves_workspace_precedence()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let parent = root.path().canonicalize()?;
+    let workspace = parent.join("workspace");
+    std::fs::create_dir(&workspace)?;
+    std::fs::write(workspace.join("file"), "fixture")?;
+    let alias = parent.join("alias");
+    std::os::unix::fs::symlink(&parent, &alias)?;
+    let mut policy = scope(&workspace)?.policy().clone();
+    policy.enabled = true;
+    policy.workspace_only = true;
+    policy.forbidden_paths = vec![alias.to_string_lossy().into_owned()];
+    let mut registry = crate::PathPolicyRegistry::default();
+    let id = registry.register(policy)?;
+    let scope = registry.get(&id)?;
+    for write in [false, true] {
+        assert!(matches!(
+            scope.validate("file", write),
+            PathValidationResult::Allowed { .. }
+        ));
+    }
+    Ok(())
+}

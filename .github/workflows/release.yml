@@ -584,8 +584,8 @@ jobs:
             exit 1
           fi
 
-          cargo run --manifest-path vendor/tinybus/Cargo.toml --locked \
-            --package tinybus --all-features --example github_module_host -- \
-            "$release_url" "$archive" "$sha256"
+          # The generic TinyBus example supplies {}, which is intentionally not
+          # a valid TinySecurity init config. This verifier uses ModuleConfig
+          # and the same GitHub loader, then checks real policy bus behavior.
           cargo run --locked --package tinysecurity-module --example verify_module -- \
             "$release_url" "$archive" "$sha256"
