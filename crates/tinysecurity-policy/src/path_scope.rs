@@ -162,6 +162,13 @@ fn candidate(path: &Path) -> Option<PathBuf> {
         .ok()
         .filter(|resolved| !protected_path(resolved))
 }
+fn metadata_present(result: std::io::Result<()>) -> std::result::Result<bool, Rejection> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(Rejection::Resolution),
+    }
+}
 /// Compiled immutable filesystem scope issued by [`crate::PathPolicyRegistry`].
 /// Direct external construction is intentionally unavailable:
 /// ```compile_fail
@@ -370,7 +377,7 @@ impl PathScope {
             let parent = absolute.parent().ok_or(Rejection::InvalidPath)?;
             let filename = absolute.file_name().ok_or(Rejection::InvalidPath)?;
             // Existing target symlinks must also be checked: writing follows them.
-            if absolute.symlink_metadata().is_ok() {
+            if metadata_present(absolute.symlink_metadata().map(|_| ()))? {
                 absolute.canonicalize().map_err(|_| Rejection::Resolution)?
             } else {
                 resolve_ancestor(parent)

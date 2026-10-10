@@ -270,3 +270,23 @@ fn unix_colon_filename_is_not_a_windows_stream_alias() -> Result<(), Box<dyn std
     );
     Ok(())
 }
+
+#[test]
+fn prospective_targets_require_not_found_rather_than_uninspectable_metadata() {
+    use std::io::{Error, ErrorKind};
+    assert_eq!(metadata_present(Ok(())), Ok(true));
+    assert_eq!(
+        metadata_present(Err(Error::from(ErrorKind::NotFound))),
+        Ok(false)
+    );
+    for error in [
+        ErrorKind::PermissionDenied,
+        ErrorKind::Other,
+        ErrorKind::InvalidInput,
+    ] {
+        assert_eq!(
+            metadata_present(Err(Error::from(error))),
+            Err(Rejection::Resolution)
+        );
+    }
+}
