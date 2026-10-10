@@ -29,6 +29,9 @@ struct Callback {
     mode: Arc<AtomicU8>,
     calls: Arc<AtomicUsize>,
     rows: Arc<Mutex<BTreeMap<u64, AuditSinkRequest2>>>,
+    lifecycle: Arc<ModuleHost>,
+    module_name: String,
+    config: ModuleConfig,
 }
 #[async_trait]
 impl Interface for Callback {
@@ -83,8 +86,26 @@ impl Interface for Callback {
         if mode == 3 {
             std::future::pending::<()>().await;
         }
+        if mode == 4 {
+            return Ok(serde_json::json!({"committed": true}));
+        }
+        if mode == 6 {
+            self.lifecycle
+                .reinitialize(
+                    &self.module_name,
+                    serde_json::to_value(self.config.clone())?,
+                )
+                .await?;
+        }
         let receipt = AuditSinkResponse2 {
-            scope: batch.scope,
+            scope: if mode == 5 {
+                SubjectScope {
+                    user: "different-user".into(),
+                    ..batch.scope
+                }
+            } else {
+                batch.scope
+            },
             stream_id: if mode == 2 {
                 "f".repeat(32)
             } else {
@@ -153,10 +174,13 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .ok_or("module directory")?
         .join("modules.toml");
     let digest = tinybus::module::sha256_file(&path)?;
+    if std::env::args().nth(2).as_deref() == Some("optional") {
+        return verify_optional_callback_loss(&path).await;
+    }
     let bus = MemoryBus::new();
     let broker = Broker::new();
     let task = broker.spawn(bus.clone());
-    let host = ModuleHost::new(broker);
+    let host = Arc::new(ModuleHost::new(broker));
     let client = Connection::connect(bus.connect().await?).await?;
     let attacker = Connection::connect(bus.connect().await?).await?;
     let config = ModuleConfig {
@@ -171,15 +195,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     );
     std::fs::write(&allowlist, format!("\"{name}\" = \"{digest}\"\n"))?;
     let info = host.load_file_with_config(&path, serde_json::to_value(&config)?)?;
-    let module = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Some(peer) = client.name_owner(names::INTERFACE).await? {
-                return tinybus::Result::Ok(peer);
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await??;
+    let module = module_peer(&client).await?;
     let proxy = client
         .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
         .with_timeout(Duration::from_secs(3));
@@ -199,6 +215,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         mode: mode.clone(),
         calls: calls.clone(),
         rows: rows.clone(),
+        lifecycle: host.clone(),
+        module_name: info.name.clone(),
+        config: config.clone(),
     };
     client
         .serve_at(callback_names2::OBJECT_PATH.parse()?, callback)
@@ -206,6 +225,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     verify_peer_denial(&attacker, &client, &module, &proxy, &calls).await?;
     verify_unbound_authorizations(&proxy).await?;
     verify_permission_phases(&proxy, &mode, &rows).await?;
+    verify_policy_generation_race(&proxy, &mode, &rows).await?;
     // Immutable callback config cannot be replaced during reinit.
     let changed = ModuleConfig {
         trusted_host: config.trusted_host.clone(),
@@ -228,8 +248,83 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     );
     host.shutdown(Duration::from_secs(1)).await;
     task.abort();
+    verify_optional_process(&path)?;
     println!(
         "native audit authority, reentrancy, redaction, timeout, replay and permission phases verified"
+    );
+    Ok(())
+}
+
+async fn verify_policy_generation_race(
+    proxy: &tinybus::Proxy,
+    mode: &AtomicU8,
+    rows: &Mutex<BTreeMap<u64, AuditSinkRequest2>>,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let request = AuditedRequest2 {
+        request: CheckRequest {
+            caller: CallerContext {
+                agent: "agent".into(),
+                call_id: "racing-operation".into(),
+                tier: AccessTier::Full,
+                ..Default::default()
+            },
+            checks: vec![Check::LocalDiagnostic {}],
+        },
+        audit: AuditCorrelation2 {
+            event_id: "c".repeat(32),
+            expected_tail: 2,
+            generation: 1,
+        },
+    };
+    mode.store(6, Ordering::SeqCst);
+    let response: CheckAuditedResponse2 = proxy
+        .call(names::methods::CHECK_AUDITED2, (request.clone(),))
+        .await?;
+    assert!(
+        !response.audit.permitted && response.audit.committed && response.audit.receipt.is_some(),
+        "generation change must deny permission without erasing the durable receipt"
+    );
+    assert!(
+        response
+            .decision
+            .decisions
+            .iter()
+            .all(|decision| !matches!(decision.verdict, Verdict::Allow))
+    );
+    let persisted = rows
+        .lock()
+        .map_err(|_| "fixture storage")?
+        .get(&2)
+        .cloned()
+        .ok_or("missing committed race")?;
+    persisted.verify_receipt(
+        response
+            .audit
+            .receipt
+            .as_ref()
+            .ok_or("missing race receipt")?,
+    )?;
+    let policy: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
+    assert_eq!(policy.generation, 2);
+    mode.store(0, Ordering::SeqCst);
+    let stale: CheckAuditedResponse2 = proxy
+        .call(names::methods::CHECK_AUDITED2, (request,))
+        .await?;
+    assert!(!stale.audit.permitted);
+    assert_eq!(rows.lock().map_err(|_| "fixture storage")?.len(), 3);
+    Ok(())
+}
+
+fn verify_optional_process(
+    path: &std::path::Path,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    assert!(
+        std::process::Command::new(std::env::current_exe()?)
+            .arg(path)
+            .arg("optional")
+            .status()?
+            .success(),
+        "separate loaded optional module must preserve degraded permission semantics"
     );
     Ok(())
 }
@@ -363,6 +458,16 @@ async fn verify_permission_phases(
         .call(names::methods::CHECK_AUDITED2, (before.clone(),))
         .await?;
     assert!(!unrelated.audit.permitted);
+    for malformed_mode in [4, 5] {
+        mode.store(malformed_mode, Ordering::SeqCst);
+        let invalid: CheckAuditedResponse2 = proxy
+            .call(names::methods::CHECK_AUDITED2, (before.clone(),))
+            .await?;
+        assert!(
+            !invalid.audit.permitted && !invalid.audit.committed && invalid.audit.receipt.is_none(),
+            "malformed and wrong-scope echoes cannot authorize a required operation"
+        );
+    }
     mode.store(3, Ordering::SeqCst);
     let indeterminate: CheckAuditedResponse2 = proxy
         .call(names::methods::CHECK_AUDITED2, (before.clone(),))
@@ -382,14 +487,71 @@ async fn verify_permission_phases(
     }
     assert_eq!(executions, 1);
     let replay: CheckAuditedResponse2 = proxy
-        .call(names::methods::CHECK_AUDITED2, (before,))
+        .call(names::methods::CHECK_AUDITED2, (before.clone(),))
         .await?;
     assert_eq!(permit, replay);
+    let mut substituted = before;
+    substituted.request.caller.call_id = "different-original-operation".into();
+    let conflict: CheckAuditedResponse2 = proxy
+        .call(names::methods::CHECK_AUDITED2, (substituted,))
+        .await?;
+    assert!(!conflict.audit.permitted && !conflict.audit.committed);
     let terminal: AuditResponse2 = proxy
         .call(names::methods::AUDIT2, (batch(1, AuditKind2::Execution),))
         .await?;
     assert!(terminal.committed);
     assert_eq!(rows.lock().map_err(|_| "fixture storage")?.len(), 2);
+    Ok(())
+}
+
+async fn verify_optional_callback_loss(
+    path: &std::path::Path,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new();
+    let task = broker.spawn(bus.clone());
+    let host = ModuleHost::new(broker);
+    let client = Connection::connect(bus.connect().await?).await?;
+    let config = ModuleConfig {
+        trusted_host: client.unique_name().map(|peer| peer.as_str().to_owned()),
+        audit: Some(audit_config(false)),
+        ..ModuleConfig::default()
+    };
+    host.load_file_with_config(path, serde_json::to_value(config)?)?;
+    let module = module_peer(&client).await?;
+    let proxy = client.proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?;
+    assert!(proxy.attestation().await?.is_some());
+    let request = AuditedRequest2 {
+        request: CheckRequest {
+            caller: CallerContext {
+                agent: "agent".into(),
+                call_id: "optional-operation".into(),
+                tier: AccessTier::Full,
+                ..Default::default()
+            },
+            checks: vec![Check::LocalDiagnostic {}],
+        },
+        audit: AuditCorrelation2 {
+            event_id: "d".repeat(32),
+            expected_tail: 0,
+            generation: 1,
+        },
+    };
+    let result: CheckAuditedResponse2 = proxy
+        .call_confidential(names::methods::CHECK_AUDITED2, (request,))
+        .await?;
+    assert!(result.audit.permitted && !result.audit.committed && result.audit.receipt.is_none());
+    assert!(matches!(
+        result.decision.decisions[0].verdict,
+        Verdict::Allow
+    ));
+    assert!(matches!(
+        result.audit.health,
+        tinysecurity_bus::AuditHealth2::Degraded
+    ));
+    host.shutdown(Duration::from_secs(1)).await;
+    task.abort();
+    println!("native optional callback loss preserves degraded permission without a receipt");
     Ok(())
 }
 
@@ -424,4 +586,18 @@ async fn verify_peer_denial(
     assert!(!response.permitted);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     Ok(())
+}
+
+async fn module_peer(
+    client: &Connection,
+) -> std::result::Result<BusName, Box<dyn std::error::Error>> {
+    Ok(tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(peer) = client.name_owner(names::INTERFACE).await? {
+                return tinybus::Result::Ok(peer);
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await??)
 }
