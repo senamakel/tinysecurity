@@ -1,7 +1,9 @@
 use super::*;
 #[cfg(unix)]
 use std::os::unix::fs::{PermissionsExt, symlink};
+#[cfg(unix)]
 use tinysecurity_bus::{AuditEvent2, AuditKind2, SubjectScope};
+#[cfg(unix)]
 fn batch(tail: u64) -> AuditSinkRequest2 {
     AuditSinkRequest2 {
         scope: SubjectScope {

@@ -42,5 +42,10 @@ The module can forward exact version-two batches to the host unique connection
 bound at native initialization. Callback unavailability, malformed receipts and
 required audit loss deny permission; optional loss reports degraded health and
 never fabricates a receipt. Scope and sanitation failures deny even when audit is
-optional. An execution host must consume this audit permission before executing;
-OpenHuman host migration is separate work.
+optional. `EvaluateAudited2`/`CheckAudited2` derive the pre-execution event from
+the original permission request and computed verdict, using the trusted init
+scope/stream. Hosts provide only stable event identity, tail and expected policy
+generation. Required audit disables unbound `Evaluate`/`Check` allows. A policy
+change during callback denies permission while preserving any exact committed
+receipt; a receipt never revives a stale generation. Terminal `Audit2` events are
+a separate phase. OpenHuman host migration is separate work.

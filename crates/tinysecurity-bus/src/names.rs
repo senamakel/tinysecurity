@@ -59,6 +59,10 @@ pub mod methods {
     pub const PLAN: &str = "Plan";
     /// Exact durable version-two audit member.
     pub const AUDIT2: &str = "Audit2";
+    /// Original operation evaluation bound to exact pre-execution audit.
+    pub const EVALUATE_AUDITED2: &str = "EvaluateAudited2";
+    /// Ordered check evaluation bound to exact pre-execution audit.
+    pub const CHECK_AUDITED2: &str = "CheckAudited2";
     /// Audit member.
     pub const AUDIT: &str = "Audit";
 }
@@ -66,6 +70,8 @@ pub mod methods {
 pub const METHODS: &[&str] = &[
     methods::EVALUATE,
     methods::CHECK,
+    methods::EVALUATE_AUDITED2,
+    methods::CHECK_AUDITED2,
     methods::REGISTER_PATH_POLICY,
     methods::VALIDATE_PATH,
     methods::VALIDATE_PARENT,

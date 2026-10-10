@@ -14,8 +14,10 @@ use tinybus::{
     module::ModuleHost, transport::memory::MemoryBus,
 };
 use tinysecurity_bus::{
-    AuditConfig2, AuditEvent2, AuditEventReceipt2, AuditKind2, AuditResponse2, AuditSinkRequest2,
-    AuditSinkResponse2, ModuleConfig, PolicyInfo, SubjectScope, callback_names2, names,
+    AccessTier, AuditConfig2, AuditCorrelation2, AuditEvent2, AuditEventReceipt2, AuditKind2,
+    AuditResponse2, AuditSinkRequest2, AuditSinkResponse2, AuditedRequest2, CallerContext, Check,
+    CheckAuditedResponse2, CheckRequest, CheckResponse, ModuleConfig, PolicyInfo, SubjectScope,
+    Verdict, callback_names2, names,
 };
 #[derive(Clone)]
 struct Callback {
@@ -202,6 +204,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .serve_at(callback_names2::OBJECT_PATH.parse()?, callback)
         .await?;
     verify_peer_denial(&attacker, &client, &module, &proxy, &calls).await?;
+    verify_unbound_authorizations(&proxy).await?;
     verify_permission_phases(&proxy, &mode, &rows).await?;
     // Immutable callback config cannot be replaced during reinit.
     let changed = ModuleConfig {
@@ -231,43 +234,156 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+async fn verify_unbound_authorizations(
+    proxy: &tinybus::Proxy,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tinysecurity_bus::{
+        CommandAutonomy, CommandDecision, CommandExecutionMode, CommandGate, CommandPolicy,
+        CommandPolicyId, CommandRequest, DataCategory, EgressPolicy, EgressPolicyId,
+        EgressTransport, LocalEgressCapability, PrivacyMode, ScopedEgressRequest,
+        ScopedEgressResponse, ShellDialect,
+    };
+    let command: CommandPolicyId = proxy
+        .call(
+            names::methods::REGISTER_COMMAND_POLICY,
+            (CommandPolicy {
+                enabled: true,
+                execution_mode: CommandExecutionMode::HarnessGated,
+                shell_dialect: ShellDialect::Posix,
+                autonomy: CommandAutonomy::Full,
+                allowed_commands: vec![],
+                max_actions_per_hour: 10,
+                require_approval_for_medium_risk: true,
+                block_high_risk_commands: true,
+                action_dir: std::env::current_dir()?.canonicalize()?,
+                home_dir: None,
+            },),
+        )
+        .await?;
+    let invocation = CommandRequest {
+        policy_id: command,
+        command: "pwd".into(),
+        declared_class: None,
+    };
+    let classified: CommandDecision = proxy
+        .call(names::methods::CLASSIFY_COMMAND, (invocation.clone(),))
+        .await?;
+    assert_eq!(
+        classified.gate,
+        CommandGate::Allow,
+        "classification is descriptive"
+    );
+    let command_result = proxy
+        .call::<CommandDecision>(names::methods::CHECK_COMMAND, (invocation,))
+        .await;
+    let subject = audit_config(true).scope;
+    let egress: EgressPolicyId = proxy
+        .call(
+            names::methods::REGISTER_EGRESS_POLICY,
+            (EgressPolicy {
+                owner: subject.clone(),
+                ceiling: AccessTier::Full,
+                privacy: PrivacyMode::LocalOnly,
+                destinations: vec![],
+                data_categories: vec![DataCategory::HostMetadata],
+                local_capabilities: vec![LocalEgressCapability {
+                    origin: "http://127.0.0.1:11434".into(),
+                    path: "/health".into(),
+                    category: DataCategory::HostMetadata,
+                }],
+                validity_ms: 30000,
+            },),
+        )
+        .await?;
+    let request = ScopedEgressRequest {
+        policy_id: egress,
+        subject,
+        tier: AccessTier::Full,
+        url: "http://127.0.0.1:11434/health".into(),
+        method: "GET".into(),
+        category: DataCategory::HostMetadata,
+        payload: "health".into(),
+        headers: vec![],
+        transport: EgressTransport::PinnedDirect,
+        local_capability: Some(0),
+        transformation: None,
+    };
+    let grant = proxy
+        .call::<ScopedEgressResponse>(names::methods::SCOPED_EGRESS_CHECK, (request,))
+        .await;
+    assert!(
+        !command_result.is_ok_and(|result| result.gate == CommandGate::Allow)
+            && !grant.is_ok_and(|result| result.authorization.is_some()),
+        "required audit must deny unbound command permission and scoped transport grant"
+    );
+    Ok(())
+}
+
 async fn verify_permission_phases(
     proxy: &tinybus::Proxy,
     mode: &AtomicU8,
     rows: &Mutex<BTreeMap<u64, AuditSinkRequest2>>,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let before = batch(0, AuditKind2::Shell);
+    let before = AuditedRequest2 {
+        request: CheckRequest {
+            caller: CallerContext {
+                agent: "agent".into(),
+                call_id: "original-operation".into(),
+                tier: AccessTier::Full,
+                ..Default::default()
+            },
+            checks: vec![Check::LocalDiagnostic {}],
+        },
+        audit: AuditCorrelation2 {
+            event_id: format!("{:032x}", 1),
+            expected_tail: 0,
+            generation: 1,
+        },
+    };
+    let unbound: CheckResponse = proxy
+        .call(names::methods::CHECK, (before.request.clone(),))
+        .await?;
+    assert!(
+        unbound
+            .decisions
+            .iter()
+            .all(|decision| !matches!(decision.verdict, Verdict::Allow))
+    );
     mode.store(1, Ordering::SeqCst);
-    let denied: AuditResponse2 = proxy
-        .call(names::methods::AUDIT2, (before.clone(),))
+    let denied: CheckAuditedResponse2 = proxy
+        .call(names::methods::CHECK_AUDITED2, (before.clone(),))
         .await?;
     let mut executions = 0;
-    if denied.permitted {
+    if matches!(denied.decision.decisions[0].verdict, Verdict::Allow) {
         executions += 1;
     }
     assert_eq!(executions, 0, "required audit must deny before execution");
     mode.store(2, Ordering::SeqCst);
-    let unrelated: AuditResponse2 = proxy
-        .call(names::methods::AUDIT2, (before.clone(),))
+    let unrelated: CheckAuditedResponse2 = proxy
+        .call(names::methods::CHECK_AUDITED2, (before.clone(),))
         .await?;
-    assert!(!unrelated.permitted);
+    assert!(!unrelated.audit.permitted);
     mode.store(3, Ordering::SeqCst);
-    let indeterminate: AuditResponse2 = proxy
-        .call(names::methods::AUDIT2, (before.clone(),))
+    let indeterminate: CheckAuditedResponse2 = proxy
+        .call(names::methods::CHECK_AUDITED2, (before.clone(),))
         .await?;
     assert!(
-        !indeterminate.permitted && !indeterminate.committed && indeterminate.receipt.is_none()
+        !indeterminate.audit.permitted
+            && !indeterminate.audit.committed
+            && indeterminate.audit.receipt.is_none()
     );
     mode.store(0, Ordering::SeqCst);
-    let permit: AuditResponse2 = proxy
-        .call_confidential(names::methods::AUDIT2, (before.clone(),))
+    let permit: CheckAuditedResponse2 = proxy
+        .call_confidential(names::methods::CHECK_AUDITED2, (before.clone(),))
         .await?;
-    assert!(permit.permitted && permit.committed);
-    if permit.permitted {
+    assert!(permit.audit.permitted && permit.audit.committed);
+    if matches!(permit.decision.decisions[0].verdict, Verdict::Allow) {
         executions += 1;
     }
     assert_eq!(executions, 1);
-    let replay: AuditResponse2 = proxy.call(names::methods::AUDIT2, (before,)).await?;
+    let replay: CheckAuditedResponse2 = proxy
+        .call(names::methods::CHECK_AUDITED2, (before,))
+        .await?;
     assert_eq!(permit, replay);
     let terminal: AuditResponse2 = proxy
         .call(names::methods::AUDIT2, (batch(1, AuditKind2::Execution),))

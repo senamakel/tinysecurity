@@ -3,6 +3,273 @@ use super::*;
 use std::path::PathBuf;
 use tinybus::{Interface, broker::Broker, transport::memory::MemoryBus};
 use tinysecurity_bus::*;
+#[derive(Clone)]
+struct PermissionAuditSink {
+    rows: Arc<Mutex<std::collections::BTreeMap<String, AuditSinkRequest2>>>,
+    policy: Arc<RwLock<Policy>>,
+    change_generation: Arc<std::sync::atomic::AtomicBool>,
+}
+#[tinybus::interface(name = "ai.tinyhumans.tinysecurity.AuditSink2")]
+impl PermissionAuditSink {
+    async fn append(&self, batch: AuditSinkRequest2) -> tinybus::Result<AuditSinkResponse2> {
+        let serialized = std::future::ready(serde_json::to_string(&batch)).await?;
+        assert!(!serialized.contains("private-secret"));
+        let mut rows = self
+            .rows
+            .lock()
+            .map_err(|_| tinybus::Error::failed("fixture storage"))?;
+        let id = batch.events[0].event_id.clone();
+        if let Some(previous) = rows.get(&id) {
+            if previous != &batch {
+                return Err(tinybus::Error::failed("fixture conflict"));
+            }
+        } else {
+            rows.insert(id, batch.clone());
+        }
+        drop(rows);
+        if self
+            .change_generation
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.policy
+                .write()
+                .map_err(|_| tinybus::Error::failed("fixture policy"))?
+                .reinitialize(ModuleConfig::default())
+                .map_err(|_| tinybus::Error::failed("fixture policy"))?;
+        }
+        Ok(AuditSinkResponse2 {
+            scope: batch.scope,
+            stream_id: batch.stream_id,
+            new_tail: batch.events[0].sequence,
+            events: vec![AuditEventReceipt2 {
+                event_id: batch.events[0].event_id.clone(),
+                sequence: batch.events[0].sequence,
+            }],
+        })
+    }
+}
+fn permission_audit_config(required: bool) -> AuditConfig2 {
+    AuditConfig2 {
+        scope: SubjectScope {
+            user: "user".into(),
+            workspace: "workspace".into(),
+            agent: "agent".into(),
+        },
+        stream_id: "a".repeat(32),
+        timeout_ms: 100,
+        required,
+        native_path: None,
+        max_bytes: 10000,
+        max_archives: 3,
+        journal_max_bytes: 100_000,
+        journal_max_events: 1000,
+    }
+}
+fn permission_check() -> CheckRequest {
+    CheckRequest {
+        caller: CallerContext {
+            agent: "agent".into(),
+            call_id: "call".into(),
+            tier: AccessTier::Full,
+            ..Default::default()
+        },
+        checks: vec![Check::LocalDiagnostic {}],
+    }
+}
+#[tokio::test]
+async fn bound_permissions_require_exact_original_payload_receipts_and_preserve_stale_commit_evidence()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let task = Broker::new().spawn(bus.clone());
+    let host = Connection::connect(bus.connect().await?).await?;
+    let module = Connection::connect(bus.connect().await?).await?;
+    let binding = crate::callbacks::PeerBinding::new(
+        host.unique_name().as_ref().map(tinybus::BusName::as_str),
+    )?;
+    let policy = Arc::new(RwLock::new(Policy::new(ModuleConfig {
+        redactor: RedactorConfig {
+            secrets: vec![
+                Secret("first-private-secret".into()),
+                Secret("other-private-secret".into()),
+            ],
+        },
+        ..Default::default()
+    })?));
+    let required = Arc::new(crate::callbacks::AuditClient::new(
+        module.clone(),
+        binding.clone(),
+        permission_audit_config(true),
+        tinysecurity::Redactor::new(&RedactorConfig::default())?,
+    )?);
+    let service = service_for(policy.clone(), Some(required));
+    let request = AuditedRequest2 {
+        request: permission_check(),
+        audit: AuditCorrelation2 {
+            event_id: "b".repeat(32),
+            expected_tail: 0,
+            generation: 1,
+        },
+    };
+    let call = |request| async { service.check_audited2(request).await };
+    let unavailable = call(request.clone()).await?;
+    assert!(!unavailable.audit.permitted && !unavailable.audit.committed);
+    assert!(matches!(
+        unavailable.decision.decisions[0].verdict,
+        Verdict::Deny { .. }
+    ));
+    let optional = service_for(
+        policy.clone(),
+        Some(Arc::new(crate::callbacks::AuditClient::new(
+            module,
+            binding,
+            permission_audit_config(false),
+            tinysecurity::Redactor::new(&RedactorConfig::default())?,
+        )?)),
+    );
+    let degraded = optional.check_audited2(request.clone()).await?;
+    assert!(degraded.audit.permitted && !degraded.audit.committed);
+    assert!(matches!(
+        degraded.decision.decisions[0].verdict,
+        Verdict::Allow
+    ));
+    let rows = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let change = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    host.serve_at(
+        callback_names2::OBJECT_PATH.parse()?,
+        PermissionAuditSink {
+            rows: rows.clone(),
+            policy,
+            change_generation: change.clone(),
+        },
+    )
+    .await?;
+    let allowed = call(request.clone()).await?;
+    assert!(allowed.audit.committed && allowed.audit.permitted);
+    assert!(matches!(
+        allowed.decision.decisions[0].verdict,
+        Verdict::Allow
+    ));
+    assert_eq!(call(request.clone()).await?, allowed);
+    let mut conflict = request.clone();
+    conflict.request.caller.call_id = "different-operation".into();
+    assert!(!call(conflict).await?.audit.permitted);
+    let mut overflow = request.clone();
+    overflow.audit.expected_tail = u64::MAX;
+    assert!(!call(overflow).await?.audit.permitted);
+    let mut stale = request.clone();
+    stale.audit.generation = 0;
+    assert!(!optional.check_audited2(stale).await?.audit.permitted);
+    assert_eq!(rows.lock().map_err(|_| "fixture rows")?.len(), 1);
+    verify_original_binding_and_policy_race(&service, &change, &rows).await?;
+    task.abort();
+    Ok(())
+}
+async fn verify_original_binding_and_policy_race(
+    service: &PolicyService,
+    change: &std::sync::atomic::AtomicBool,
+    rows: &Mutex<std::collections::BTreeMap<String, AuditSinkRequest2>>,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let evaluate = AuditedRequest2 {
+        request: EvaluateRequest {
+            caller: permission_check().caller,
+            call: ToolCall {
+                tool: "local_diagnostic".into(),
+                arguments_json: "{\"token\":\"first-private-secret\"}".into(),
+                checks: vec![Check::LocalDiagnostic {}],
+            },
+        },
+        audit: AuditCorrelation2 {
+            event_id: "c".repeat(32),
+            expected_tail: 1,
+            generation: 1,
+        },
+    };
+    let evaluated = service.evaluate_audited2(evaluate.clone()).await?;
+    assert!(evaluated.audit.committed && evaluated.audit.permitted);
+    assert_eq!(
+        service.evaluate_audited2(evaluate.clone()).await?,
+        evaluated
+    );
+    let mut substituted = evaluate.clone();
+    substituted.request.call.arguments_json = "{\"token\":\"other-private-secret\"}".into();
+    assert!(
+        !service
+            .evaluate_audited2(substituted)
+            .await?
+            .audit
+            .permitted,
+        "changing only a redacted secret must conflict under the original event identity"
+    );
+    let mut raced = evaluate;
+    raced.audit.event_id = "d".repeat(32);
+    raced.audit.expected_tail = 2;
+    change.store(true, std::sync::atomic::Ordering::SeqCst);
+    let stale = service.evaluate_audited2(raced).await?;
+    assert!(stale.audit.committed && stale.audit.receipt.is_some() && !stale.audit.permitted);
+    assert!(matches!(stale.decision.verdict, Verdict::Deny { .. }));
+    assert_eq!(rows.lock().map_err(|_| "fixture rows")?.len(), 3);
+    Ok(())
+}
+#[tokio::test]
+async fn required_audit_cannot_be_bypassed_by_an_unbound_permission_check()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let task = Broker::new().spawn(bus.clone());
+    let host = Connection::connect(bus.connect().await?).await?;
+    let module = Connection::connect(bus.connect().await?).await?;
+    let audit = crate::callbacks::AuditClient::new(
+        module,
+        crate::callbacks::PeerBinding::new(
+            host.unique_name().as_ref().map(tinybus::BusName::as_str),
+        )?,
+        AuditConfig2 {
+            scope: SubjectScope {
+                user: "user".into(),
+                workspace: "workspace".into(),
+                agent: "agent".into(),
+            },
+            stream_id: "a".repeat(32),
+            timeout_ms: 100,
+            required: true,
+            native_path: None,
+            max_bytes: 10000,
+            max_archives: 3,
+            journal_max_bytes: 100_000,
+            journal_max_events: 1000,
+        },
+        tinysecurity::Redactor::new(&RedactorConfig::default())?,
+    )?;
+    let service = service_for(
+        Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
+        Some(Arc::new(audit)),
+    );
+    let request = CheckRequest {
+        caller: CallerContext {
+            agent: "agent".into(),
+            call_id: "call".into(),
+            tier: AccessTier::Full,
+            ..Default::default()
+        },
+        checks: vec![Check::LocalDiagnostic {}],
+    };
+    let response: CheckResponse = serde_json::from_value(
+        service
+            .call(
+                &names::methods::CHECK.parse()?,
+                serde_json::to_value((request,))?,
+            )
+            .await?,
+    )?;
+    assert!(
+        response
+            .decisions
+            .iter()
+            .all(|decision| !matches!(decision.verdict, Verdict::Allow)),
+        "required audit must prevent unbound permission without a durable event"
+    );
+    task.abort();
+    Ok(())
+}
 #[test]
 fn only_implemented_members_are_advertised() -> std::result::Result<(), Box<dyn std::error::Error>>
 {

@@ -82,6 +82,15 @@ impl std::fmt::Debug for AuditClient {
     }
 }
 impl AuditClient {
+    pub(crate) fn required(&self) -> bool {
+        self.config.required
+    }
+    pub(crate) fn scope(&self) -> &tinysecurity_bus::SubjectScope {
+        &self.config.scope
+    }
+    pub(crate) fn stream_id(&self) -> &str {
+        &self.config.stream_id
+    }
     pub(crate) fn new(
         connection: tinybus::Connection,
         binding: PeerBinding,
@@ -149,8 +158,15 @@ impl AuditClient {
         &self,
         batch: tinysecurity_bus::AuditSinkRequest2,
     ) -> tinysecurity_bus::AuditResponse2 {
+        self.append_with_registry(batch, self.registry()).await
+    }
+    pub(crate) async fn append_with_registry(
+        &self,
+        batch: tinysecurity_bus::AuditSinkRequest2,
+        registry: Result<tinysecurity::Redactor>,
+    ) -> tinysecurity_bus::AuditResponse2 {
         use tinysecurity_bus::{AuditHealth2, AuditResponse2};
-        let clean = self.registry().and_then(|registry| {
+        let clean = registry.and_then(|registry| {
             tinysecurity::audit::sanitize(&batch, &registry)
                 .map_err(|_| tinybus::Error::failed("audit sanitation failed"))
         });

@@ -1,4 +1,45 @@
 use super::*;
+#[test]
+fn diagnostic_formatting_never_exposes_nested_audit_payloads_or_storage_locations() {
+    let mut request = request();
+    request.events[0].arguments_json = "private-secret".into();
+    request.events[0].attribution = "private-actor".into();
+    let receipt = AuditSinkResponse2 {
+        scope: request.scope.clone(),
+        stream_id: request.stream_id.clone(),
+        events: vec![],
+        new_tail: 0,
+    };
+    let response = AuditResponse2 {
+        permitted: true,
+        committed: true,
+        health: AuditHealth2::Healthy,
+        receipt: Some(receipt.clone()),
+    };
+    let config = AuditConfig2 {
+        scope: request.scope.clone(),
+        stream_id: request.stream_id.clone(),
+        timeout_ms: 100,
+        required: true,
+        native_path: Some("private-file".into()),
+        max_bytes: 1000,
+        max_archives: 2,
+        journal_max_bytes: 10000,
+        journal_max_events: 10,
+    };
+    for diagnostic in [
+        format!("{:?}", request.events[0]),
+        format!("{request:?}"),
+        format!("{receipt:?}"),
+        format!("{response:?}"),
+        format!("{config:?}"),
+    ] {
+        assert!(diagnostic.contains("REDACTED"));
+        for sensitive in ["private-", "safe-user", "safe-workspace", "safe-agent"] {
+            assert!(!diagnostic.contains(sensitive));
+        }
+    }
+}
 fn request() -> AuditSinkRequest2 {
     AuditSinkRequest2 {
         scope: SubjectScope {

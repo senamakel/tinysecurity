@@ -167,9 +167,26 @@ decisions, with configurable bounded rotation and OS-appropriate restricted
 permissions. Audit delivery failure behavior is explicit for required-audit
 operations: when a required sink cannot confirm a row within its bounded wait,
 deny the associated operation before execution. Optional audit may report a
-sanitized degraded-health event without claiming persistence. The bootstrap
-advertises no audit capability. The module never claims an audit row committed
-before storage or the configured sink confirms it.
+sanitized degraded-health event without claiming persistence. Contract 1.6 adds
+strict `EvaluateAudited2` and `CheckAudited2` requests containing the original
+permission request and stable event ID, expected tail and generation. The module
+constructs and sanitizes the event from that request and its computed result;
+an internally computed SHA-256 digest of versioned, domain-separated canonical
+original content binds retries even when redaction would collapse two inputs.
+This unkeyed digest is correlation, not authentication or anonymization:
+low-entropy originals may be guessed offline. No caller-supplied digest is trusted;
+scope and stream come from trusted initialization. Caller verdicts, replacement
+arguments and committed booleans cannot supply permission. Required audit makes
+unbound `Evaluate`/`Check` allows unavailable and refuses other unbound path,
+command and scoped egress authorization/consumption methods before they grant or
+reserve execution. Registration, classification and descriptive members remain
+available; audited workflows for those additional scopes are later work.
+Exact retries retain all correlation
+metadata; tail overflow or a mismatched generation denies before callback. A
+generation change during callback denies every allow while retaining committed
+receipt evidence. Terminal execution audit is a separate event. The module never
+claims an audit row committed before authoritative storage confirms it. Windows
+local storage remains fail-closed pending the preprovisioned namespace/ACL engine.
 
 ## Sandbox and crypto
 

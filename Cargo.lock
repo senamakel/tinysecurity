@@ -861,6 +861,7 @@ version = "0.2.3"
 dependencies = [
  "async-trait",
  "serde_json",
+ "sha2",
  "tempfile",
  "tinybus",
  "tinybus-module",

@@ -72,9 +72,11 @@ jobs:
             macOS) module=target/debug/libtinysecurity_module.dylib ;;
           esac
           cargo run -p tinysecurity-module --example verify_module -- "$module"
+          cargo run -p tinysecurity-module --example audit_native_contract -- "$module"
           # Installed examples must also work outside the workspace root.
           module="$(pwd)/$module"
           (cd target && ./debug/examples/verify_module "$module")
+          (cd target && ./debug/examples/audit_native_contract "$module")
 
       - name: Verify Windows module through the restricted native copy
         if: ${{ runner.os == 'Windows' }}
@@ -114,11 +116,15 @@ jobs:
           $verifiedModule = Join-Path $verifyRoot "$libraryName.dll"
           Copy-Item -LiteralPath $module -Destination $verifiedModule
           cargo run --locked --package tinysecurity-module --example verify_module -- $verifiedModule
+          cargo run --locked --package tinysecurity-module --example audit_native_contract -- $verifiedModule
           $verifier = (Resolve-Path 'target/debug/examples/verify_module.exe').Path
+          $auditVerifier = (Resolve-Path 'target/debug/examples/audit_native_contract.exe').Path
           Push-Location $env:RUNNER_TEMP
           try {
             & $verifier $verifiedModule
             if ($LASTEXITCODE -ne 0) { throw 'native verifier failed outside workspace' }
+            & $auditVerifier $verifiedModule
+            if ($LASTEXITCODE -ne 0) { throw 'native audit verifier failed outside workspace' }
           } finally {
             Pop-Location
           }

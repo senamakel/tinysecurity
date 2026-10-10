@@ -24,6 +24,66 @@ fn failure(error: &tinysecurity_bus::Error) -> tinybus::Error {
     tinybus::Error::failed(error.to_string())
 }
 impl PolicyService {
+    fn requires_bound_audit(&self) -> bool {
+        self.audit.as_ref().is_some_and(|client| client.required())
+    }
+    fn require_unbound_permission(&self) -> BusResult<()> {
+        if self.requires_bound_audit() {
+            return Err(tinybus::Error::failed(
+                "required audit needs bound permission",
+            ));
+        }
+        Ok(())
+    }
+    async fn audit_permission(
+        &self,
+        request: serde_json::Value,
+        result: serde_json::Value,
+        correlation: tinysecurity_bus::AuditCorrelation2,
+        generation: u64,
+        redactor: tinysecurity::Redactor,
+    ) -> BusResult<tinysecurity_bus::AuditResponse2> {
+        use tinysecurity_bus::{
+            AuditEvent2, AuditHealth2, AuditKind2, AuditResponse2, AuditSinkRequest2,
+        };
+        let denied = || AuditResponse2 {
+            permitted: false,
+            committed: false,
+            health: AuditHealth2::Denied,
+            receipt: None,
+        };
+        let client = self
+            .audit
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("audit unavailable"))?;
+        let Some(sequence) = correlation.expected_tail.checked_add(1) else {
+            return Ok(denied());
+        };
+        if correlation.generation != generation {
+            return Ok(denied());
+        }
+        let batch = AuditSinkRequest2 {
+            scope: client.scope().clone(),
+            stream_id: client.stream_id().to_owned(),
+            expected_tail: correlation.expected_tail,
+            events: vec![AuditEvent2 {
+                sequence,
+                event_id: correlation.event_id,
+                generation,
+                kind: AuditKind2::Shell,
+                attribution: "permission".into(),
+                arguments_json: permission_payload(serde_json::json!([request, result]))?,
+                rule_ids: vec![],
+            }],
+        };
+        let mut evidence = client.append_with_registry(batch, Ok(redactor)).await;
+        if self.read()?.info().generation != generation {
+            // A policy race cannot turn a durable old-generation event into permission.
+            // Keep its exact committed receipt for reconciliation and diagnostics.
+            evidence.permitted = false;
+        }
+        Ok(evidence)
+    }
     async fn run_path<T, F>(&self, id: tinysecurity_bus::PathPolicyId, operation: F) -> BusResult<T>
     where
         T: Send + 'static,
@@ -104,17 +164,79 @@ impl PolicyService {
 impl PolicyService {
     async fn evaluate(&self, request: EvaluateRequest) -> BusResult<Decision> {
         let policy = self.read()?.clone();
-        tokio::task::spawn_blocking(move || {
+        let mut decision = tokio::task::spawn_blocking(move || {
             policy.evaluate(&request).map_err(|error| failure(&error))
         })
         .await
-        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
+        if self.requires_bound_audit() {
+            deny_allow(&mut decision);
+        }
+        Ok(decision)
     }
     async fn check(&self, request: CheckRequest) -> BusResult<CheckResponse> {
         let policy = self.read()?.clone();
-        tokio::task::spawn_blocking(move || policy.check(&request).map_err(|error| failure(&error)))
-            .await
-            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+        let mut response = tokio::task::spawn_blocking(move || {
+            policy.check(&request).map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
+        if self.requires_bound_audit() {
+            response.decisions.iter_mut().for_each(deny_allow);
+        }
+        Ok(response)
+    }
+    async fn evaluate_audited2(
+        &self,
+        request: tinysecurity_bus::EvaluateAuditedRequest2,
+    ) -> BusResult<tinysecurity_bus::EvaluateAuditedResponse2> {
+        let policy = self.read()?.clone();
+        let registry = policy.redactor();
+        let original = request.request.clone();
+        let mut decision = tokio::task::spawn_blocking(move || {
+            policy.evaluate(&original).map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
+        let audit = self
+            .audit_permission(
+                serde_json::to_value(&request.request)?,
+                serde_json::to_value(&decision)?,
+                request.audit,
+                decision.generation,
+                registry,
+            )
+            .await?;
+        if !audit.permitted {
+            deny_allow(&mut decision);
+        }
+        Ok(tinysecurity_bus::AuditedResponse2 { decision, audit })
+    }
+    async fn check_audited2(
+        &self,
+        request: tinysecurity_bus::CheckAuditedRequest2,
+    ) -> BusResult<tinysecurity_bus::CheckAuditedResponse2> {
+        let policy = self.read()?.clone();
+        let registry = policy.redactor();
+        let original = request.request.clone();
+        let mut decision = tokio::task::spawn_blocking(move || {
+            policy.check(&original).map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
+        let audit = self
+            .audit_permission(
+                serde_json::to_value(&request.request)?,
+                serde_json::to_value(&decision)?,
+                request.audit,
+                decision.generation,
+                registry,
+            )
+            .await?;
+        if !audit.permitted {
+            decision.decisions.iter_mut().for_each(deny_allow);
+        }
+        Ok(tinysecurity_bus::AuditedResponse2 { decision, audit })
     }
     // Host-only configuration on a private, trusted in-process bus. This module
     // evaluates policy; it is not a public authentication or filesystem service.
@@ -129,6 +251,7 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::PathValidationRequest,
     ) -> BusResult<tinysecurity_bus::PathValidationResult> {
+        self.require_unbound_permission()?;
         self.run_path(request.policy_id, move |scope| {
             scope.validate(&request.path, false)
         })
@@ -138,12 +261,14 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::PathValidationRequest,
     ) -> BusResult<tinysecurity_bus::PathValidationResult> {
+        self.require_unbound_permission()?;
         self.run_path(request.policy_id, move |scope| {
             scope.validate(&request.path, true)
         })
         .await
     }
     async fn check_path(&self, request: tinysecurity_bus::PathCheckRequest) -> BusResult<bool> {
+        self.require_unbound_permission()?;
         self.run_path(request.policy_id, move |scope| {
             scope.check_path(&request.path, request.kind)
         })
@@ -183,6 +308,7 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::CommandRequest,
     ) -> BusResult<tinysecurity_bus::CommandDecision> {
+        self.require_unbound_permission()?;
         let scope = self
             .commands
             .lock()
@@ -215,6 +341,7 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::ScopedEgressRequest,
     ) -> BusResult<tinysecurity_bus::ScopedEgressResponse> {
+        self.require_unbound_permission()?;
         let scope = self
             .egress
             .lock()
@@ -241,6 +368,7 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::ScopedEgressRequest,
     ) -> BusResult<tinysecurity_bus::ScopedEgressResponse> {
+        self.require_unbound_permission()?;
         let scope = self
             .egress
             .lock()
@@ -266,6 +394,7 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::ConsumeEgressAuthorizationRequest,
     ) -> BusResult<bool> {
+        self.require_unbound_permission()?;
         self.consume_egress_with(request, |scope, request, generation| {
             scope.consume_request(
                 &request.request,
@@ -360,6 +489,30 @@ impl PolicyService {
     async fn policy_info(&self) -> BusResult<PolicyInfo> {
         let info = { self.read()?.info() };
         std::future::ready(Ok(info)).await
+    }
+}
+fn permission_payload(mut original: serde_json::Value) -> BusResult<String> {
+    use sha2::{Digest, Sha256};
+    // Explicit recursive key order is independent of serde_json's preserve_order feature.
+    original.sort_all_objects();
+    let serialized = serde_json::to_vec(&original)?;
+    let mut digest = Sha256::new();
+    digest.update(b"tinysecurity/audited-permission/v1\0");
+    digest.update(serialized);
+    let binding = format!("{:x}", digest.finalize());
+    // This digest binds content across redaction collisions. It is correlation,
+    // not authentication or anonymization of guessable low-entropy originals.
+    Ok(serde_json::to_string(&serde_json::json!({
+        "original_binding": binding,
+        "request_and_decision": original,
+    }))?)
+}
+fn deny_allow(decision: &mut Decision) {
+    if matches!(decision.verdict, tinysecurity_bus::Verdict::Allow) {
+        decision.verdict = tinysecurity_bus::Verdict::Deny {
+            reason: tinysecurity_bus::DenialReason::ApprovalUnavailable,
+        };
+        decision.cacheable = false;
     }
 }
 fn service_for(

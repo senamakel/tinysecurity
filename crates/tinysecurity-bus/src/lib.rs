@@ -3,6 +3,7 @@
 //! Hosts link this crate; the policy engine and native module stay isolated.
 //! Implements bootstrap checks plus immutable native filesystem scope contracts.
 mod audit;
+mod audited;
 mod callbacks;
 mod command_policy;
 mod egress;
@@ -13,6 +14,7 @@ mod policy;
 mod prompt;
 mod redact;
 pub use audit::*;
+pub use audited::*;
 pub use callbacks::*;
 pub use command_policy::*;
 pub use egress::*;
@@ -24,7 +26,7 @@ pub use prompt::*;
 pub use redact::RedactorConfig;
 pub mod names;
 /// Current wire vocabulary version, independent of the artifact version.
-pub const CONTRACT_VERSION: (u32, u32) = (1, 5);
+pub const CONTRACT_VERSION: (u32, u32) = (1, 6);
 /// Whether a remote module's advertised version supplies this host's vocabulary.
 ///
 /// `version` is the provider version received by the host, not a host requirement

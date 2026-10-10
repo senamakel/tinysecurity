@@ -21,6 +21,8 @@ tinysecurity-bus = { workspace = true }
 tinybus = { workspace = true }
 tinybus-module = { workspace = true }
 serde_json = { workspace = true }
+# Stable module-derived original-content correlation for redacted audit retries.
+sha2.workspace = true
 # Filesystem policy runs on blocking workers without blocking the module runtime.
 tokio = { workspace = true }
 

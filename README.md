@@ -12,6 +12,15 @@ Blocked original content denies; suspicious content denies with
 approval-unavailable until the durable approval engine exists. Scan verdicts
 never grant permission, and redaction never clears an existing scan finding.
 
+Contract 1.6 supplies `Audit2`, `EvaluateAudited2` and `CheckAudited2` with
+authenticated exact audit callbacks and a bounded [native journal](crates/tinysecurity-audit/README.md).
+The audited permission methods derive events from the actual original request,
+computed decision and current generation. Required audit disables unbound
+`Evaluate`/`Check` permission and other unbound path/command/egress authorization;
+exact durable evidence precedes an audited allow. Scope registration and
+descriptive classification remain available.
+Windows local journal support remains unavailable at this checkpoint.
+
 The engine denies unknown tools and unsupported effects. Argument-free `pwd`,
 `date`, `uname`, and `whoami` are its supported shell diagnostics. Paths pass
 an unconditional credential/system/traversal floor and native ancestor
@@ -22,7 +31,7 @@ diagnostics work with disabled autonomy, which is the default.
 This is bootstrap infrastructure for [OpenHuman #7328](https://github.com/tinyhumansai/openhuman/issues/7328)
 and [TinySecurity #1](https://github.com/tinyhumansai/tinysecurity/issues/1).
 It does **not** complete the migration. Approval persistence,
-network connection pinning, sandbox planning, audit, judge and crypto engines
+network connection pinning, sandbox planning, judge and crypto engines
 remain unavailable. Reserved wire types do not advertise callable handlers.
 There is no production host migration until an upstream release and checksum
 manifest exist.
@@ -34,6 +43,7 @@ manifest exist.
 | `tinysecurity-bus` | Wire types, errors, names and compatibility; normal dependencies only serde and thiserror |
 | `tinysecurity-policy` | Native conservative policy engine |
 | `tinysecurity-redact` | Internal immutable redaction registry and semantic intent scanner |
+| `tinysecurity-audit` | Internal bounded authoritative journal and sanitized exact receipts |
 | `tinysecurity` | Internal implementation re-export |
 | `tinysecurity-module` | SDK initialization, bus dispatch and ABI cdylib |
 
