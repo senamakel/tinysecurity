@@ -1,5 +1,6 @@
-use super::windows_tests::{batch, fixture, identity};
 use super::*;
+
+use super::windows_tests::{batch, fixture, identity};
 use std::{fs::OpenOptions, io::Write, os::windows::fs::OpenOptionsExt};
 use windows_permissions::{
     LocalBox, SecurityDescriptor,
@@ -123,13 +124,46 @@ fn windows_pinned_directory_cannot_be_substituted_while_sink_is_alive()
     let destination = root.path().with_extension("moved");
     assert!(!destination.exists());
     let sink = JsonlSink::open(&path, 700, 3)?;
-    assert!(std::fs::rename(root.path(), &destination).is_err());
+    let renamed = std::fs::rename(root.path(), &destination);
+    if renamed.is_ok() {
+        // Restore a failing fixture before the assertion so it does not leak a
+        // renamed directory. This must still fail if substitution succeeded.
+        std::fs::rename(&destination, root.path())?;
+    }
+    assert!(renamed.is_err());
     assert!(!destination.exists());
     let receipt = sink.append(&batch(0))?;
     assert_eq!(sink.append(&batch(0))?, receipt);
     drop(sink);
     std::fs::rename(root.path(), &destination)?;
     std::fs::rename(&destination, root.path())?;
+    Ok(())
+}
+
+#[test]
+fn windows_directory_pin_probe_reports_metadata_and_data_access_share_semantics()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    for access in [0x0002_0080, 0x0002_0081] {
+        let (root, _path) = fixture()?;
+        let destination = root.path().with_extension("pin-probe");
+        assert!(!destination.exists());
+        let handle = OpenOptions::new()
+            .access_mode(access)
+            .share_mode(3)
+            .custom_flags(0x0220_0000)
+            .open(root.path())?;
+        let result = std::fs::rename(root.path(), &destination);
+        let errno = result.as_ref().err().and_then(std::io::Error::raw_os_error);
+        eprintln!(
+            "audit-stage=pin-share-probe access={access} share=3 flags=35651584 renamed={} errno={errno:?} handle-alive={}",
+            result.is_ok(),
+            handle.metadata()?.is_dir()
+        );
+        drop(handle);
+        if result.is_ok() {
+            std::fs::rename(&destination, root.path())?;
+        }
+    }
     Ok(())
 }
 
