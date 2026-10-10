@@ -2,6 +2,10 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 /// Verified host context; never populated directly from model arguments.
+///
+/// This is a trusted host-to-module contract, not an authentication mechanism.
+/// Only the authenticated host adapter may construct it. The host must not expose
+/// policy members to untrusted callers or forward their context/check claims.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CallerContext {
@@ -54,7 +58,8 @@ pub struct ToolCall {
     pub tool: String,
     /// Original arguments encoded as JSON text, never a credential carrier.
     pub arguments_json: String,
-    /// Checks derived by the trusted host adapter.
+    /// Checks derived by the trusted host adapter from the operation it will execute.
+    /// Never forward checks supplied by a model, tool client or remote caller.
     pub checks: Vec<Check>,
 }
 /// A check of a concrete operation. The bootstrap has no URL authorization.
@@ -63,7 +68,8 @@ pub struct ToolCall {
 pub enum Check {
     /// Filesystem operation over its actual target path.
     Path {
-        /// Target path.
+        /// Absolute native target resolved by the host against the operation's actual
+        /// working directory. Relative paths fail closed in both policy modes.
         path: String,
         /// Whether mutation is requested.
         write: bool,
@@ -182,6 +188,12 @@ impl Default for PolicyConfig {
     }
 }
 /// Secret injected at initialization only. Its Debug output is always redacted.
+///
+/// Serialization intentionally carries plaintext to SDK init/reinit over the
+/// trusted in-process loading boundary. This is not a safe diagnostic serializer:
+/// never serialize initialization configuration into logs, public RPC responses,
+/// transcripts, approval records or audit events. No bus invocation or
+/// [`PolicyInfo`] contains this type.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Secret(pub String);
@@ -230,7 +242,9 @@ pub struct PolicyInfo {
     pub contract_version: (u32, u32),
     /// Effective generation.
     pub generation: u64,
-    /// Effective public policy settings; no judge credentials.
+    /// Effective settings for the trusted host's policy UI; no judge credentials.
+    /// Includes host paths, so this response must not be exposed to model tools
+    /// or unauthenticated callers.
     pub policy: PolicyConfig,
     /// Advertised implemented methods.
     pub capabilities: Vec<String>,

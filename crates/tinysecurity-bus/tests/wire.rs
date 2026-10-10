@@ -312,11 +312,15 @@ fn unknown_fields_and_enum_tags_are_rejected_at_security_boundaries()
         serde_json::from_str::<Check>(r#"{"kind":"local_diagnostic","unexpected":true}"#).is_err()
     );
     assert!(serde_json::from_str::<ModuleConfig>("{}").is_err());
-    assert!(!is_compatible((2, 0)));
-    assert!(is_compatible((1, 0)));
-    assert!(is_compatible((1, 4)));
     Ok(())
 }
 
 golden!(DecideRequest, roundtrip_decide_request);
 golden!(DecideResponse, roundtrip_decide_response);
+
+#[test]
+fn remote_provider_with_newer_minor_supplies_this_hosts_older_vocabulary() {
+    assert!(is_compatible(CONTRACT_VERSION));
+    assert!(is_compatible((CONTRACT_VERSION.0, CONTRACT_VERSION.1 + 4)));
+    assert!(!is_compatible((CONTRACT_VERSION.0 + 1, 0)));
+}

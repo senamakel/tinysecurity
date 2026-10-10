@@ -5,8 +5,8 @@ is `ai.tinyhumans.tinysecurity.Policy`, with object
 `/ai/tinyhumans/tinysecurity/Policy` and methods `Evaluate`, `Check`, `PolicyInfo`.
 Accepted SDK reinit advances a generation and emits `PolicyChanged`; rejected
 configurations retain the old policy and generation. There are no Init/Reinit
-RPC methods. Configuration must include `contract_version`, `policy`, and
-`judge` (`null` in this bootstrap).
+RPC methods. Configuration requires `contract_version` and `policy`. The optional
+`judge` field may be omitted or set to `null` in this bootstrap.
 
 ```json
 {
@@ -42,7 +42,8 @@ identities are `local_diagnostic`, `path_check`, and `command_check`, each
 requiring matching nonempty checks. Unknown tools deny even with claimed safe
 checks. Check is an internal trusted-host operation, not a model-visible tool.
 
-Path checks resolve existing ancestors, including symlinks, and enforce the
+Path checks require the host's absolute operation-resolved target, resolve existing
+ancestors including symlinks, and enforce the
 credential/system/traversal floor on lexical and resolved forms even when
 policy is disabled. Unknown native path dialects, broken symlinks and failed
 resolution deny. Enabled action roots must resolve to existing directories;
@@ -87,7 +88,6 @@ The same verifier is used for local and downloaded release artifacts. Local
 verification also rejects a wrong digest and tampered bytes before activation,
 rejects missing SDK configuration, and confirms stopped modules refuse reinit.
 Fault-injection and timeout latching remain SDK conformance work, not a
-bootstrap claim. Timing
-uses 500 sequential calls per method, one Evaluate call for one diagnostic or
+bootstrap claim. Timing uses 500 sequential calls per method, one Evaluate call for one diagnostic or
 one Check call for two checks per sample. See measured results and migration
 budgets in [performance](docs/performance.md).

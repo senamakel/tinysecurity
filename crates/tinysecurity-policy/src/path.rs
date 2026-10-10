@@ -29,6 +29,12 @@ pub(super) fn floor(path: &str) -> bool {
         return true;
     }
     [
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib64",
+        "/usr",
+        "/library",
         "/etc",
         "/root",
         "/boot",
@@ -37,13 +43,41 @@ pub(super) fn floor(path: &str) -> bool {
         "/system",
         "/private/etc",
         "/private/var/root",
-        "c:/windows",
-        "c:/program files",
-        "c:/program files (x86)",
-        "c:/programdata",
     ]
     .iter()
     .any(|prefix| normalized == *prefix || normalized.starts_with(&format!("{prefix}/")))
+        || windows_system_root(normalized)
+}
+// Match Windows system roots on every drive, including native/extended aliases.
+// This is lexical on every OS so a foreign path cannot evade the floor.
+fn windows_system_root(path: &str) -> bool {
+    let components: Vec<_> = path.split('/').filter(|part| !part.is_empty()).collect();
+    let root_index = if components.first().is_some_and(|part| {
+        let bytes = part.as_bytes();
+        (bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+            || part.starts_with("volume{")
+    }) {
+        1
+    } else if components.first() == Some(&"device")
+        && components
+            .get(1)
+            .is_some_and(|part| part.starts_with("harddiskvolume"))
+    {
+        2
+    } else {
+        0
+    };
+    components.get(root_index).is_some_and(|part| {
+        let root = part
+            .split(':')
+            .next()
+            .unwrap_or(part)
+            .trim_end_matches([' ', '.']);
+        matches!(
+            root,
+            "windows" | "program files" | "program files (x86)" | "programdata"
+        )
+    })
 }
 pub(super) fn valid_root(root: &str) -> bool {
     Path::new(root).is_absolute()
@@ -96,15 +130,12 @@ pub(super) fn check(
         return Err(DenialReason::PathResolution);
     }
     let input = Path::new(path);
-    let absolute = if input.is_absolute() {
-        input.to_path_buf()
-    } else if config.enabled {
-        Path::new(&config.action_dir).join(input)
-    } else {
-        std::env::current_dir()
-            .map_err(|_| DenialReason::PathResolution)?
-            .join(input)
-    };
+    // The host must resolve against the operation's real working directory.
+    // Module cwd/action roots cannot stand in for that execution context.
+    if !input.is_absolute() {
+        return Err(DenialReason::PathResolution);
+    }
+    let absolute = input.to_path_buf();
     if floor(&absolute.to_string_lossy()) {
         return Err(DenialReason::Floor);
     }

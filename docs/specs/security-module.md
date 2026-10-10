@@ -45,13 +45,22 @@ The host admits the module through digest verification and `attested_proxy`.
 It supplies policy through SDK init/reinit configuration, not invented `Init`
 or `Reinit` RPC members. A request's origin,
 agent, thread, flow and access tier come from verified host context, never
-model arguments. A claimed command class cannot authorize a call: the engine
-must compute it or conservatively strengthen it. Unknown commands are writes.
+model arguments. `CallerContext` and operation checks are serialized only by
+that trusted adapter; the module is not a public authentication endpoint.
+Hosts must not expose its members to untrusted callers or forward their claims.
+Filesystem checks require an absolute native path resolved against the actual
+operation's working directory; the module rejects relative targets even when
+discretionary policy is disabled. A claimed command class cannot authorize a
+call: the engine must compute it or conservatively strengthen it. Unknown commands are writes.
 
 Judge credentials are resolved by the host's backend credential resolver and
 injected only at init/reinit. They never appear in per-call arguments, debug
 formatting, logs, approval records or audit events. Debug output for any config
-carrying secrets is redacted. Configuration validation precedes activation;
+carrying secrets is redacted. Init configuration serialization intentionally
+carries credentials to the trusted SDK loading boundary and must never be used
+for diagnostics or public responses. `PolicyInfo` excludes judge configuration;
+its effective roots are available only to trusted host policy UI, not acting
+tools or unauthenticated callers. Configuration validation precedes activation;
 failed reinit retains the old effective policy and generation.
 
 Missing, incompatible, uninitialized, faulted or timed-out modules deny external
@@ -72,7 +81,8 @@ an approval store; it must not mint unusable request identifiers.
 Autonomy is disabled by default. When disabled, command allowlists, action
 budgets, workspace boundaries and interactive policy gates are inactive.
 The unconditional floor still denies credential stores (`.ssh`, `.gnupg`,
-`.aws`), protected system roots, parent traversal and NUL paths. It applies
+`.aws`), protected system roots (including Unix executables/libraries and Windows
+roots on every drive), parent traversal and NUL paths. It applies
 before discretionary allowances and trusted-root grants. Enabled policy
 honors action roots, forbidden roots, read/write grants, command classes,
 tool rules and rate limits. Symlink and OS path normalization failures deny;
@@ -155,8 +165,11 @@ reusable approval for a different call or bypass mutable authorization checks.
 Audit covers policy changes, approvals, judge verdicts, execution and sandbox
 decisions, with configurable bounded rotation and OS-appropriate restricted
 permissions. Audit delivery failure behavior is explicit for required-audit
-operations. The module never claims an audit row committed before storage or
-the configured sink confirms it.
+operations: when a required sink cannot confirm a row within its bounded wait,
+deny the associated operation before execution. Optional audit may report a
+sanitized degraded-health event without claiming persistence. The bootstrap
+advertises no audit capability. The module never claims an audit row committed
+before storage or the configured sink confirms it.
 
 ## Sandbox and crypto
 

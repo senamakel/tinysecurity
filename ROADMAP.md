@@ -1,7 +1,8 @@
 # TinySecurity roadmap
 
-The bootstrap implements conservative policy evaluation, ordered checks,
-versioned contracts, SDK init/reinit and native loading. It intentionally does
+The current bootstrap PR implements conservative policy evaluation, ordered checks,
+versioned wire contracts, SDK init/reinit and native loading. Publishing those
+contracts/artifacts remains pending upstream review and release. It intentionally does
 not close the security extraction tracker.
 
 The [implementation plan](docs/plans/security-module.md) orders the remaining

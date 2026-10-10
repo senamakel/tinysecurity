@@ -145,7 +145,11 @@ fn native_path_scope_access_and_approval_checks_are_conservative()
         let response = policy.check(&CheckRequest {
             caller: caller(),
             checks: vec![Check::Path {
-                path: path.into(),
+                path: if std::path::Path::new(path).is_absolute() {
+                    path.into()
+                } else {
+                    action.join(path).to_string_lossy().into()
+                },
                 write,
             }],
         })?;
@@ -159,7 +163,7 @@ fn native_path_scope_access_and_approval_checks_are_conservative()
     let denied = policy.check(&CheckRequest {
         caller: reader,
         checks: vec![Check::Path {
-            path: "readable".into(),
+            path: action.join("readable").to_string_lossy().into(),
             write: true,
         }],
     })?;
@@ -195,11 +199,13 @@ fn symlinked_credential_store_and_outside_root_never_bypass_policy()
     let action = fixture.path().join("action");
     let state = fixture.path().join("state");
     let secrets = fixture.path().join(".ssh");
+    let outside = fixture.path().join("outside");
+    std::fs::create_dir_all(&outside)?;
     std::fs::create_dir_all(&action)?;
     std::fs::create_dir_all(&state)?;
     std::fs::create_dir_all(&secrets)?;
     std::os::unix::fs::symlink(&secrets, action.join("credentials"))?;
-    std::os::unix::fs::symlink(&state, action.join("outside"))?;
+    std::os::unix::fs::symlink(&outside, action.join("outside"))?;
     std::os::unix::fs::symlink(action.join("missing"), action.join("broken"))?;
     let policy = Policy::new(ModuleConfig {
         policy: PolicyConfig {
@@ -218,7 +224,7 @@ fn symlinked_credential_store_and_outside_root_never_bypass_policy()
         let response = policy.check(&CheckRequest {
             caller: caller(),
             checks: vec![Check::Path {
-                path: path.into(),
+                path: action.join(path).to_string_lossy().into(),
                 write: false,
             }],
         })?;
