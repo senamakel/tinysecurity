@@ -88,12 +88,14 @@ impl JsonlSink {
         }
         let directory = Directory::open(path.parent().ok_or(Error::Permissions)?)?;
         let name: PathBuf = path.file_name().ok_or(Error::Permissions)?.into();
-        for suffix in [".lock", ".journal"] {
-            directory
-                .file(&sibling(&name, suffix))?
-                .sync_all()
-                .map_err(|_| Error::Storage)?;
-        }
+        directory
+            .file(&sibling(&name, ".lock"))?
+            .sync_all()
+            .map_err(|_| Error::Storage)?;
+        directory
+            .authority(&sibling(&name, ".journal"))?
+            .sync_all()
+            .map_err(|_| Error::Storage)?;
         directory.sync()?;
         Ok(Self {
             redactor,
@@ -126,7 +128,7 @@ impl JsonlSink {
         self.append_locked(&clean)
     }
     fn append_locked(&self, batch: &AuditSinkRequest2) -> Result<AuditSinkResponse2> {
-        let mut journal = self.directory.file(&sibling(&self.name, ".journal"))?;
+        let mut journal = self.directory.authority(&sibling(&self.name, ".journal"))?;
         let recovered = crate::journal::recover(&mut journal, self.journal_bytes)?;
         let mut tail = 0;
         let mut replay = false;

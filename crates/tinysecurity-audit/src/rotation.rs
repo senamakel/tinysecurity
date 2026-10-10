@@ -1,11 +1,14 @@
 //! Pinned-directory restricted opens and one immutable sibling lock identity.
+#[cfg(windows)]
+pub(crate) use crate::windows::Directory;
+#[cfg(not(windows))]
 use crate::{Error, Result};
 #[cfg(unix)]
 use rustix::fs::{Mode, OFlags};
-use std::{
-    fs::File,
-    path::{Path, PathBuf},
-};
+#[cfg(not(windows))]
+use std::fs::File;
+use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 #[derive(Debug)]
 pub(crate) struct Directory {
     #[cfg(unix)]
@@ -13,6 +16,7 @@ pub(crate) struct Directory {
     #[cfg(not(unix))]
     _path: PathBuf,
 }
+#[cfg(not(windows))]
 impl Directory {
     pub(crate) fn open(path: &Path) -> Result<Self> {
         #[cfg(unix)]
@@ -89,6 +93,9 @@ impl Directory {
             let _ = (self, name);
             Err(Error::Unsupported)
         }
+    }
+    pub(crate) fn authority(&self, name: &Path) -> Result<File> {
+        self.file(name)
     }
     pub(crate) fn rotate(&self, current: &Path, archive: &Path) -> Result<()> {
         #[cfg(unix)]

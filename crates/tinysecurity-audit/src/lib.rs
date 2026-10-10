@@ -13,6 +13,8 @@ mod event;
 mod journal;
 mod rotation;
 mod sink;
+#[cfg(windows)]
+mod windows;
 pub use error::{Error, Result};
 pub use event::{opaque_id, sanitize};
 pub use sink::JsonlSink;
