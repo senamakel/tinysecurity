@@ -547,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "tinysecurity"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "serde_json",
  "tinysecurity-bus",
@@ -556,7 +556,7 @@ dependencies = [
 
 [[package]]
 name = "tinysecurity-bus"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "tinysecurity-module"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -578,7 +578,7 @@ dependencies = [
 
 [[package]]
 name = "tinysecurity-policy"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "getrandom 0.3.4",
  "serde_json",
