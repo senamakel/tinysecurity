@@ -196,7 +196,8 @@ fn home_expansion_prefix_reservations_and_boolean_queries() -> Result<(), Box<dy
     assert!(scope.check_path(&root.path().join("memory-alice"), PathCheckKind::Internal));
     assert!(scope.check_path(Path::new("/etc/passwd"), PathCheckKind::Protected));
     scope.0.enabled = false;
-    assert!(scope.resolved_allowed(Path::new("/ordinary/outside"), true));
+    let outside = tempfile::tempdir()?;
+    assert!(scope.resolved_allowed(&outside.path().join("ordinary/outside"), true));
     Ok(())
 }
 #[cfg(unix)]
