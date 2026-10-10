@@ -280,5 +280,8 @@ fn receipt(batch: &AuditSinkRequest2) -> AuditSinkResponse2 {
 #[path = "sink_tests.rs"]
 mod tests;
 #[cfg(all(test, windows))]
+#[path = "sink_windows_negative_tests.rs"]
+mod windows_negative_tests;
+#[cfg(all(test, windows))]
 #[path = "sink_windows_tests.rs"]
 mod windows_tests;

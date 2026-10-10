@@ -7,7 +7,7 @@ use windows_permissions::{
     wrappers,
 };
 
-fn batch(tail: u64) -> AuditSinkRequest2 {
+pub(super) fn batch(tail: u64) -> AuditSinkRequest2 {
     AuditSinkRequest2 {
         scope: SubjectScope {
             user: "00000001".into(),
@@ -27,7 +27,7 @@ fn batch(tail: u64) -> AuditSinkRequest2 {
         }],
     }
 }
-fn identity() -> std::result::Result<String, Box<dyn std::error::Error>> {
+pub(super) fn identity() -> std::result::Result<String, Box<dyn std::error::Error>> {
     let token = winsafe::HACCESSTOKEN::GetCurrentThreadEffectiveToken();
     let winsafe::TokenInfo::User(user) =
         token.GetTokenInformation(winsafe::co::TOKEN_INFORMATION_CLASS::User)?
@@ -38,7 +38,8 @@ fn identity() -> std::result::Result<String, Box<dyn std::error::Error>> {
         user.User.Sid().ok_or("token SID unavailable")?,
     )?)
 }
-fn fixture() -> std::result::Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error>> {
+pub(super) fn fixture()
+-> std::result::Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error>> {
     // The CI installer supplies a trusted empty parent before tests run. Missing
     // provisioning is a hard failure, never a skipped platform acceptance test.
     let root = std::env::var_os("TINYSECURITY_AUDIT_TEST_ROOT")
@@ -125,8 +126,20 @@ fn windows_rename_denied_before_commit_then_same_retry_commits_once()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (root, path) = fixture()?;
     crate::windows::diagnose(root.path());
-    let sink = stage("rotation-sink-open", JsonlSink::open(&path, 700, 3))?;
+    let max_bytes = 400;
+    let sink = stage("rotation-sink-open", JsonlSink::open(&path, max_bytes, 3))?;
     stage("rotation-first-append", sink.append(&batch(0)))?;
+    let first_size = std::fs::metadata(&path)?.len();
+    let next_size =
+        u64::try_from(serde_json::to_vec(&crate::sanitize(&batch(1), &sink.redactor)?)?.len())? + 1;
+    eprintln!(
+        "audit-stage=rotation-threshold first-bytes={first_size} next-bytes={next_size} limit={max_bytes}"
+    );
+    assert!(first_size <= max_bytes && next_size <= max_bytes);
+    assert!(
+        first_size + next_size > max_bytes,
+        "the held file must actually require a rename before candidate commit"
+    );
     let journal = path.with_file_name("audit.journal");
     let before = std::fs::read(&journal)?;
     let pin = OpenOptions::new().read(true).share_mode(3).open(&path)?;
