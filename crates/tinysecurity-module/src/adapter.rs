@@ -163,6 +163,44 @@ impl PolicyService {
             .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
     }
 
+    async fn redact(
+        &self,
+        request: tinysecurity_bus::RedactRequest,
+    ) -> BusResult<tinysecurity_bus::RedactResponse> {
+        let registry = self.read()?.redactor();
+        tokio::task::spawn_blocking(move || {
+            registry.redact(&request).map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+    }
+    async fn scan_prompt(
+        &self,
+        request: tinysecurity_bus::ScanPromptRequest,
+    ) -> BusResult<tinysecurity_bus::ScanResponse> {
+        let registry = self.read()?.redactor();
+        tokio::task::spawn_blocking(move || {
+            registry
+                .scan_prompt(&request)
+                .map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+    }
+    async fn scan_tool_definition(
+        &self,
+        request: tinysecurity_bus::ScanToolDefinitionRequest,
+    ) -> BusResult<tinysecurity_bus::ScanResponse> {
+        let registry = self.read()?.redactor();
+        tokio::task::spawn_blocking(move || {
+            registry
+                .scan_tool_definition(&request)
+                .map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+    }
+
     async fn policy_info(&self) -> BusResult<PolicyInfo> {
         let info = { self.read()?.info() };
         std::future::ready(Ok(info)).await
@@ -171,15 +209,32 @@ impl PolicyService {
 async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
     // Validate before activation. The SDK serializes reinitializations and
     // preserves a fault latch; this adapter never provides retry RPCs.
-    let candidate = Policy::new(config.clone()).map_err(|error| failure(&error))?;
+    let previous = ACTIVE
+        .get()
+        .map(|active| {
+            active
+                .read()
+                .map(|policy| policy.clone())
+                .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))
+        })
+        .transpose()?;
+    let candidate = tokio::task::spawn_blocking(move || {
+        if let Some(mut candidate) = previous {
+            candidate
+                .reinitialize(config)
+                .map_err(|error| failure(&error))?;
+            Ok(candidate)
+        } else {
+            Policy::new(config).map_err(|error| failure(&error))
+        }
+    })
+    .await
+    .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
     if let Some(active) = ACTIVE.get() {
         let mut guard = active
             .write()
             .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
-        let mut candidate = guard.clone();
-        candidate
-            .reinitialize(config)
-            .map_err(|error| failure(&error))?;
+
         let event = tinysecurity_bus::PolicyChanged {
             generation: candidate.info().generation,
         };
@@ -222,7 +277,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["Evaluate", "Check", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand"],
+    methods = ["Evaluate", "Check", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "Redact", "ScanPrompt", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = [],

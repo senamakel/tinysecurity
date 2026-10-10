@@ -9,6 +9,7 @@ use crate::{
 pub struct Policy {
     config: ModuleConfig,
     generation: u64,
+    redactor: tinysecurity_redact::Redactor,
 }
 impl Policy {
     /// Validate and activate the first policy generation.
@@ -17,6 +18,7 @@ impl Policy {
     pub fn new(config: ModuleConfig) -> Result<Self> {
         validate(&config)?;
         Ok(Self {
+            redactor: tinysecurity_redact::Redactor::new(&config.redactor)?,
             config,
             generation: 1,
         })
@@ -27,7 +29,9 @@ impl Policy {
     pub fn reinitialize(&mut self, config: ModuleConfig) -> Result<()> {
         validate(&config)?;
         let generation = self.generation.checked_add(1).ok_or(Error::InvalidConfig)?;
+        let redactor = tinysecurity_redact::Redactor::new(&config.redactor)?;
         self.config = config;
+        self.redactor = redactor;
         self.generation = generation;
         Ok(())
     }
@@ -40,6 +44,11 @@ impl Policy {
             policy: self.config.policy.clone(),
             capabilities: names::METHODS.iter().map(|s| (*s).into()).collect(),
         }
+    }
+    /// Clone the active immutable registry without exposing initialization secrets.
+    #[must_use]
+    pub fn redactor(&self) -> tinysecurity_redact::Redactor {
+        self.redactor.clone()
     }
     /// Authorize a supported host-owned tool and its complete concrete checks.
     /// # Errors
@@ -66,6 +75,15 @@ impl Policy {
             };
         if !matching {
             return Ok(self.denied(DenialReason::UnsupportedEffect));
+        }
+        let scan = self
+            .redactor
+            .scan_tool_definition(&crate::ScanToolDefinitionRequest {
+                name: request.call.tool.clone(),
+                definition_json: request.call.arguments_json.clone(),
+            })?;
+        if let Some(reason) = scan_denial(&scan.verdict) {
+            return Ok(self.denied(reason));
         }
         for check in &request.call.checks {
             let decision = self.one(&request.caller, check);
@@ -108,7 +126,16 @@ impl Policy {
                     }
                 })
             }
-            Check::Command { command } => command::check(&self.config.policy, command),
+            Check::Command { command } => self
+                .redactor
+                .scan_prompt(&crate::ScanPromptRequest {
+                    text: command.clone(),
+                })
+                .map_err(|_| DenialReason::Content)
+                .and_then(|scan| match scan_denial(&scan.verdict) {
+                    Some(reason) => Err(reason),
+                    None => command::check(&self.config.policy, command),
+                }),
         };
         match result {
             Ok(()) => self.allowed(),
@@ -161,4 +188,12 @@ fn validate(config: &ModuleConfig) -> Result<()> {
         return Err(Error::InvalidConfig);
     }
     Ok(())
+}
+
+fn scan_denial(verdict: &crate::ScanVerdict) -> Option<DenialReason> {
+    match verdict {
+        crate::ScanVerdict::Clean => None,
+        crate::ScanVerdict::Suspicious => Some(DenialReason::ApprovalUnavailable),
+        crate::ScanVerdict::Blocked => Some(DenialReason::Content),
+    }
 }

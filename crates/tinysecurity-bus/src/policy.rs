@@ -160,6 +160,8 @@ pub enum DenialReason {
     Command,
     /// Missing verified caller identity.
     InvalidContext,
+    /// Original content was blocked by the semantic scanner.
+    Content,
 }
 /// Effective policy settings. Bootstrap intentionally exposes no unimplemented budgets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +227,9 @@ pub struct ModuleConfig {
     pub policy: PolicyConfig,
     /// Optional future judge capability.
     pub judge: Option<JudgeConfig>,
+    /// Init-only registry, omitted when empty for legacy wire compatibility.
+    #[serde(default, skip_serializing_if = "crate::RedactorConfig::is_empty")]
+    pub redactor: crate::RedactorConfig,
 }
 impl Default for ModuleConfig {
     fn default() -> Self {
@@ -232,6 +237,7 @@ impl Default for ModuleConfig {
             contract_version: crate::CONTRACT_VERSION,
             policy: PolicyConfig::default(),
             judge: None,
+            redactor: crate::RedactorConfig::default(),
         }
     }
 }

@@ -34,6 +34,14 @@ tinysecurity-bus = { path = "crates/tinysecurity-bus" }
 # Policy implementation and internal umbrella, never linked by hosts.
 tinysecurity-policy = { path = "crates/tinysecurity-policy" }
 tinysecurity = { path = "crates/tinysecurity" }
+# Unified bounded native registry, never linked by hosts.
+tinysecurity-redact = { path = "crates/tinysecurity-redact" }
+# Linear-time secret/identifier patterns, compiled once at initialization.
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"] }
+# Stable eight-hex identifier pseudonyms for explicit identifier mode.
+sha2 = "0.10"
+# Local endpoint parsing; no network access or resolution.
+url = "2"
 # TinyBus defines the message types, interface macro, and frozen module ABI
 # used by the generated integration. Socket and CLI features are unnecessary
 # here.

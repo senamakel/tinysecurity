@@ -6,6 +6,11 @@ compile the transport-free `tinysecurity-bus` contract and load the isolated
 `Check`, `PolicyInfo`, validated SDK configuration and policy generations.
 Contract 1.1 also supplies immutable native [filesystem scopes](docs/specs/immutable-path-scopes.md)
 through `RegisterPathPolicy`, `ValidatePath`, `ValidateParent` and `CheckPath`.
+Contract 1.3 adds native `Redact`, `ScanPrompt` and `ScanToolDefinition`, with a
+validated initialization-only literal registry and [bounded surface modes](crates/tinysecurity-redact/README.md).
+Blocked original content denies; suspicious content denies with
+approval-unavailable until the durable approval engine exists. Scan verdicts
+never grant permission, and redaction never clears an existing scan finding.
 
 The engine denies unknown tools and unsupported effects. Argument-free `pwd`,
 `date`, `uname`, and `whoami` are its supported shell diagnostics. Paths pass
@@ -16,7 +21,7 @@ diagnostics work with disabled autonomy, which is the default.
 
 This is bootstrap infrastructure for [OpenHuman #7328](https://github.com/tinyhumansai/openhuman/issues/7328)
 and [TinySecurity #1](https://github.com/tinyhumansai/tinysecurity/issues/1).
-It does **not** complete the migration. Approval persistence, redaction,
+It does **not** complete the migration. Approval persistence,
 network connection pinning, sandbox planning, audit, judge and crypto engines
 remain unavailable. Reserved wire types do not advertise callable handlers.
 There is no production host migration until an upstream release and checksum
@@ -28,6 +33,7 @@ manifest exist.
 | --- | --- |
 | `tinysecurity-bus` | Wire types, errors, names and compatibility; normal dependencies only serde and thiserror |
 | `tinysecurity-policy` | Native conservative policy engine |
+| `tinysecurity-redact` | Internal immutable redaction registry and semantic intent scanner |
 | `tinysecurity` | Internal implementation re-export |
 | `tinysecurity-module` | SDK initialization, bus dispatch and ABI cdylib |
 

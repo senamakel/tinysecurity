@@ -1,4 +1,8 @@
-//! Reserved typed contracts for capabilities not yet advertised by the module.
+//! Reserved contracts plus compatibility re-exports for promoted redaction types.
+pub use crate::redact::{
+    RedactMode, RedactRequest, RedactResponse, ScanPromptRequest, ScanResponse,
+    ScanToolDefinitionRequest, ScanVerdict,
+};
 use crate::{CallerContext, Decision};
 use serde::{Deserialize, Serialize};
 /// `ApprovalState` vocabulary, reserved until its engine is implemented.
@@ -37,30 +41,6 @@ pub enum ReplyVerdict {
     Deny,
     /// Unrecognized state.
     Unrecognized,
-}
-/// `RedactMode` vocabulary, reserved until its engine is implemented.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RedactMode {
-    /// Text state.
-    Text,
-    /// `StructuredArguments` state.
-    StructuredArguments,
-    /// Endpoint state.
-    Endpoint,
-    /// `HomePath` state.
-    HomePath,
-}
-/// `ScanVerdict` vocabulary, reserved until its engine is implemented.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ScanVerdict {
-    /// Clean state.
-    Clean,
-    /// Suspicious state.
-    Suspicious,
-    /// Blocked state.
-    Blocked,
 }
 /// `PrivacyMode` vocabulary, reserved until its engine is implemented.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,49 +227,6 @@ pub struct ParseReplyRequest {
 pub struct ParseReplyResponse {
     /// Parsed intent, not permission by itself.
     pub verdict: ReplyVerdict,
-}
-/// `RedactRequest` payload, reserved until its engine is implemented.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RedactRequest {
-    /// Sensitive input.
-    pub text: String,
-    /// Redaction surface.
-    pub mode: RedactMode,
-}
-/// `RedactResponse` payload, reserved until its engine is implemented.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RedactResponse {
-    /// Sanitized output.
-    pub text: String,
-    /// Whether substitutions occurred.
-    pub changed: bool,
-}
-/// `ScanPromptRequest` payload, reserved until its engine is implemented.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ScanPromptRequest {
-    /// Prompt to scan.
-    pub text: String,
-}
-/// `ScanToolDefinitionRequest` payload, reserved until its engine is implemented.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ScanToolDefinitionRequest {
-    /// Tool identity.
-    pub name: String,
-    /// Tool schema encoded as JSON.
-    pub definition_json: String,
-}
-/// `ScanResponse` payload, reserved until its engine is implemented.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ScanResponse {
-    /// Typed scan result.
-    pub verdict: ScanVerdict,
-    /// Content-free matching rule identifiers.
-    pub rule_ids: Vec<String>,
 }
 /// `EgressCheckRequest` payload, reserved until its engine is implemented.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

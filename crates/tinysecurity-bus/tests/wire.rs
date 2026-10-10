@@ -324,3 +324,42 @@ fn remote_provider_with_newer_minor_supplies_this_hosts_older_vocabulary() {
     assert!(is_compatible((CONTRACT_VERSION.0, CONTRACT_VERSION.1 + 4)));
     assert!(!is_compatible((CONTRACT_VERSION.0 + 1, 0)));
 }
+
+#[test]
+fn redactor_init_is_additive_and_secrets_never_enter_public_info()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let legacy = fixtures()?["ModuleConfig"].clone();
+    let config: ModuleConfig = serde_json::from_value(legacy.clone())?;
+    assert!(config.redactor.secrets.is_empty());
+    assert_eq!(serde_json::to_value(config)?, legacy);
+    let config = ModuleConfig {
+        redactor: RedactorConfig {
+            secrets: vec![Secret("literal-private".into())],
+        },
+        ..Default::default()
+    };
+    assert!(!format!("{config:?}").contains("literal-private"));
+    assert_eq!(
+        serde_json::to_value(&config)?["redactor"]["secrets"][0],
+        "literal-private"
+    );
+    assert_eq!(CONTRACT_VERSION, (1, 3));
+    for (mode, wire) in [
+        (RedactMode::Text, "text"),
+        (RedactMode::StructuredArguments, "structured_arguments"),
+        (RedactMode::Endpoint, "endpoint"),
+        (RedactMode::HomePath, "home_path"),
+        (RedactMode::IdentifierHash, "identifier_hash"),
+        (RedactMode::LegacyMask, "legacy_mask"),
+        (RedactMode::EndpointOrigin, "endpoint_origin"),
+        (RedactMode::EndpointHost, "endpoint_host"),
+        (
+            RedactMode::StructuredLogArguments,
+            "structured_log_arguments",
+        ),
+        (RedactMode::BrowserResult, "browser_result"),
+    ] {
+        assert_eq!(serde_json::to_value(mode)?, wire);
+    }
+    Ok(())
+}

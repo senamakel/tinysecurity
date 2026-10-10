@@ -63,6 +63,9 @@ pub const METHODS: &[&str] = &[
     methods::REGISTER_COMMAND_POLICY,
     methods::CLASSIFY_COMMAND,
     methods::CHECK_COMMAND,
+    methods::REDACT,
+    methods::SCAN_PROMPT,
+    methods::SCAN_TOOL_DEFINITION,
     methods::POLICY_INFO,
 ];
 /// Accepted policy activation event.

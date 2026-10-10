@@ -11,6 +11,8 @@ categories = ["authentication"]
 publish = false
 
 [dependencies]
+# Native redaction/scanning shares policy activation, never host linkage.
+tinysecurity-redact.workspace = true
 tinysecurity-policy = { workspace = true }
 tinysecurity-bus = { workspace = true }
 
