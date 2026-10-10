@@ -19,7 +19,11 @@ fn expand(scope: &PathPolicy, path: &str) -> PathBuf {
         })
         .unwrap_or_else(|| PathBuf::from(path))
 }
-/// Unconditional filesystem correctness and credential/system floor.
+/// Unconditional acting-scope correctness, credential and critical-system floor.
+/// Installation roots (`/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/library`, `/dev`)
+/// deliberately remain host-configurable forbidden paths, preserving the host's
+/// explicit grants and disabled-policy contract. Bootstrap `Check` retains its
+/// separate conservative floor; these are different authorization contracts.
 #[must_use]
 pub fn protected_path(path: &Path) -> bool {
     let normalized = path
@@ -238,7 +242,11 @@ impl PathScope {
             return false;
         }
         if !expanded.is_absolute()
-            && expanded.components().count() == 1
+            && expanded
+                .components()
+                .filter(|part| !matches!(part, std::path::Component::CurDir))
+                .count()
+                == 1
             && self.reserved_names.iter().any(|name| {
                 expanded
                     .file_name()
@@ -259,14 +267,6 @@ impl PathScope {
         }
         let trusted = self.trusted(&expanded, false);
         if self.workspace_only && expanded.is_absolute() && !trusted {
-            return false;
-        }
-        if !trusted
-            && self
-                .forbidden_paths
-                .iter()
-                .any(|entry| deny_starts_with(&expanded, &expand(self, entry)))
-        {
             return false;
         }
         if let Ok(resolved) = resolve_ancestor(&absolute) {

@@ -43,7 +43,8 @@ access permits; read-only
 grants cannot authorize writes outside the workspace. Relative requests resolve
 against the action root, while relative forbidden roots resolve against the
 workspace root. Reserved single-component filenames retain the host's lexical
-reservation contract. Public resolved and trusted-root queries resolve the
+reservation contract, including equivalent leading current-directory components
+such as `./.env`. Public resolved and trusted-root queries resolve the
 candidate, including existing symlinks and missing descendants, before checking
 containment and the protected floor. String checks apply resolved forbidden
 roots within the workspace as well as outside it. Reservations may allow child exceptions and may reserve

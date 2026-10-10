@@ -428,3 +428,66 @@ fn acting_scope_and_conservative_bootstrap_have_distinct_system_root_contracts()
         );
     }
 }
+/// Current-directory prefixes do not weaken reserved relative filenames.
+#[test]
+fn reserved_relative_filenames_ignore_leading_current_directory_components()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let mut policy = scope(root.path());
+    for enabled in [true, false] {
+        policy.0.enabled = enabled;
+        for input in [".env", "./.env", "././.env"] {
+            assert!(
+                !policy.string_allowed(input),
+                "reserved name allowed: {input}"
+            );
+            assert_eq!(
+                policy.validate(input, true),
+                PathValidationResult::Denied {
+                    category: Rejection::PolicyDenied
+                }
+            );
+        }
+        #[cfg(windows)]
+        {
+            for input in [r".\.env", r".\.\.env", r".\.ENV"] {
+                assert!(!policy.string_allowed(input));
+                assert_eq!(
+                    policy.validate(input, true),
+                    PathValidationResult::Denied {
+                        category: Rejection::PolicyDenied
+                    }
+                );
+            }
+        }
+    }
+    Ok(())
+}
+/// Relative requests and forbidden entries use different configured roots.
+#[test]
+fn relative_forbidden_roots_do_not_block_same_named_action_subdirectories()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let mut policy = scope(root.path());
+    let action = root.path().join("subproject");
+    std::fs::create_dir(&action)?;
+    policy.0.action_dir = action;
+    policy.0.forbidden_paths = vec!["secrets".into()];
+    assert!(policy.string_allowed("secrets/public.txt"));
+    assert!(matches!(
+        policy.validate("secrets/public.txt", true),
+        PathValidationResult::Allowed { .. }
+    ));
+    assert!(!policy.string_allowed(&root.path().join("secrets/private.txt").to_string_lossy()));
+    policy.0.workspace_only = false;
+    assert_eq!(
+        policy.validate(
+            &root.path().join("secrets/private.txt").to_string_lossy(),
+            true
+        ),
+        PathValidationResult::Denied {
+            category: Rejection::PolicyDenied
+        }
+    );
+    Ok(())
+}
