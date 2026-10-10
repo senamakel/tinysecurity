@@ -27,7 +27,7 @@ fn batch(tail: u64) -> AuditSinkRequest2 {
 fn durable_retries_restart_rotation_and_partial_tail_preserve_exactly_one_batch()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let path = root.path().join("audit.jsonl");
+    let path = root.path().canonicalize()?.join("audit.jsonl");
     let first = batch(0);
     let sink = JsonlSink::open(&path, 700, 3)?;
     let receipt = sink.append(&first)?;
@@ -58,7 +58,7 @@ fn durable_retries_restart_rotation_and_partial_tail_preserve_exactly_one_batch(
 fn broad_preexisting_or_symlink_storage_and_contended_lock_fail_closed()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let path = root.path().join("audit");
+    let path = root.path().canonicalize()?.join("audit");
     let sink = JsonlSink::open(&path, 10000, 3)?;
     let lock = sink.directory.file(&sibling(&sink.name, ".lock"))?;
     FileExt::try_lock(&lock)?;
@@ -68,7 +68,7 @@ fn broad_preexisting_or_symlink_storage_and_contended_lock_fail_closed()
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
     assert_eq!(sink.append(&batch(0)), Err(Error::Permissions));
     std::fs::remove_file(&path)?;
-    symlink(root.path().join("elsewhere"), &path)?;
+    symlink(root.path().canonicalize()?.join("elsewhere"), &path)?;
     assert_eq!(sink.append(&batch(0)), Err(Error::Permissions));
     Ok(())
 }
@@ -77,7 +77,7 @@ fn broad_preexisting_or_symlink_storage_and_contended_lock_fail_closed()
 fn persistence_boundary_never_writes_original_secret_arguments_or_identities()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let path = root.path().join("audit");
+    let path = root.path().canonicalize()?.join("audit");
     let sink = JsonlSink::open(&path, 10000, 3)?;
     let mut original = batch(0);
     original.scope.user = "private-user-identity".into();
@@ -91,5 +91,57 @@ fn persistence_boundary_never_writes_original_secret_arguments_or_identities()
     );
     assert!(!stored.contains("private-actor-token"));
     assert!(!stored.contains("private-user-identity"));
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn durable_event_identity_cannot_be_reused_at_a_later_sequence()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let sink = JsonlSink::open(&root.path().canonicalize()?.join("audit"), 10000, 3)?;
+    let first = batch(0);
+    sink.append(&first)?;
+    let mut second = batch(1);
+    second.events[0].event_id = first.events[0].event_id.clone();
+    assert_eq!(sink.append(&second), Err(Error::Conflict));
+    batch(1).verify_receipt(&sink.append(&batch(1))?)?;
+    assert_eq!(sink.append(&first)?, receipt(&first));
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn authoritative_journal_reconciles_after_corrupt_projection_and_repairs_partial_batch()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let path = root.path().canonicalize()?.join("audit");
+    let sink = JsonlSink::open(&path, 10000, 3)?;
+    let first = sink.append(&batch(0))?;
+    std::fs::write(&path, b"corrupt projection\n")?;
+    assert_eq!(sink.append(&batch(0))?, first);
+    let journal = path.with_file_name("audit.journal");
+    let mut file = std::fs::OpenOptions::new().append(true).open(&journal)?;
+    file.write_all(b"100:partial-batch")?;
+    file.sync_all()?;
+    let before = file.metadata()?.len();
+    assert_eq!(sink.append(&batch(0))?, first);
+    assert!(file.metadata()?.len() < before);
+    Ok(())
+}
+#[test]
+#[cfg(unix)]
+fn hard_journal_event_capacity_rejects_before_any_candidate_projection()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let path = root.path().canonicalize()?.join("audit");
+    let redactor =
+        tinysecurity_redact::Redactor::new(&tinysecurity_bus::RedactorConfig::default())?;
+    let sink = JsonlSink::with_journal_capacity(&path, 10000, 3, 10000, 1, redactor)?;
+    let first = sink.append(&batch(0))?;
+    let before = std::fs::read(&path)?;
+    assert_eq!(sink.append(&batch(1)), Err(Error::Storage));
+    assert_eq!(std::fs::read(&path)?, before);
+    assert_eq!(sink.append(&batch(0))?, first);
     Ok(())
 }

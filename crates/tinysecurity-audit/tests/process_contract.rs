@@ -30,12 +30,12 @@ fn batch(tail: u64) -> AuditSinkRequest2 {
 fn separate_process_lock_contention_then_restart_order_and_replay_are_durable()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let path = root.path().join("audit");
+    let path = root.path().canonicalize()?.join("audit");
     let sink = JsonlSink::open(&path, 10000, 3)?;
     let binary = env!("CARGO_BIN_EXE_audit-process-fixture");
     let mut child = Command::new(binary)
         .arg("hold")
-        .arg(root.path().join("audit.lock"))
+        .arg(root.path().canonicalize()?.join("audit.lock"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()?;

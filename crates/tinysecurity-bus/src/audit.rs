@@ -183,6 +183,10 @@ pub struct AuditConfig2 {
     pub max_bytes: u64,
     /// Native retained archive ceiling; full retention fails rather than discards.
     pub max_archives: u32,
+    /// Hard authoritative journal byte capacity; exhaustion never discards receipts.
+    pub journal_max_bytes: u64,
+    /// Hard authoritative journal event capacity, checked before any candidate append.
+    pub journal_max_events: u64,
 }
 impl std::fmt::Debug for AuditConfig2 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

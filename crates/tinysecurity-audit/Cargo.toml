@@ -11,6 +11,8 @@ tinysecurity-bus.workspace = true
 tinysecurity-redact.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# Self-validating bounded authoritative journal frames.
+sha2.workspace = true
 # Maintained safe OS locks on one stable sibling file across rotation.
 fs4 = { version = "1", default-features = false, features = ["sync"] }
 # Opaque retry identities, never derived from secrets.

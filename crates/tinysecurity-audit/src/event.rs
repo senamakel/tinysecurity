@@ -41,15 +41,20 @@ pub fn sanitize(batch: &AuditSinkRequest2, redactor: &Redactor) -> Result<AuditS
     for event in &mut clean.events {
         event.attribution = redact(&event.attribution, RedactMode::Text)?;
         event.arguments_json = redact(&event.arguments_json, RedactMode::StructuredArguments)?;
+        // Caller strings are not registry identities, even when identifier-shaped.
         if event.rule_ids.len() > 64
             || event.rule_ids.iter().any(|rule| {
-                rule.is_empty()
-                    || rule.len() > 64
-                    || !rule.bytes().all(|byte| {
-                        byte.is_ascii_lowercase()
-                            || byte.is_ascii_digit()
-                            || matches!(byte, b'_' | b'-' | b'.')
-                    })
+                !matches!(
+                    rule.as_str(),
+                    "floor"
+                        | "override.instructions"
+                        | "override.role"
+                        | "override.obfuscated_instructions"
+                        | "exfiltrate.hidden_prompt"
+                        | "exfiltrate.credentials"
+                        | "tool.approval_bypass"
+                        | "content.invisible_control"
+                )
             })
         {
             return Err(Error::Sanitation);

@@ -103,10 +103,12 @@ impl AuditClient {
             .native_path
             .as_ref()
             .map(|path| {
-                tinysecurity::audit::JsonlSink::with_redactor(
+                tinysecurity::audit::JsonlSink::with_journal_capacity(
                     std::path::Path::new(path),
                     config.max_bytes,
                     config.max_archives,
+                    config.journal_max_bytes,
+                    config.journal_max_events,
                     redactor.clone(),
                 )
                 .map(std::sync::Arc::new)
@@ -195,10 +197,11 @@ impl AuditClient {
         let receipt = if let Some(native) = &self.native {
             let sink = std::sync::Arc::clone(native);
             let request = clean.clone();
-            tokio::task::spawn_blocking(move || sink.append(&request))
-                .await
-                .map_err(|_| tinybus::Error::failed("audit worker unavailable"))?
-                .map_err(|_| tinybus::Error::failed("audit storage unavailable"))?
+            await_native_worker(
+                tokio::task::spawn_blocking(move || sink.append(&request)),
+                self.config.timeout_ms,
+            )
+            .await?
         } else {
             let peer = self
                 .binding
@@ -219,6 +222,23 @@ impl AuditClient {
             .map_err(|_| tinybus::Error::failed("invalid exact audit receipt"))?;
         Ok(receipt)
     }
+}
+async fn await_native_worker(
+    worker: tokio::task::JoinHandle<
+        tinysecurity::audit::Result<tinysecurity_bus::AuditSinkResponse2>,
+    >,
+    timeout_ms: u32,
+) -> Result<tinysecurity_bus::AuditSinkResponse2> {
+    // Dropping the join handle detaches an already-running blocking write. Its
+    // outcome remains indeterminate and must be reconciled with the same batch.
+    tokio::time::timeout(
+        std::time::Duration::from_millis(u64::from(timeout_ms)),
+        worker,
+    )
+    .await
+    .map_err(|_| tinybus::Error::failed("audit worker deadline exceeded"))?
+    .map_err(|_| tinybus::Error::failed("audit worker unavailable"))?
+    .map_err(|_| tinybus::Error::failed("audit storage unavailable"))
 }
 #[cfg(test)]
 #[path = "callbacks_tests.rs"]

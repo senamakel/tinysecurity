@@ -14,6 +14,8 @@ fn config(required: bool) -> AuditConfig2 {
         native_path: None,
         max_bytes: 10000,
         max_archives: 3,
+        journal_max_bytes: 100_000,
+        journal_max_events: 1000,
     }
 }
 fn batch() -> AuditSinkRequest2 {
@@ -197,5 +199,51 @@ async fn unrelated_success_receipt_never_confirms_a_required_batch()
     assert!(!response.committed);
     assert!(response.receipt.is_none());
     task.abort();
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test(start_paused = true)]
+async fn native_worker_deadline_returns_before_a_blocked_commit_and_retry_reconciles()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let path = root.path().canonicalize()?.join("audit");
+    let sink = std::sync::Arc::new(tinysecurity::audit::JsonlSink::open(&path, 10000, 3)?);
+    let (release, blocked) = std::sync::mpsc::channel();
+    let (committed, observed) = tokio::sync::oneshot::channel();
+    let worker_sink = sink.clone();
+    let request = batch();
+    let worker = tokio::task::spawn_blocking(move || {
+        blocked
+            .recv()
+            .map_err(|_| tinysecurity::audit::Error::Storage)?;
+        let result = worker_sink.append(&request);
+        committed
+            .send(result.clone())
+            .map_err(|_| tinysecurity::audit::Error::Storage)?;
+        result
+    });
+    let waiting = tokio::spawn(async move {
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            await_native_worker(worker, 100),
+        )
+        .await
+    });
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_millis(200)).await;
+    let result = waiting.await?;
+    // Always release before asserting, so the unfixed RED cannot hang runtime shutdown.
+    release.send(())?;
+    let late = observed.await??;
+    assert!(
+        result.is_ok(),
+        "native deadline must complete before outer watchdog"
+    );
+    assert!(
+        result?.is_err(),
+        "timeout must not fabricate a durable receipt"
+    );
+    assert_eq!(sink.append(&batch())?, late);
     Ok(())
 }

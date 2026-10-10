@@ -10,6 +10,7 @@ mod error;
 mod future;
 mod path_policy;
 mod policy;
+mod prompt;
 mod redact;
 pub use audit::*;
 pub use callbacks::*;
@@ -19,6 +20,7 @@ pub use error::*;
 pub use future::*;
 pub use path_policy::*;
 pub use policy::*;
+pub use prompt::*;
 pub use redact::RedactorConfig;
 pub mod names;
 /// Current wire vocabulary version, independent of the artifact version.

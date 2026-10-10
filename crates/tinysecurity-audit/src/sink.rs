@@ -1,4 +1,4 @@
-//! Cross-process ordered JSONL storage: one complete batch per committed line.
+//! Stable bounded journal authority with reconstructable ordered JSONL views.
 use crate::{
     Error, Result,
     rotation::{Directory, sibling},
@@ -7,7 +7,7 @@ use fs4::FileExt;
 use std::{
     fmt,
     fs::File,
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 use tinysecurity_bus::{AuditEventReceipt2, AuditSinkRequest2, AuditSinkResponse2};
@@ -21,6 +21,8 @@ pub struct JsonlSink {
     name: PathBuf,
     max_bytes: u64,
     max_archives: u32,
+    journal_bytes: u64,
+    journal_events: u64,
 }
 impl fmt::Debug for JsonlSink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -49,15 +51,49 @@ impl JsonlSink {
         max_archives: u32,
         redactor: tinysecurity_redact::Redactor,
     ) -> Result<Self> {
-        if max_bytes == 0 || max_archives == 0 || max_archives > 1024 {
+        let journal_bytes = max_bytes
+            .checked_mul(u64::from(max_archives) + 1)
+            .and_then(|size| size.checked_add(65536))
+            .ok_or(Error::Permissions)?;
+        Self::with_journal_capacity(
+            path,
+            max_bytes,
+            max_archives,
+            journal_bytes,
+            (u64::from(max_archives) + 1) * 128,
+            redactor,
+        )
+    }
+    /// Open with explicit hard authoritative journal byte and event capacities.
+    ///
+    /// Journal bytes are never reclaimed without a separately proven checkpoint.
+    /// # Errors
+    /// Rejects unsafe storage and invalid capacities before accepting any batch.
+    pub fn with_journal_capacity(
+        path: &Path,
+        max_bytes: u64,
+        max_archives: u32,
+        journal_bytes: u64,
+        journal_events: u64,
+        redactor: tinysecurity_redact::Redactor,
+    ) -> Result<Self> {
+        if max_bytes == 0
+            || max_archives == 0
+            || max_archives > 1024
+            || journal_bytes == 0
+            || journal_bytes == u64::MAX
+            || journal_events == 0
+        {
             return Err(Error::Permissions);
         }
         let directory = Directory::open(path.parent().ok_or(Error::Permissions)?)?;
         let name: PathBuf = path.file_name().ok_or(Error::Permissions)?.into();
-        directory
-            .file(&sibling(&name, ".lock"))?
-            .sync_all()
-            .map_err(|_| Error::Storage)?;
+        for suffix in [".lock", ".journal"] {
+            directory
+                .file(&sibling(&name, suffix))?
+                .sync_all()
+                .map_err(|_| Error::Storage)?;
+        }
         directory.sync()?;
         Ok(Self {
             redactor,
@@ -65,13 +101,15 @@ impl JsonlSink {
             name,
             max_bytes,
             max_archives,
+            journal_bytes,
+            journal_events,
         })
     }
     /// Append the complete sanitized batch, or reconcile an identical previous attempt.
     ///
-    /// A full JSON line is one atomic logical batch. An incomplete final line is
-    /// truncated during recovery; a partial batch is never acknowledged. Data and
-    /// directory sync precede every receipt, including recovered retries.
+    /// A self-validating journal frame is one logical batch. An incomplete final
+    /// frame is discarded whole and synced during recovery. JSONL files contain
+    /// reconstructable projections; only journal sync establishes the commit.
     ///
     /// # Errors
     /// Rejects malformed sequencing, conflicts, unsafe files, busy cross-process lock,
@@ -88,25 +126,11 @@ impl JsonlSink {
         self.append_locked(&clean)
     }
     fn append_locked(&self, batch: &AuditSinkRequest2) -> Result<AuditSinkResponse2> {
-        let mut recovered = Vec::new();
-        let mut archive_index = 1;
-        for index in 1..=self.max_archives {
-            let name = sibling(&self.name, &format!(".{index}"));
-            // Archives are create/open restricted empty files until used. This avoids
-            // unsafe pathname existence checks and keeps every operation fd-relative.
-            let mut archive = self.directory.file(&name)?;
-            let rows = recover(&mut archive)?;
-            if rows.is_empty() {
-                archive_index = index;
-                break;
-            }
-            recovered.extend(rows);
-            archive_index = index.checked_add(1).ok_or(Error::Storage)?;
-        }
-        let mut current = self.directory.file(&self.name)?;
-        recovered.extend(recover(&mut current)?);
+        let mut journal = self.directory.file(&sibling(&self.name, ".journal"))?;
+        let recovered = crate::journal::recover(&mut journal, self.journal_bytes)?;
         let mut tail = 0;
         let mut replay = false;
+        let mut event_ids = std::collections::BTreeSet::new();
         for row in &recovered {
             row.validate().map_err(|_| Error::Storage)?;
             if row.scope != batch.scope
@@ -115,25 +139,55 @@ impl JsonlSink {
             {
                 return Err(Error::Conflict);
             }
+            for event in &row.events {
+                if !event_ids.insert(&event.event_id) {
+                    return Err(Error::Conflict);
+                }
+            }
             tail = row.events.last().ok_or(Error::Storage)?.sequence;
             if row == batch {
                 replay = true;
             }
         }
         if replay {
-            current.sync_all().map_err(|_| Error::Storage)?;
-            self.directory.sync()?;
+            let _ = self.project(&recovered);
             return Ok(receipt(batch));
         }
-        if batch.expected_tail != tail {
+        if batch.expected_tail != tail
+            || batch
+                .events
+                .iter()
+                .any(|event| event_ids.contains(&event.event_id))
+        {
             return Err(Error::Conflict);
+        }
+        let frame = crate::journal::frame(batch)?;
+        let size = journal.metadata().map_err(|_| Error::Storage)?.len();
+        let events = recovered.iter().try_fold(0_u64, |count, row| {
+            count
+                .checked_add(u64::try_from(row.events.len()).map_err(|_| Error::Storage)?)
+                .ok_or(Error::Storage)
+        })?;
+        if size
+            .checked_add(u64::try_from(frame.len()).map_err(|_| Error::Storage)?)
+            .ok_or(Error::Storage)?
+            > self.journal_bytes
+            || events
+                .checked_add(u64::try_from(batch.events.len()).map_err(|_| Error::Storage)?)
+                .ok_or(Error::Storage)?
+                > self.journal_events
+        {
+            return Err(Error::Storage);
         }
         let mut line = serde_json::to_vec(batch).map_err(|_| Error::Sanitation)?;
         line.push(b'\n');
-        let length = u64::try_from(line.len()).map_err(|_| Error::Sanitation)?;
+        let length = u64::try_from(line.len()).map_err(|_| Error::Storage)?;
         if length > self.max_bytes {
             return Err(Error::Storage);
         }
+        // Rebuild only previously committed data, and perform any rotation before
+        // committing the candidate. An open-handle rotation failure cannot commit it.
+        let (mut current, archive_index) = self.project(&recovered)?;
         let size = current.metadata().map_err(|_| Error::Storage)?.len();
         if size > 0 && size.checked_add(length).ok_or(Error::Storage)? > self.max_bytes {
             if archive_index > self.max_archives {
@@ -146,30 +200,61 @@ impl JsonlSink {
             )?;
             current = self.directory.file(&self.name)?;
         }
-        current.seek(SeekFrom::End(0)).map_err(|_| Error::Storage)?;
-        current.write_all(&line).map_err(|_| Error::Storage)?;
-        current.sync_all().map_err(|_| Error::Storage)?;
-        self.directory.sync()?;
+        crate::journal::append(&mut journal, &frame)?;
+        // The stable journal is now authoritative. Projection failure cannot roll
+        // back its commit or produce committed=false; the next attempt rebuilds it.
+        let _ = current
+            .seek(SeekFrom::End(0))
+            .and_then(|_| current.write_all(&line))
+            .and_then(|()| current.sync_all());
+        let _ = self.directory.sync();
         Ok(receipt(batch))
     }
-}
-fn recover(file: &mut File) -> Result<Vec<AuditSinkRequest2>> {
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|_| Error::Storage)?;
-    let committed = bytes
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map_or(0, |index| index + 1);
-    if committed < bytes.len() {
-        file.set_len(u64::try_from(committed).map_err(|_| Error::Storage)?)
-            .map_err(|_| Error::Storage)?;
-        file.sync_all().map_err(|_| Error::Storage)?;
+    fn project(&self, records: &[AuditSinkRequest2]) -> Result<(File, u32)> {
+        let mut chunks: Vec<Vec<u8>> = vec![Vec::new()];
+        for row in records {
+            let mut line = serde_json::to_vec(row).map_err(|_| Error::Storage)?;
+            line.push(b'\n');
+            if u64::try_from(line.len()).map_err(|_| Error::Storage)? > self.max_bytes {
+                return Err(Error::Storage);
+            }
+            let last = chunks.last_mut().ok_or(Error::Storage)?;
+            if u64::try_from(last.len() + line.len()).map_err(|_| Error::Storage)? > self.max_bytes
+            {
+                chunks.push(line);
+            } else {
+                last.extend(line);
+            }
+        }
+        if chunks.len() > usize::try_from(self.max_archives).map_err(|_| Error::Storage)? + 1 {
+            return Err(Error::Storage);
+        }
+        let current_index = chunks.len() - 1;
+        for index in 0..=self.max_archives {
+            let name = if index == 0 {
+                self.name.clone()
+            } else {
+                sibling(&self.name, &format!(".{index}"))
+            };
+            let mut file = self.directory.file(&name)?;
+            let contents = if index == 0 {
+                &chunks[current_index][..]
+            } else {
+                chunks
+                    .get(usize::try_from(index - 1).map_err(|_| Error::Storage)?)
+                    .filter(|_| usize::try_from(index).is_ok_and(|i| i <= current_index))
+                    .map_or(&[][..], Vec::as_slice)
+            };
+            file.set_len(0).map_err(|_| Error::Storage)?;
+            file.write_all(contents).map_err(|_| Error::Storage)?;
+            file.sync_all().map_err(|_| Error::Storage)?;
+        }
+        self.directory.sync()?;
+        Ok((
+            self.directory.file(&self.name)?,
+            u32::try_from(chunks.len()).map_err(|_| Error::Storage)?,
+        ))
     }
-    bytes[..committed]
-        .split(|byte| *byte == b'\n')
-        .filter(|row| !row.is_empty())
-        .map(|row| serde_json::from_slice(row).map_err(|_| Error::Storage))
-        .collect()
 }
 fn receipt(batch: &AuditSinkRequest2) -> AuditSinkResponse2 {
     AuditSinkResponse2 {

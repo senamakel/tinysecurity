@@ -10,6 +10,7 @@
 //! ```
 mod error;
 mod event;
+mod journal;
 mod rotation;
 mod sink;
 pub use error::{Error, Result};

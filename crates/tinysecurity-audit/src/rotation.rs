@@ -86,7 +86,7 @@ impl Directory {
         }
         #[cfg(not(unix))]
         {
-            let _ = name;
+            let _ = (self, name);
             Err(Error::Unsupported)
         }
     }
@@ -105,7 +105,7 @@ impl Directory {
         }
         #[cfg(not(unix))]
         {
-            let _ = (current, archive);
+            let _ = (self, current, archive);
             Err(Error::Unsupported)
         }
     }
@@ -116,6 +116,7 @@ impl Directory {
         }
         #[cfg(not(unix))]
         {
+            let _ = self;
             Err(Error::Unsupported)
         }
     }

@@ -13,6 +13,40 @@ impl std::fmt::Debug for ApprovalLoadRequest2 {
         f.write_str("ApprovalLoadRequest2([REDACTED])")
     }
 }
+/// Complete typed scoped read result; rows have no write-commit semantics.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalLoadResponse2 {
+    /// Exact requested durable scope.
+    pub scope: SubjectScope,
+    /// Scoped sanitized rows, uniquely identified within this snapshot.
+    pub records: Vec<ApprovalRecord2>,
+}
+impl std::fmt::Debug for ApprovalLoadResponse2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ApprovalLoadResponse2([REDACTED])")
+    }
+}
+impl ApprovalLoadRequest2 {
+    /// Require exact scope and bounded valid uniquely identified rows.
+    ///
+    /// # Errors
+    /// Rejects an unrelated, unscoped, oversized or malformed read response.
+    pub fn verify_response(&self, response: &ApprovalLoadResponse2) -> crate::Result<()> {
+        validate_scope(&self.scope)?;
+        let mut ids = std::collections::BTreeSet::new();
+        if self.scope != response.scope || response.records.len() > 1024 {
+            return Err(crate::Error::InvalidArguments);
+        }
+        for record in &response.records {
+            validate_record(record)?;
+            if !ids.insert(&record.record_id) {
+                return Err(crate::Error::InvalidArguments);
+            }
+        }
+        Ok(())
+    }
+}
 /// Scoped versioned redacted row; lifecycle engine belongs to approvals.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,6 +113,11 @@ impl ApprovalCasRequest2 {
     /// # Errors
     /// Rejects mismatched scope, record, mutation or checked next version.
     pub fn verify_receipt(&self, receipt: &ApprovalCasResponse2) -> crate::Result<()> {
+        validate_scope(&self.scope)?;
+        validate_record(&self.next_record)?;
+        if !opaque(&self.record_id) || !opaque(&self.mutation_id) {
+            return Err(crate::Error::InvalidArguments);
+        }
         let next = self
             .expected_version
             .unwrap_or(0)
@@ -113,3 +152,34 @@ pub mod callback_names2 {
     /// Scoped read member.
     pub const LOAD: &str = "Load";
 }
+
+pub(crate) fn validate_scope(scope: &SubjectScope) -> crate::Result<()> {
+    if [&scope.user, &scope.workspace, &scope.agent]
+        .iter()
+        .any(|identity| identity.is_empty() || identity.len() > 1024)
+    {
+        return Err(crate::Error::InvalidArguments);
+    }
+    Ok(())
+}
+pub(crate) fn validate_record(record: &ApprovalRecord2) -> crate::Result<()> {
+    if !opaque(&record.record_id)
+        || !opaque(&record.fingerprint)
+        || record.version == 0
+        || record.policy_id.is_empty()
+        || record.policy_id.len() > 1024
+        || record.generation == 0
+        || record.record_json.is_empty()
+        || record.record_json.len() > 65536
+    {
+        return Err(crate::Error::InvalidArguments);
+    }
+    Ok(())
+}
+
+fn opaque(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+#[cfg(test)]
+#[path = "callbacks_tests.rs"]
+mod tests;

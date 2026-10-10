@@ -49,3 +49,12 @@ fn failed_sanitizer_suppresses_the_complete_original_batch() -> Result<()> {
     assert_eq!(sanitize(&batch, &redactor), Err(Error::Sanitation));
     Ok(())
 }
+
+#[test]
+fn syntactically_valid_secret_cannot_be_persisted_as_a_rule_identity() -> Result<()> {
+    let redactor = Redactor::new(&RedactorConfig::default()).map_err(|_| Error::Sanitation)?;
+    let mut event = batch();
+    event.events[0].rule_ids = vec!["private-token-value".into()];
+    assert_eq!(sanitize(&event, &redactor), Err(Error::Sanitation));
+    Ok(())
+}

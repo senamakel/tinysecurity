@@ -25,6 +25,8 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+# Virtual time proves worker deadlines without wall-clock races.
+tokio = { workspace = true, features = ["test-util"] }
 # Disposable native filesystem policy scopes.
 tempfile.workspace = true
 serde_json = { workspace = true }
