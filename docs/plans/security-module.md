@@ -45,7 +45,8 @@ the checkout/shared configured target; never export `CARGO_TARGET_DIR`.
 2. Rename template-bus to tinysecurity-bus and template to tinysecurity-module.
    Implement policy in tinysecurity-policy, with a tinysecurity internal umbrella
    re-exporting that engine and tinysecurity-module owning only SDK/ABI dispatch.
-   Each crate has a concrete role; create further engines when they contain
+   Register each concrete crate in workspace members, with its Cargo manifest
+   and `src/lib.rs` target. Create further engines only when they contain
    behavior. Set canonical repository metadata and security contact.
 3. Delete greeting types, handlers and examples. Replace them with an example
    that loads the native module and proves one allow plus one floor denial.
@@ -75,7 +76,9 @@ redact,egress,sandbox,audit,callbacks}/`, `src/lib.rs`,
    wire version compatibility rather than relying on that annotation.
 2. Define SDK init/reinit configuration separately from invocation args. Secrets
    have explicit redacted Debug. Test that formatted config never contains the
-   fixture credential. Reject invalid thresholds/TTLs/config before activation.
+   fixture credential. Serialization remains confined to trusted SDK config
+   transfer, never logs/public responses. Reject invalid thresholds/TTLs/config
+   before activation.
 3. Define typed future contracts/constants for Decide, ListPending,
    ListDecisions, RecordExecution, PreauthorizeFlow, ParseReply; Redact,
    ScanPrompt, ScanToolDefinition, EgressCheck, UrlGuard; Plan; Audit; and

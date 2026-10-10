@@ -35,6 +35,7 @@ pub(super) fn floor(path: &str) -> bool {
         "/lib64",
         "/usr",
         "/library",
+        "/dev",
         "/etc",
         "/root",
         "/boot",

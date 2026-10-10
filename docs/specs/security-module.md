@@ -81,8 +81,8 @@ an approval store; it must not mint unusable request identifiers.
 Autonomy is disabled by default. When disabled, command allowlists, action
 budgets, workspace boundaries and interactive policy gates are inactive.
 The unconditional floor still denies credential stores (`.ssh`, `.gnupg`,
-`.aws`), protected system roots (including Unix executables/libraries and Windows
-roots on every drive), parent traversal and NUL paths. It applies
+`.aws`), protected system roots (including Unix executables/libraries, device
+roots and Windows roots on every drive), parent traversal and NUL paths. It applies
 before discretionary allowances and trusted-root grants. Enabled policy
 honors action roots, forbidden roots, read/write grants, command classes,
 tool rules and rate limits. Symlink and OS path normalization failures deny;

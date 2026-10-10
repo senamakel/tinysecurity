@@ -84,3 +84,45 @@ fn disabled_policy_protects_executable_and_library_roots_on_every_platform()
     }
     Ok(())
 }
+
+#[test]
+fn disabled_policy_denies_device_roots_without_opening_devices()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    for path in ["/dev", "/dev/sda", "/dev/null", "/dev/mapper/system"] {
+        assert_eq!(
+            policy.check(&request(path))?.decisions[0].verdict,
+            Verdict::Deny {
+                reason: DenialReason::Floor
+            },
+            "{path}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn every_windows_drive_prefix_preserves_system_and_credential_floors()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    // Pure lexical checks do not require a mounted Windows drive on the runner.
+    for drive in 'A'..='Z' {
+        for suffix in [
+            "Windows\\System32\\config",
+            "Program Files\\tool",
+            "Program Files (x86)\\tool",
+            "ProgramData\\state",
+            "Users\\me\\.aws\\credentials",
+        ] {
+            let path = format!("{drive}:\\{suffix}");
+            assert_eq!(
+                policy.check(&request(&path))?.decisions[0].verdict,
+                Verdict::Deny {
+                    reason: DenialReason::Floor
+                },
+                "{path}"
+            );
+        }
+    }
+    Ok(())
+}
