@@ -954,3 +954,35 @@ fn bash_comments_and_continued_headers_keep_live_execution()
     }
     Ok(())
 }
+
+#[test]
+fn expanded_body_continuations_preserve_the_disabled_credential_floor()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let command = "cat <<EOF <<'B'\nE\\\nOF\nliteral\nB\nEOF\ncat ~/.ssh/id_rsa\nB";
+    assert_eq!(
+        decision(policy(false, CommandAutonomy::Full)?, command)?.denial,
+        Some(CommandDenial::Protected)
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn bash_expanded_body_continuation_can_form_its_terminator()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let output = std::process::Command::new("bash")
+        .args([
+            "-c",
+            "cat <<EOF <<'B'\nE\\\nOF\nliteral\nB\nEOF\ntouch continued-body-proof\nB",
+        ])
+        .current_dir(root.path())
+        .output()?;
+    assert!(
+        root.path().join("continued-body-proof").exists(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"literal\n");
+    Ok(())
+}

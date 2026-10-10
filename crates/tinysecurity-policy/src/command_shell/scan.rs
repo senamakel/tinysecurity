@@ -328,6 +328,15 @@ pub(crate) fn strip_quoted_heredoc_bodies(command: &str) -> Cow<'_, str> {
         if reading_bodies && let Some((delim, strip_tabs, quoted)) = pending.front() {
             // Body text cannot introduce another redirect, even when it expands.
             let terminator = line.trim_end_matches('\n');
+            // Expanded bodies remove backslash-newline before matching their
+            // terminator. Without that expansion lexer, retain the whole input
+            // rather than let a later command realign this queue accidentally.
+            if !quoted
+                && line.ends_with('\n')
+                && terminator.chars().rev().take_while(|c| *c == '\\').count() % 2 == 1
+            {
+                return Cow::Borrowed(command);
+            }
             let terminator = if *strip_tabs {
                 terminator.trim_start_matches('\t')
             } else {

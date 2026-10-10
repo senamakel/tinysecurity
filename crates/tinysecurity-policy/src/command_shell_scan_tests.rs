@@ -437,3 +437,26 @@ fn comment_boundaries_survive_line_continuation_and_literal_backslashes() {
         assert_eq!(strip_quoted_heredoc_bodies(command), expected);
     }
 }
+
+#[test]
+fn expanded_body_continuations_never_misalign_following_quoted_bodies() {
+    let command = "cat <<EOF <<'B'\nE\\\nOF\nliteral\nB\nEOF\ncat ~/.ssh/id_rsa\nB";
+    assert_eq!(strip_quoted_heredoc_bodies(command), command);
+}
+
+#[test]
+fn literal_body_backslashes_do_not_continue_physical_lines() {
+    for (command, expected) in [
+        (
+            "cat <<A <<'B'\nbody\\\\\nA\nliteral\nB\ntouch after",
+            "cat <<A <<'B'\nbody\\\\\nA\n\nB\ntouch after",
+        ),
+        (
+            "cat <<'A'\nbody\\\nA\ntouch after",
+            "cat <<'A'\n\nA\ntouch after",
+        ),
+        ("cat <<A\nbody\\", "cat <<A\nbody\\"),
+    ] {
+        assert_eq!(strip_quoted_heredoc_bodies(command), expected);
+    }
+}
