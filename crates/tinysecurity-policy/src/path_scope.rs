@@ -59,10 +59,19 @@ pub fn protected_path(path: &Path) -> bool {
 /// # Errors
 /// Returns the filesystem error for broken symlinks, permission errors, or missing roots.
 pub fn resolve_ancestor(path: &Path) -> std::io::Result<PathBuf> {
+    resolve_ancestor_with(path, Path::canonicalize, |path| {
+        path.symlink_metadata().map(|_| ())
+    })
+}
+fn resolve_ancestor_with(
+    path: &Path,
+    mut canonicalize: impl FnMut(&Path) -> std::io::Result<PathBuf>,
+    mut metadata: impl FnMut(&Path) -> std::io::Result<()>,
+) -> std::io::Result<PathBuf> {
     let mut ancestor = path.to_path_buf();
     let mut suffix = Vec::new();
     loop {
-        match ancestor.canonicalize() {
+        match canonicalize(&ancestor) {
             Ok(mut resolved) => {
                 for part in suffix.iter().rev() {
                     resolved.push(part);
@@ -70,10 +79,13 @@ pub fn resolve_ancestor(path: &Path) -> std::io::Result<PathBuf> {
                 return Ok(resolved);
             }
             Err(error) => {
-                if error.kind() != std::io::ErrorKind::NotFound
-                    || ancestor.symlink_metadata().is_ok()
-                {
+                if error.kind() != std::io::ErrorKind::NotFound {
                     return Err(error);
+                }
+                match metadata(&ancestor) {
+                    Ok(()) => return Err(error),
+                    Err(probe) if probe.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(probe) => return Err(probe),
                 }
                 suffix.push(ancestor.file_name().ok_or(error)?.to_os_string());
                 if !ancestor.pop() {
@@ -277,7 +289,10 @@ impl PathScope {
         let workspace = canonical_or_original(&self.workspace_dir);
         self.forbidden_paths.iter().any(|entry| {
             let forbidden = expand(self, entry);
-            if forbidden.is_absolute() && deny_starts_with(&workspace, &forbidden) {
+            if forbidden.is_absolute()
+                && (deny_starts_with(&workspace, &forbidden)
+                    || deny_starts_with(&workspace, &canonical_or_original(&forbidden)))
+            {
                 return false;
             }
             let forbidden = if forbidden.is_absolute() {
