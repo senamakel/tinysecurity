@@ -48,7 +48,11 @@ impl PathPolicyRegistry {
         {
             return Err(Error::InvalidArguments);
         }
-        if let Some((id, _)) = self.scopes.iter().find(|(_, scope)| scope.0 == policy) {
+        if let Some((id, _)) = self
+            .scopes
+            .iter()
+            .find(|(_, scope)| scope.policy() == &policy)
+        {
             return Ok(id.clone());
         }
         if self.scopes.len() >= 1024 {
@@ -71,7 +75,8 @@ impl PathPolicyRegistry {
             if self.scopes.iter().any(|(existing, _)| *existing == id) {
                 continue;
             }
-            self.scopes.push((id.clone(), Arc::new(PathScope(policy))));
+            self.scopes
+                .push((id.clone(), Arc::new(PathScope::registered(policy))));
             return Ok(id);
         }
         Err(Error::Unavailable)

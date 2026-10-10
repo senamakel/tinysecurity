@@ -62,6 +62,13 @@ atomic: a host still needs an execution sandbox to bound filesystem races.
 Acceptance coverage includes missing targets, aliased reserved state, disabled
 policy floors, home expansion, relative forbidden roots, independent registry
 identities, registry exhaustion, read-only grants and existing/broken symlinks.
+The compiled scope constructor is private; production handles are issued only
+after registry validation. A compile-fail API test pins that boundary. The
+Windows alias normalization is a floor classifier, never a filesystem path
+rewrite: on POSIX, `//?/etc/passwd` names the `?` directory beneath `/`, not
+`/etc/passwd`, and is never rebased beneath the action directory. Validation
+checks the original native path and repeats the floor on its resolved target.
+Native critical-system fixtures supplement cross-platform Windows-spelling tests.
 The real native loader verifier calls every new member and verifies that a scope
 survives an accepted SDK reinitialization. This completes filesystem capability
 migration support; command policy, redaction, approvals, egress, audit and crypto

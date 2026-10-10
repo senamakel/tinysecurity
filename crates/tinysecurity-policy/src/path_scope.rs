@@ -125,9 +125,14 @@ fn candidate(path: &Path) -> Option<PathBuf> {
         .ok()
         .filter(|resolved| !protected_path(resolved))
 }
-/// Compiled immutable filesystem scope.
+/// Compiled immutable filesystem scope issued by [`crate::PathPolicyRegistry`].
+/// Direct external construction is intentionally unavailable:
+/// ```compile_fail
+/// use tinysecurity_policy::{PathScope, PathPolicy};
+/// fn bypass_registration(policy: PathPolicy) -> PathScope { PathScope(policy) }
+/// ```
 #[derive(Clone, Debug)]
-pub struct PathScope(pub PathPolicy);
+pub struct PathScope(PathPolicy);
 impl std::ops::Deref for PathScope {
     type Target = PathPolicy;
     fn deref(&self) -> &Self::Target {
@@ -135,6 +140,14 @@ impl std::ops::Deref for PathScope {
     }
 }
 impl PathScope {
+    /// Construct only after the registry has admitted every configured root.
+    pub(crate) fn registered(policy: PathPolicy) -> Self {
+        Self(policy)
+    }
+    pub(crate) fn policy(&self) -> &PathPolicy {
+        &self.0
+    }
+
     /// Whether the path is under a host state reservation, including aliased/missing descendants.
     #[must_use]
     pub fn internal(&self, path: &Path) -> bool {
@@ -347,3 +360,7 @@ impl PathScope {
 #[cfg(test)]
 #[path = "path_scope_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "path_scope_contract_tests.rs"]
+mod contract_tests;
