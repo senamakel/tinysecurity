@@ -319,8 +319,10 @@ pub(crate) fn strip_quoted_heredoc_bodies(command: &str) -> Cow<'_, str> {
 
     let mut pending = std::collections::VecDeque::new();
     let mut out = String::with_capacity(command.len());
-    let mut quote = QuoteState::None;
-    let mut token_boundary = true;
+    let mut header = HeredocHeader {
+        quote: QuoteState::None,
+        token_boundary: true,
+    };
     let mut reading_bodies = false;
     for line in command.split_inclusive('\n') {
         if reading_bodies && let Some((delim, strip_tabs, quoted)) = pending.front() {
@@ -343,103 +345,123 @@ pub(crate) fn strip_quoted_heredoc_bodies(command: &str) -> Cow<'_, str> {
             continue;
         }
         out.push_str(line);
-        let mut chars = line.char_indices().peekable();
-        while let Some((idx, ch)) = chars.next() {
-            match quote {
-                QuoteState::Single => {
-                    if ch == '\'' {
-                        quote = QuoteState::None;
-                    }
-                }
-                QuoteState::Double => match ch {
-                    // POSIX double quotes escape only these characters. Consuming
-                    // a continued newline leaves the command and quote open.
-                    '\\' if chars
-                        .peek()
-                        .is_some_and(|(_, c)| matches!(c, '$' | '`' | '"' | '\\' | '\n')) =>
-                    {
-                        chars.next();
-                    }
-                    '"' => quote = QuoteState::None,
-                    '`' => return Cow::Borrowed(command),
-                    '$' if chars.peek().is_some_and(|(_, c)| *c == '{') => {
-                        return Cow::Borrowed(command);
-                    }
-                    '$' if chars.peek().is_some_and(|(_, c)| *c == '(') => {
-                        if !skip_simple_substitution(&mut chars) {
-                            return Cow::Borrowed(command);
-                        }
-                    }
-                    _ => {}
-                },
-                QuoteState::None => match ch {
-                    '\\' => {
-                        if let Some((_, next)) = chars.next() {
-                            // Backslash-newline disappears before tokenization:
-                            // neither a token boundary nor a body boundary.
-                            if next != '\n' {
-                                token_boundary = false;
-                            }
-                        }
-                    }
-                    '\'' => {
-                        quote = QuoteState::Single;
-                        token_boundary = false;
-                    }
-                    '"' => {
-                        quote = QuoteState::Double;
-                        token_boundary = false;
-                    }
-                    '#' if token_boundary => {
-                        // Backslashes and quotes inside a comment are just data.
-                        reading_bodies = line.ends_with('\n') && !pending.is_empty();
-                        token_boundary = true;
-                        break;
-                    }
-                    '\n' => {
-                        reading_bodies = !pending.is_empty();
-                        token_boundary = true;
-                    }
-                    '<' if chars.next_if(|(_, c)| *c == '<').is_some() => {
-                        if chars.next_if(|(_, c)| *c == '<').is_some() {
-                            token_boundary = true;
-                            continue;
-                        }
-                        let rest = &line[idx + 2..];
-                        let Some((delim, consumed, quoted)) = heredoc_delimiter(rest) else {
-                            // Unsupported quote/expansion syntax cannot safely
-                            // establish where any queued body ends.
-                            return Cow::Borrowed(command);
-                        };
-                        pending.push_back((delim, rest.starts_with('-'), quoted));
-                        for _ in 0..consumed {
-                            chars.next();
-                        }
-                        token_boundary = false;
-                    }
-                    '`' => return Cow::Borrowed(command),
-                    '$' if chars
-                        .peek()
-                        .is_some_and(|(_, c)| matches!(c, '{' | '\'' | '"')) =>
-                    {
-                        return Cow::Borrowed(command);
-                    }
-                    '$' if chars.peek().is_some_and(|(_, c)| *c == '(') => {
-                        if !skip_simple_substitution(&mut chars) {
-                            return Cow::Borrowed(command);
-                        }
-                        token_boundary = false;
-                    }
-                    _ => token_boundary = ch.is_whitespace() || ";&|<>()".contains(ch),
-                },
-            }
-        }
+        let Some(logical_newline) = scan_heredoc_header(line, &mut header, &mut pending) else {
+            return Cow::Borrowed(command);
+        };
+        reading_bodies = logical_newline && !pending.is_empty();
     }
     if out == command {
         Cow::Borrowed(command)
     } else {
         Cow::Owned(out)
     }
+}
+
+struct HeredocHeader {
+    quote: QuoteState,
+    token_boundary: bool,
+}
+
+// Physical lines can continue a word or quote. Only an unquoted, unescaped
+// newline ends the command header and starts consuming its ordered bodies.
+fn scan_heredoc_header(
+    line: &str,
+    header: &mut HeredocHeader,
+    pending: &mut std::collections::VecDeque<(String, bool, bool)>,
+) -> Option<bool> {
+    let mut logical_newline = false;
+    let mut chars = line.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        match header.quote {
+            QuoteState::Single => {
+                if ch == '\'' {
+                    header.quote = QuoteState::None;
+                }
+            }
+            QuoteState::Double => match ch {
+                // POSIX double quotes escape only these characters. Consuming
+                // a continued newline leaves the command and quote open.
+                '\\' if chars
+                    .peek()
+                    .is_some_and(|(_, c)| matches!(c, '$' | '`' | '"' | '\\' | '\n')) =>
+                {
+                    chars.next();
+                }
+                '"' => header.quote = QuoteState::None,
+                '`' => return None,
+                '$' if chars.peek().is_some_and(|(_, c)| *c == '{') => {
+                    return None;
+                }
+                '$' if chars.peek().is_some_and(|(_, c)| *c == '(')
+                    && !skip_simple_substitution(&mut chars) =>
+                {
+                    return None;
+                }
+                _ => {}
+            },
+            QuoteState::None => match ch {
+                '\\' => {
+                    if let Some((_, next)) = chars.next() {
+                        // Backslash-newline disappears before tokenization:
+                        // neither a token boundary nor a body boundary.
+                        if next != '\n' {
+                            header.token_boundary = false;
+                        }
+                    }
+                }
+                '\'' => {
+                    header.quote = QuoteState::Single;
+                    header.token_boundary = false;
+                }
+                '"' => {
+                    header.quote = QuoteState::Double;
+                    header.token_boundary = false;
+                }
+                '#' if header.token_boundary => {
+                    // Backslashes and quotes inside a comment are just data.
+                    logical_newline = line.ends_with('\n') && !pending.is_empty();
+                    header.token_boundary = true;
+                    break;
+                }
+                '\n' => {
+                    logical_newline = !pending.is_empty();
+                    header.token_boundary = true;
+                }
+                '<' if chars.next_if(|(_, c)| *c == '<').is_some() => {
+                    if chars.next_if(|(_, c)| *c == '<').is_some() {
+                        header.token_boundary = true;
+                        continue;
+                    }
+                    let rest = &line[idx + 2..];
+                    let Some((delim, consumed, quoted)) = heredoc_delimiter(rest) else {
+                        // Unsupported quote/expansion syntax cannot safely
+                        // establish where any queued body ends.
+                        return None;
+                    };
+                    pending.push_back((delim, rest.starts_with('-'), quoted));
+                    for _ in 0..consumed {
+                        chars.next();
+                    }
+                    header.token_boundary = false;
+                }
+                '`' => return None,
+                '$' if chars
+                    .peek()
+                    .is_some_and(|(_, c)| matches!(c, '{' | '\'' | '"')) =>
+                {
+                    return None;
+                }
+                '$' if chars.peek().is_some_and(|(_, c)| *c == '(') => {
+                    if !skip_simple_substitution(&mut chars) {
+                        return None;
+                    }
+                    header.token_boundary = false;
+                }
+                _ => header.token_boundary = ch.is_whitespace() || ";&|<>()".contains(ch),
+            },
+        }
+    }
+    Some(logical_newline)
 }
 
 // Skip only a flat command substitution whose text cannot declare a heredoc or
@@ -449,7 +471,7 @@ fn skip_simple_substitution(chars: &mut std::iter::Peekable<std::str::CharIndice
     for (_, ch) in chars.by_ref() {
         match ch {
             ')' => return true,
-            '\n' | '\\' | '\'' | '"' | '`' | '$' | '<' | '(' => return false,
+            '\n' | '\\' | '\'' | '"' | '`' | '$' | '<' | '(' | '#' => return false,
             _ => {}
         }
     }

@@ -399,6 +399,7 @@ fn unsupported_header_syntax_preserves_all_command_text() {
         "cat <<'A' $(echo <<'NESTED')",
         "cat <<'A' \"$(echo <<'NESTED')\"",
         "cat <<'A' $(unfinished",
+        "cat <<'A' $(echo safe # ) <<'fake')",
         "cat <<'A' `echo literal`",
         "cat <<'A' \"`echo literal`\"",
         "cat <<'A' ${value:-<<'NESTED'}",
