@@ -1,0 +1,503 @@
+//! Reserved typed contracts for capabilities not yet advertised by the module.
+use crate::{CallerContext, Decision};
+use serde::{Deserialize, Serialize};
+/// `ApprovalState` vocabulary, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalState {
+    /// Pending state.
+    Pending,
+    /// Allowed state.
+    Allowed,
+    /// Denied state.
+    Denied,
+    /// Expired state.
+    Expired,
+    /// Executed state.
+    Executed,
+}
+/// `ExecutionOutcome` vocabulary, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionOutcome {
+    /// Succeeded state.
+    Succeeded,
+    /// Failed state.
+    Failed,
+    /// Cancelled state.
+    Cancelled,
+}
+/// `ReplyVerdict` vocabulary, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplyVerdict {
+    /// `AllowOnce` state.
+    AllowOnce,
+    /// Deny state.
+    Deny,
+    /// Unrecognized state.
+    Unrecognized,
+}
+/// `RedactMode` vocabulary, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RedactMode {
+    /// Text state.
+    Text,
+    /// `StructuredArguments` state.
+    StructuredArguments,
+    /// Endpoint state.
+    Endpoint,
+    /// `HomePath` state.
+    HomePath,
+}
+/// `ScanVerdict` vocabulary, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanVerdict {
+    /// Clean state.
+    Clean,
+    /// Suspicious state.
+    Suspicious,
+    /// Blocked state.
+    Blocked,
+}
+/// `PrivacyMode` vocabulary, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrivacyMode {
+    /// `LocalOnly` state.
+    LocalOnly,
+    /// Standard state.
+    Standard,
+    /// Sensitive state.
+    Sensitive,
+}
+/// `SourceTrust` vocabulary, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceTrust {
+    /// `TrustedHost` state.
+    TrustedHost,
+    /// `UntrustedMcp` state.
+    UntrustedMcp,
+    /// `UntrustedSkill` state.
+    UntrustedSkill,
+    /// Downloaded state.
+    Downloaded,
+}
+/// `SandboxBackend` vocabulary, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxBackend {
+    /// Namespace state.
+    Namespace,
+    /// `MicroVm` state.
+    MicroVm,
+    /// Jail state.
+    Jail,
+    /// Docker state.
+    Docker,
+    /// Noop state.
+    Noop,
+}
+/// `NetworkPolicy` vocabulary, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkPolicy {
+    /// None state.
+    None,
+    /// `EgressProxy` state.
+    EgressProxy,
+    /// Host state.
+    Host,
+}
+/// `AuditKind` vocabulary, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditKind {
+    /// `PolicyChanged` state.
+    PolicyChanged,
+    /// Approval state.
+    Approval,
+    /// Judge state.
+    Judge,
+    /// Execution state.
+    Execution,
+    /// Sandbox state.
+    Sandbox,
+}
+/// `StoreOperation` vocabulary, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoreOperation {
+    /// `LoadPending` state.
+    LoadPending,
+    /// `LoadDecisions` state.
+    LoadDecisions,
+    /// Persist state.
+    Persist,
+}
+/// `ApprovalDecision` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalDecision {
+    /// Persisted request identity.
+    pub request_id: String,
+    /// Human verdict.
+    pub allow: bool,
+    /// Verified deciding identity.
+    pub caller: CallerContext,
+}
+/// `ApprovalRecord` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalRecord {
+    /// Persisted approval identity.
+    pub request_id: String,
+    /// Canonical original call fingerprint.
+    pub fingerprint: String,
+    /// Original verified caller.
+    pub caller: CallerContext,
+    /// Absolute expiration in host clock milliseconds.
+    pub expires_at_ms: u64,
+    /// Durable lifecycle state.
+    pub state: ApprovalState,
+}
+/// `ListPendingRequest` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListPendingRequest {
+    /// Verified scope identity.
+    pub caller: CallerContext,
+}
+/// `ListPendingResponse` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListPendingResponse {
+    /// Pending records within caller scope.
+    pub records: Vec<ApprovalRecord>,
+}
+/// `ListDecisionsRequest` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListDecisionsRequest {
+    /// Verified scope identity.
+    pub caller: CallerContext,
+    /// Bounded result limit.
+    pub limit: u32,
+}
+/// `ListDecisionsResponse` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListDecisionsResponse {
+    /// Scoped durable records.
+    pub records: Vec<ApprovalRecord>,
+}
+/// `RecordExecutionRequest` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordExecutionRequest {
+    /// Approval identity.
+    pub request_id: String,
+    /// Executed call fingerprint.
+    pub fingerprint: String,
+    /// Verified executor.
+    pub caller: CallerContext,
+    /// Terminal execution result.
+    pub outcome: ExecutionOutcome,
+}
+/// `RecordExecutionResponse` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordExecutionResponse {
+    /// True only after confirmed persistence.
+    pub committed: bool,
+}
+/// `PreauthorizeFlowRequest` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreauthorizeFlowRequest {
+    /// Verified origin and flow.
+    pub caller: CallerContext,
+    /// Exact reviewed call fingerprints.
+    pub fingerprints: Vec<String>,
+    /// Bounded expiration.
+    pub expires_at_ms: u64,
+}
+/// `PreauthorizeFlowResponse` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreauthorizeFlowResponse {
+    /// Persisted grant identity.
+    pub grant_id: String,
+}
+/// `ParseReplyRequest` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParseReplyRequest {
+    /// Pending identity.
+    pub request_id: String,
+    /// User reply; never persisted without redaction.
+    pub reply: String,
+}
+/// `ParseReplyResponse` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParseReplyResponse {
+    /// Parsed intent, not permission by itself.
+    pub verdict: ReplyVerdict,
+}
+/// `RedactRequest` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RedactRequest {
+    /// Sensitive input.
+    pub text: String,
+    /// Redaction surface.
+    pub mode: RedactMode,
+}
+/// `RedactResponse` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RedactResponse {
+    /// Sanitized output.
+    pub text: String,
+    /// Whether substitutions occurred.
+    pub changed: bool,
+}
+/// `ScanPromptRequest` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScanPromptRequest {
+    /// Prompt to scan.
+    pub text: String,
+}
+/// `ScanToolDefinitionRequest` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScanToolDefinitionRequest {
+    /// Tool identity.
+    pub name: String,
+    /// Tool schema encoded as JSON.
+    pub definition_json: String,
+}
+/// `ScanResponse` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScanResponse {
+    /// Typed scan result.
+    pub verdict: ScanVerdict,
+    /// Content-free matching rule identifiers.
+    pub rule_ids: Vec<String>,
+}
+/// `EgressCheckRequest` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EgressCheckRequest {
+    /// Verified origin.
+    pub caller: CallerContext,
+    /// Configured privacy policy.
+    pub privacy: PrivacyMode,
+    /// Outgoing data categories.
+    pub descriptor: DataDescriptor,
+    /// Destination URL.
+    pub destination: String,
+}
+/// `EgressCheckResponse` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EgressCheckResponse {
+    /// Permission over the supplied data and destination.
+    pub decision: Decision,
+}
+/// `UrlGuardRequest` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UrlGuardRequest {
+    /// URL to resolve.
+    pub url: String,
+    /// Previous hop for redirect checks.
+    pub redirect_from: Option<String>,
+}
+/// `UrlGuardResponse` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UrlGuardResponse {
+    /// Authorization result.
+    pub decision: Decision,
+    /// TLS verification hostname.
+    pub hostname: String,
+    /// Addresses the transport MUST pin; this response alone is not rebinding protection.
+    pub approved_addresses: Vec<String>,
+}
+/// `SandboxPlanRequest` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxPlanRequest {
+    /// Verified access and origin.
+    pub caller: CallerContext,
+    /// Executable source trust.
+    pub source: SourceTrust,
+    /// Backends actually supported by the executor.
+    pub capabilities: Vec<SandboxBackend>,
+    /// Requested filesystem reach.
+    pub grants: Vec<PathGrant>,
+    /// Requested network reach.
+    pub network: NetworkPolicy,
+    /// Requested bounded resources.
+    pub limits: ResourceLimits,
+}
+/// `SandboxPlanResponse` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxPlanResponse {
+    /// Policy authorization.
+    pub decision: Decision,
+    /// Approved backend, absent on denial.
+    pub backend: Option<SandboxBackend>,
+    /// Effective filesystem grants.
+    pub grants: Vec<PathGrant>,
+    /// Effective network policy.
+    pub network: NetworkPolicy,
+    /// Effective resource limits.
+    pub limits: ResourceLimits,
+}
+/// `PathGrant` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathGrant {
+    /// Absolute grant root.
+    pub path: String,
+    /// Write authorization.
+    pub write: bool,
+}
+/// `ResourceLimits` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceLimits {
+    /// Memory ceiling.
+    pub memory_bytes: u64,
+    /// CPU time ceiling.
+    pub cpu_millis: u64,
+    /// Process count ceiling.
+    pub processes: u32,
+}
+/// `DataDescriptor` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataDescriptor {
+    /// Whether credentials are present.
+    pub contains_credentials: bool,
+    /// Whether personal identifiers are present.
+    pub contains_personal_data: bool,
+    /// Whether data must stay local.
+    pub local_only: bool,
+}
+/// `AuditRequest` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditRequest {
+    /// Sanitized audit event.
+    pub event: AuditEvent,
+    /// Whether a persistence failure denies the associated operation.
+    pub required: bool,
+}
+/// `AuditResponse` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditResponse {
+    /// True only after confirmed sink persistence.
+    pub committed: bool,
+}
+/// `AuditEvent` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditEvent {
+    /// Policy generation.
+    pub generation: u64,
+    /// Verified subject context.
+    pub caller: CallerContext,
+    /// Event category.
+    pub kind: AuditKind,
+    /// Sanitized actor attribution.
+    pub attribution: String,
+    /// Content-free applied rules.
+    pub rule_ids: Vec<String>,
+}
+/// `ApprovalStoreRequest` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalStoreRequest {
+    /// Load or persist operation.
+    pub operation: StoreOperation,
+    /// Verified scoped caller.
+    pub caller: CallerContext,
+    /// Records to persist, empty for reads.
+    pub records: Vec<ApprovalRecord>,
+}
+/// `ApprovalStoreResponse` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalStoreResponse {
+    /// Persisted scoped records.
+    pub records: Vec<ApprovalRecord>,
+    /// Whether requested writes are durably committed.
+    pub committed: bool,
+}
+/// `ApprovalPromptRequest` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalPromptRequest {
+    /// Approval awaiting the human.
+    pub record: ApprovalRecord,
+    /// Redacted user-facing summary.
+    pub summary: String,
+    /// Bounded callback deadline.
+    pub timeout_ms: u32,
+}
+/// `ApprovalPromptResponse` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalPromptResponse {
+    /// Verified human reply, absent if unavailable.
+    pub decision: Option<ApprovalDecision>,
+}
+/// `AuditSinkRequest` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditSinkRequest {
+    /// Sanitized ordered events.
+    pub events: Vec<AuditEvent>,
+    /// Bounded callback deadline.
+    pub timeout_ms: u32,
+}
+/// `AuditSinkResponse` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditSinkResponse {
+    /// True only after durable append.
+    pub committed: bool,
+}
+/// `KeyringConsentRequest` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyringConsentRequest {
+    /// Verified requesting identity.
+    pub caller: CallerContext,
+    /// Redacted purpose.
+    pub purpose: String,
+    /// Bounded wait.
+    pub timeout_ms: u32,
+}
+/// `KeyringConsentResponse` payload, reserved until its engine is implemented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyringConsentResponse {
+    /// Verified human consent.
+    pub allowed: bool,
+}
+/// Verified human decision supplied to the reserved Decide member.
+pub type DecideRequest = ApprovalDecision;
+/// Durable record returned after the reserved Decide member confirms storage.
+pub type DecideResponse = ApprovalRecord;

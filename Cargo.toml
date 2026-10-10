@@ -2,7 +2,7 @@
 resolver = "3"
 # Every crate in this repository lives under `crates/`, one directory per
 # package, each directory named for the package it holds. There is no root
-# package: the crate a host loads is `crates/template`, the same as any other
+# package: the crate a host loads is `crates/tinysecurity-module`, the same as any other
 # member. Keeping the root virtual is what makes that uniform — a root package
 # would make one crate structurally different from the rest for no reason other
 # than history, and it is the arrangement this template moved away from.
@@ -22,15 +22,18 @@ version = "0.2.1"
 edition = "2024"
 rust-version = "1.88"
 license = "GPL-3.0-only"
-repository = "https://github.com/tinyhumansai/rust-template"
+repository = "https://github.com/tinyhumansai/tinysecurity"
 
 [workspace.dependencies]
-# The wire contract. `crates/template` depends on it and re-exports it, so a
+# The wire contract. `crates/tinysecurity-module` depends on it and re-exports it, so a
 # host that only makes calls takes this crate alone.
 # No `version` requirement on purpose: the workspace version moves on every
 # release, and a pinned requirement here would stop resolving the moment it did.
 # Nothing in this workspace is published, so the path is the whole address.
-template-bus = { path = "crates/template-bus" }
+tinysecurity-bus = { path = "crates/tinysecurity-bus" }
+# Policy implementation and internal umbrella, never linked by hosts.
+tinysecurity-policy = { path = "crates/tinysecurity-policy" }
+tinysecurity = { path = "crates/tinysecurity" }
 # TinyBus defines the message types, interface macro, and frozen module ABI
 # used by the generated integration. Socket and CLI features are unnecessary
 # here.
@@ -41,7 +44,7 @@ tinybus = { path = "vendor/tinybus/crates/tinybus", version = "0.1.0", default-f
 # The module-side SDK owns the isolated runtime and exports the ABI entrypoints
 # required by TinyBus's dynamic loader.
 tinybus-module = { path = "vendor/tinybus/crates/tinybus-module", version = "0.1.0" }
-# Derive macros for the crate-wide error type in `crates/template/src/error/`.
+# Derive macros for the crate-wide error type in `crates/tinysecurity-module/src/error/`.
 # Every dependency entry should carry a comment like this one saying why it is
 # here.
 thiserror = "2"
@@ -51,6 +54,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Module integration tests exercise the real asynchronous in-memory TinyBus.
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+# Disposable filesystem fixtures for native path policy tests.
+[workspace.dependencies.tempfile]
+version = "3"
 
 # Lints apply to every member that opts in with `[lints] workspace = true`, and
 # to every target of that member. CI runs clippy with `-D warnings`, so anything
