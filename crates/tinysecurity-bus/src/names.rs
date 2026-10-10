@@ -19,6 +19,12 @@ pub mod methods {
     pub const VALIDATE_PARENT: &str = "ValidateParent";
     /// Boolean filesystem policy query.
     pub const CHECK_PATH: &str = "CheckPath";
+    /// Register a fresh immutable agent command scope and hourly budget.
+    pub const REGISTER_COMMAND_POLICY: &str = "RegisterCommandPolicy";
+    /// Informational classification; never an execution grant.
+    pub const CLASSIFY_COMMAND: &str = "ClassifyCommand";
+    /// Noncacheable execution check and atomic action reservation.
+    pub const CHECK_COMMAND: &str = "CheckCommand";
     /// Decide member.
     pub const DECIDE: &str = "Decide";
     /// `ListPending` member.
@@ -54,6 +60,9 @@ pub const METHODS: &[&str] = &[
     methods::VALIDATE_PATH,
     methods::VALIDATE_PARENT,
     methods::CHECK_PATH,
+    methods::REGISTER_COMMAND_POLICY,
+    methods::CLASSIFY_COMMAND,
+    methods::CHECK_COMMAND,
     methods::POLICY_INFO,
 ];
 /// Accepted policy activation event.

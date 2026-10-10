@@ -51,9 +51,24 @@ pub(super) fn credential_store(segments: &[&str]) -> bool {
         })
         .collect();
     normalized.iter().any(|component| {
-        [".ssh", ".gnupg", ".aws", ".azure", ".kube", "keychains"].contains(component)
+        [
+            ".ssh",
+            ".gnupg",
+            ".aws",
+            ".azure",
+            ".kube",
+            "keychains",
+            ".netrc",
+            ".git-credentials",
+            ".pgpass",
+            ".npmrc",
+        ]
+        .contains(component)
     }) || normalized.windows(2).any(|pair| {
-        pair[0] == "microsoft" && matches!(pair[1], "protect" | "credentials" | "crypto" | "vault")
+        (pair[0] == "microsoft"
+            && matches!(pair[1], "protect" | "credentials" | "crypto" | "vault"))
+            || pair == [".docker", "config.json"]
+            || pair == [".cargo", "credentials.toml"]
     })
 }
 

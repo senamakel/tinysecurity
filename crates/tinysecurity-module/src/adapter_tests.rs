@@ -9,6 +9,7 @@ fn only_implemented_members_are_advertised() -> std::result::Result<(), Box<dyn 
     let service = PolicyService {
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
+        commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
     };
     assert_eq!(service.name().as_str(), names::INTERFACE);
     assert_eq!(
@@ -33,6 +34,7 @@ async fn native_dispatch_rejects_malformed_args_and_serves_ordered_checks()
             PolicyService {
                 policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
                 paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
+                commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
             },
         )
         .await?;
@@ -80,6 +82,7 @@ async fn native_dispatch_rejects_malformed_args_and_serves_ordered_checks()
         }
     );
     verify_scope_dispatch(&proxy).await?;
+    verify_command_dispatch(&proxy).await?;
     task.abort();
     Ok(())
 }
@@ -93,6 +96,22 @@ async fn sdk_setup_accepts_generation_and_rejects_invalid_reinit()
     let client = Connection::connect(bus.connect().await?).await?;
     let proxy = client.proxy(names::INTERFACE, names::OBJECT_PATH, names::INTERFACE)?;
     let before: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
+    let command_id: CommandPolicyId = proxy
+        .call(
+            names::methods::REGISTER_COMMAND_POLICY,
+            (command_fixture()?,),
+        )
+        .await?;
+    let command_request = CommandRequest {
+        policy_id: command_id,
+        command: "pwd".into(),
+        declared_class: None,
+    };
+    let allowed: CommandDecision = proxy
+        .call(names::methods::CHECK_COMMAND, (command_request.clone(),))
+        .await?;
+    assert_eq!(allowed.gate, CommandGate::Allow);
+
     let root = tempfile::tempdir()?;
     let policy = fixture_policy(root.path());
     let id: PathPolicyId = proxy
@@ -115,6 +134,11 @@ async fn sdk_setup_accepts_generation_and_rejects_invalid_reinit()
     setup(server.clone(), ModuleConfig::default()).await?;
     let after: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
     assert_eq!(after.generation, before.generation + 1);
+    let exhausted: CommandDecision = proxy
+        .call(names::methods::CHECK_COMMAND, (command_request,))
+        .await?;
+    assert_eq!(exhausted.denial, Some(CommandDenial::RateLimit));
+
     let result: PathValidationResult = proxy
         .call(
             names::methods::VALIDATE_PARENT,
@@ -231,6 +255,7 @@ async fn blocked_filesystem_query_does_not_block_policy_info_or_another_scope()
     let service = PolicyService {
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
+        commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
     };
     let bus = MemoryBus::new();
     let broker = Broker::new().spawn(bus.clone());
@@ -296,6 +321,7 @@ async fn blocked_registration_does_not_block_policy_info_or_another_scope()
     let service = PolicyService {
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
+        commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
     };
     let bus = MemoryBus::new();
     let broker = Broker::new().spawn(bus.clone());
@@ -350,4 +376,96 @@ async fn blocked_registration_does_not_block_policy_info_or_another_scope()
     assert_eq!(info.generation, 1);
     assert!(matches!(result, PathValidationResult::Allowed { .. }));
     Ok(())
+}
+
+async fn verify_command_dispatch(
+    proxy: &tinybus::Proxy,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let policy = command_fixture()?;
+    let mut malformed = policy.clone();
+    malformed.action_dir = "relative".into();
+    assert!(
+        proxy
+            .call::<CommandPolicyId>(names::methods::REGISTER_COMMAND_POLICY, (malformed,))
+            .await
+            .is_err()
+    );
+    let id: CommandPolicyId = proxy
+        .call(names::methods::REGISTER_COMMAND_POLICY, (policy,))
+        .await?;
+    let req = CommandRequest {
+        policy_id: id,
+        command: "pwd".into(),
+        declared_class: None,
+    };
+    let diagnostic: CommandDecision = proxy
+        .call(names::methods::CLASSIFY_COMMAND, (req.clone(),))
+        .await?;
+    assert_eq!(diagnostic.gate, CommandGate::Allow);
+    let granted: CommandDecision = proxy
+        .call(names::methods::CHECK_COMMAND, (req.clone(),))
+        .await?;
+    assert_eq!(granted.gate, CommandGate::Allow);
+    let repeated: CommandDecision = proxy.call(names::methods::CHECK_COMMAND, (req,)).await?;
+    assert_eq!(repeated.denial, Some(CommandDenial::RateLimit));
+    assert!(
+        proxy
+            .call::<CommandDecision>(names::methods::CHECK_COMMAND, ())
+            .await
+            .is_err()
+    );
+    let oversized = CommandRequest {
+        policy_id: proxy
+            .call(
+                names::methods::REGISTER_COMMAND_POLICY,
+                (command_fixture()?,),
+            )
+            .await?,
+        command: "x".repeat(1_048_577),
+        declared_class: None,
+    };
+    assert!(
+        proxy
+            .call::<CommandDecision>(names::methods::CLASSIFY_COMMAND, (oversized.clone(),))
+            .await
+            .is_err()
+    );
+    assert!(
+        proxy
+            .call::<CommandDecision>(names::methods::CHECK_COMMAND, (oversized,))
+            .await
+            .is_err()
+    );
+    let unknown = CommandRequest {
+        policy_id: CommandPolicyId("not-registered".into()),
+        command: "pwd".into(),
+        declared_class: None,
+    };
+    assert!(
+        proxy
+            .call::<CommandDecision>(names::methods::CLASSIFY_COMMAND, (unknown.clone(),))
+            .await
+            .is_err()
+    );
+    assert!(
+        proxy
+            .call::<CommandDecision>(names::methods::CHECK_COMMAND, (unknown,))
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+fn command_fixture() -> std::result::Result<CommandPolicy, Box<dyn std::error::Error>> {
+    Ok(CommandPolicy {
+        enabled: true,
+        execution_mode: CommandExecutionMode::HarnessGated,
+        autonomy: CommandAutonomy::Full,
+        allowed_commands: vec![],
+        max_actions_per_hour: 1,
+        require_approval_for_medium_risk: true,
+        block_high_risk_commands: true,
+        action_dir: std::env::current_dir()?,
+        home_dir: None,
+    })
 }

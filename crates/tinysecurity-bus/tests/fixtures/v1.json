@@ -506,7 +506,7 @@
   "ModuleConfig": {
     "contract_version": [
       1,
-      0
+      2
     ],
     "policy": {
       "enabled": false,
@@ -524,7 +524,7 @@
   "PolicyInfo": {
     "contract_version": [
       1,
-      0
+      2
     ],
     "generation": 1,
     "policy": {

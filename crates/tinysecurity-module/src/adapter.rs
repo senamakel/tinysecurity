@@ -1,17 +1,19 @@
 //! SDK-configured native policy service, with no lifecycle RPC members.
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use tinybus::{Connection, Result as BusResult};
-use tinysecurity::{PathPolicyRegistry, Policy};
+use tinysecurity::{CommandPolicyRegistry, PathPolicyRegistry, Policy};
 use tinysecurity_bus::{
     CheckRequest, CheckResponse, Decision, EvaluateRequest, ModuleConfig, PolicyInfo, names,
 };
 
 static PATH_SCOPES: OnceLock<Arc<Mutex<PathPolicyRegistry>>> = OnceLock::new();
+static COMMAND_SCOPES: OnceLock<Arc<Mutex<CommandPolicyRegistry>>> = OnceLock::new();
 static ACTIVE: OnceLock<Arc<RwLock<Policy>>> = OnceLock::new();
 #[derive(Clone)]
 struct PolicyService {
     policy: Arc<RwLock<Policy>>,
     paths: Arc<Mutex<PathPolicyRegistry>>,
+    commands: Arc<Mutex<CommandPolicyRegistry>>,
 }
 fn failure(error: &tinysecurity_bus::Error) -> tinybus::Error {
     tinybus::Error::failed(error.to_string())
@@ -117,6 +119,50 @@ impl PolicyService {
         .await
     }
 
+    async fn register_command_policy(
+        &self,
+        policy: tinysecurity_bus::CommandPolicy,
+    ) -> BusResult<tinysecurity_bus::CommandPolicyId> {
+        let result = {
+            self.commands
+                .lock()
+                .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+                .register(policy)
+                .map_err(|error| failure(&error))
+        };
+        std::future::ready(result).await
+    }
+    async fn classify_command(
+        &self,
+        request: tinysecurity_bus::CommandRequest,
+    ) -> BusResult<tinysecurity_bus::CommandDecision> {
+        let scope = self
+            .commands
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .get_owned(&request.policy_id)
+            .map_err(|error| failure(&error))?;
+        tokio::task::spawn_blocking(move || {
+            scope.classify(&request).map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+    }
+    async fn check_command(
+        &self,
+        request: tinysecurity_bus::CommandRequest,
+    ) -> BusResult<tinysecurity_bus::CommandDecision> {
+        let scope = self
+            .commands
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .get_owned(&request.policy_id)
+            .map_err(|error| failure(&error))?;
+        tokio::task::spawn_blocking(move || scope.check(&request).map_err(|error| failure(&error)))
+            .await
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+    }
+
     async fn policy_info(&self) -> BusResult<PolicyInfo> {
         let info = { self.read()?.info() };
         std::future::ready(Ok(info)).await
@@ -155,6 +201,10 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
             names::OBJECT_PATH.try_into()?,
             PolicyService {
                 policy: Arc::clone(&policy),
+                commands: Arc::clone(
+                    COMMAND_SCOPES
+                        .get_or_init(|| Arc::new(Mutex::new(CommandPolicyRegistry::default()))),
+                ),
                 paths: Arc::clone(
                     PATH_SCOPES.get_or_init(|| Arc::new(Mutex::new(PathPolicyRegistry::default()))),
                 ),
@@ -172,7 +222,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["Evaluate", "Check", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath"],
+    methods = ["Evaluate", "Check", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = [],

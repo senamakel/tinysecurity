@@ -90,8 +90,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .is_err()
     );
     let (path_scope, fixture) = register_native_scope(&proxy).await?;
+    let command_scope = register_native_command_scope(&proxy).await?;
     verify_reconfiguration(&host, &proxy, &info.name).await?;
     verify_native_scope(&proxy, path_scope, fixture.path()).await?;
+    verify_native_commands(&proxy, command_scope).await?;
     let evaluate = EvaluateRequest {
         caller,
         call: ToolCall {
@@ -289,4 +291,75 @@ fn native_protected_path() -> PathBuf {
     {
         PathBuf::from("/etc/passwd")
     }
+}
+
+async fn register_native_command_scope(
+    proxy: &tinybus::Proxy,
+) -> std::result::Result<tinysecurity_bus::CommandPolicyId, Box<dyn std::error::Error>> {
+    use tinysecurity_bus::{
+        CommandAutonomy, CommandDecision, CommandExecutionMode, CommandGate, CommandPolicy,
+        CommandRequest,
+    };
+    let policy = CommandPolicy {
+        enabled: true,
+        execution_mode: CommandExecutionMode::HarnessGated,
+        autonomy: CommandAutonomy::Full,
+        allowed_commands: vec![],
+        max_actions_per_hour: 1,
+        require_approval_for_medium_risk: true,
+        block_high_risk_commands: true,
+        action_dir: std::env::current_dir()?,
+        home_dir: None,
+    };
+    let id: tinysecurity_bus::CommandPolicyId = proxy
+        .call(names::methods::REGISTER_COMMAND_POLICY, (policy,))
+        .await?;
+    let diagnostic = CommandRequest {
+        policy_id: id.clone(),
+        command: "pwd".into(),
+        declared_class: None,
+    };
+    let allowed: CommandDecision = proxy
+        .call(names::methods::CHECK_COMMAND, (diagnostic,))
+        .await?;
+    assert_eq!(allowed.gate, CommandGate::Allow);
+    Ok(id)
+}
+async fn verify_native_commands(
+    proxy: &tinybus::Proxy,
+    id: tinysecurity_bus::CommandPolicyId,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tinysecurity_bus::{
+        CommandClass, CommandDecision, CommandDenial, CommandGate, CommandRequest,
+    };
+    let retry = CommandRequest {
+        policy_id: id.clone(),
+        command: "pwd".into(),
+        declared_class: None,
+    };
+    let exhausted: CommandDecision = proxy.call(names::methods::CHECK_COMMAND, (retry,)).await?;
+    assert_eq!(exhausted.denial, Some(CommandDenial::RateLimit));
+    let network = CommandRequest {
+        policy_id: id.clone(),
+        command: "curl https://example.com".into(),
+        declared_class: Some(CommandClass::Read),
+    };
+    let prompt: CommandDecision = proxy
+        .call(names::methods::CHECK_COMMAND, (network,))
+        .await?;
+    assert_eq!(prompt.class, CommandClass::Network);
+    assert_eq!(prompt.gate, CommandGate::Prompt);
+    let protected = CommandRequest {
+        policy_id: id,
+        command: "cat ~/.ssh/id_rsa".into(),
+        declared_class: None,
+    };
+    let denied: CommandDecision = proxy
+        .call(names::methods::CHECK_COMMAND, (protected,))
+        .await?;
+    assert_eq!(denied.denial, Some(CommandDenial::Protected));
+    println!(
+        "native immutable command scope preserves class/floor/gate and budget across SDK reinit"
+    );
+    Ok(())
 }
