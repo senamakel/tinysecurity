@@ -20,6 +20,11 @@ getrandom.workspace = true
 [target.'cfg(unix)'.dependencies]
 # Safe fd-relative nofollow creation, ownership checks and rename under a pinned directory.
 rustix = { version = "1", default-features = false, features = ["fs", "process", "std"] }
+[target.'cfg(windows)'.dependencies]
+# Safe current-token identity, without username lookup or owner FFI.
+winsafe = { version = "0.0.29", default-features = false, features = ["advapi"] }
+# Inspect the owner and DACL of the actual pinned file handle.
+windows-permissions = "0.2.4"
 [dev-dependencies]
 tempfile.workspace = true
 [lints]

@@ -274,6 +274,9 @@ fn receipt(batch: &AuditSinkRequest2) -> AuditSinkResponse2 {
             .map_or(batch.expected_tail, |event| event.sequence),
     }
 }
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "sink_tests.rs"]
 mod tests;
+#[cfg(all(test, windows))]
+#[path = "sink_windows_tests.rs"]
+mod windows_tests;

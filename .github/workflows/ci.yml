@@ -54,6 +54,32 @@ jobs:
       - name: Build
         run: cargo build --all-targets --all-features
 
+      - name: Provision Windows audit test namespace
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $auditRoot = Join-Path $env:RUNNER_TEMP 'tinysecurity-audit-ci'
+          New-Item -ItemType Directory -Force $auditRoot | Out-Null
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+          $security = [System.Security.AccessControl.DirectorySecurity]::new()
+          $security.SetOwner($identity.User)
+          $security.SetAccessRuleProtection($true, $false)
+          $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+            $identity.User,
+            [System.Security.AccessControl.FileSystemRights]::FullControl,
+            [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
+            [System.Security.AccessControl.PropagationFlags]::None,
+            [System.Security.AccessControl.AccessControlType]::Allow
+          )
+          [void]$security.AddAccessRule($rule)
+          Set-Acl -LiteralPath $auditRoot -AclObject $security
+          "TINYSECURITY_AUDIT_TEST_ROOT=$auditRoot" >> $env:GITHUB_ENV
+
+      - name: Windows protected audit namespace and rotation behavior
+        if: ${{ runner.os == 'Windows' }}
+        run: cargo test --locked -p tinysecurity-audit windows_ -- --nocapture
+
       - name: Test
         run: cargo test --all-features
 
