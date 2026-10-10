@@ -83,7 +83,43 @@ fn canonical_or_original(path: &Path) -> PathBuf {
     resolve_ancestor(path).unwrap_or_else(|_| path.to_path_buf())
 }
 fn within(path: &Path, root: &Path) -> bool {
-    path.starts_with(root) || path.starts_with(canonical_or_original(root))
+    path.starts_with(canonical_or_original(root))
+}
+// Denial comparisons fold conservatively on Windows/macOS, including normalizing
+// filesystems. Grants and reservation exceptions remain canonical exact matches.
+#[cfg(any(windows, target_os = "macos", test))]
+fn denial_fold(value: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    value.nfc().collect::<String>().to_uppercase()
+}
+fn deny_component_eq(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> bool {
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        denial_fold(&left.to_string_lossy()) == denial_fold(&right.to_string_lossy())
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        left == right
+    }
+}
+fn deny_starts_with(path: &Path, root: &Path) -> bool {
+    let mut candidate = path.components();
+    root.components().all(|part| {
+        candidate
+            .next()
+            .is_some_and(|next| deny_component_eq(next.as_os_str(), part.as_os_str()))
+    })
+}
+fn within_denied(path: &Path, root: &Path) -> bool {
+    deny_starts_with(path, root) || deny_starts_with(path, &canonical_or_original(root))
+}
+fn candidate(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() || protected_path(path) {
+        return None;
+    }
+    resolve_ancestor(path)
+        .ok()
+        .filter(|resolved| !protected_path(resolved))
 }
 /// Compiled immutable filesystem scope.
 #[derive(Clone, Debug)]
@@ -100,22 +136,35 @@ impl PathScope {
     pub fn internal(&self, path: &Path) -> bool {
         let resolved = canonical_or_original(path);
         self.reserved_paths.iter().any(|reservation| {
-            within(&resolved, &reservation.path)
-                && (!reservation.children_only
-                    || resolved != canonical_or_original(&reservation.path))
-                && !reservation
-                    .exceptions
-                    .iter()
-                    .any(|exception| within(&resolved, exception))
+            if !within_denied(&resolved, &reservation.path) {
+                return false;
+            }
+            let root = canonical_or_original(&reservation.path);
+            if reservation.children_only
+                && deny_starts_with(&resolved, &root)
+                && resolved.components().count() == root.components().count()
+            {
+                return false;
+            }
+            !reservation
+                .exceptions
+                .iter()
+                .any(|exception| within(&resolved, exception))
         }) || self.reserved_prefixes.iter().any(|reservation| {
             let root = canonical_or_original(&reservation.root);
+            if !deny_starts_with(&resolved, &root) {
+                return false;
+            }
             resolved
-                .strip_prefix(&root)
-                .ok()
-                .and_then(|relative| relative.components().next())
+                .components()
+                .nth(root.components().count())
                 .is_some_and(|component| {
                     let name = component.as_os_str().to_string_lossy();
-                    name.strip_prefix(&reservation.prefix)
+                    #[cfg(any(windows, target_os = "macos"))]
+                    let (name, prefix) = (denial_fold(&name), denial_fold(&reservation.prefix));
+                    #[cfg(not(any(windows, target_os = "macos")))]
+                    let prefix = reservation.prefix.clone();
+                    name.strip_prefix(&prefix)
                         .is_some_and(|suffix| !suffix.is_empty())
                 })
         })
@@ -123,35 +172,46 @@ impl PathScope {
     /// Whether an explicitly trusted root grants this operation.
     #[must_use]
     pub fn trusted(&self, path: &Path, write: bool) -> bool {
-        !protected_path(path)
-            && self.trusted_roots.iter().any(|root| {
-                (!write || root.access == PathAccess::ReadWrite) && within(path, &root.path)
-            })
+        let Some(resolved) = candidate(path) else {
+            return false;
+        };
+        self.trusted_canonical(&resolved, write)
     }
+    fn trusted_canonical(&self, path: &Path, write: bool) -> bool {
+        self.trusted_roots.iter().any(|root| {
+            (!write || root.access == PathAccess::ReadWrite) && within(path, &root.path)
+        })
+    }
+
     /// Resolved-path containment check, independent of approval policy.
     #[must_use]
     pub fn resolved_allowed(&self, path: &Path, write: bool) -> bool {
-        if protected_path(path) {
+        let Some(resolved) = candidate(path) else {
             return false;
-        }
+        };
+        let path = resolved.as_path();
         if !self.enabled {
             return true;
         }
         if self.internal(path)
-            || (write && self.readonly_paths.iter().any(|root| within(path, root)))
+            || (write
+                && self
+                    .readonly_paths
+                    .iter()
+                    .any(|root| within_denied(path, root)))
         {
             return false;
         }
-        within(path, &self.workspace_dir) || self.trusted(path, write)
+        within(path, &self.workspace_dir) || self.trusted_canonical(path, write)
     }
-    fn forbidden(&self, path: &Path) -> bool {
-        if !self.enabled || self.trusted(path, false) {
+    fn forbidden(&self, path: &Path, write: bool) -> bool {
+        if !self.enabled || self.trusted(path, write) {
             return false;
         }
         let workspace = canonical_or_original(&self.workspace_dir);
         self.forbidden_paths.iter().any(|entry| {
             let forbidden = expand(self, entry);
-            if forbidden.is_absolute() && workspace.starts_with(&forbidden) {
+            if forbidden.is_absolute() && deny_starts_with(&workspace, &forbidden) {
                 return false;
             }
             let forbidden = if forbidden.is_absolute() {
@@ -159,7 +219,7 @@ impl PathScope {
             } else {
                 workspace.join(forbidden)
             };
-            within(path, &forbidden)
+            within_denied(path, &forbidden)
         })
     }
     fn absolute(&self, input: &str) -> PathBuf {
@@ -182,7 +242,7 @@ impl PathScope {
             && self.reserved_names.iter().any(|name| {
                 expanded
                     .file_name()
-                    .is_some_and(|file| file == std::ffi::OsStr::new(name))
+                    .is_some_and(|file| deny_component_eq(file, std::ffi::OsStr::new(name)))
             })
         {
             return false;
@@ -205,7 +265,7 @@ impl PathScope {
             && self
                 .forbidden_paths
                 .iter()
-                .any(|entry| expanded.starts_with(expand(self, entry)))
+                .any(|entry| deny_starts_with(&expanded, &expand(self, entry)))
         {
             return false;
         }
@@ -219,7 +279,7 @@ impl PathScope {
             {
                 return false;
             }
-            if !within(&resolved, &self.workspace_dir) && self.forbidden(&resolved) {
+            if self.forbidden(&resolved, false) {
                 return false;
             }
         }
@@ -259,7 +319,7 @@ impl PathScope {
         if protected_path(&resolved) {
             return Err(Rejection::Protected);
         }
-        if !self.resolved_allowed(&resolved, write) || self.forbidden(&resolved) {
+        if !self.resolved_allowed(&resolved, write) || self.forbidden(&resolved, write) {
             return Err(Rejection::PolicyDenied);
         }
         Ok(resolved)

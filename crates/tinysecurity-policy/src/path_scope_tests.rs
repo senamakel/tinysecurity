@@ -271,3 +271,159 @@ fn windows_administrative_shares_and_device_namespaces_never_hide_system_roots()
         );
     }
 }
+#[cfg(unix)]
+#[test]
+fn public_boolean_authorization_resolves_symlinks_before_containment()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let outside = tempfile::tempdir()?;
+    let mut policy = scope(root.path());
+    policy.0.trusted_roots.push(PathTrustedRoot {
+        path: root.path().into(),
+        access: PathAccess::ReadWrite,
+    });
+    std::os::unix::fs::symlink(outside.path(), root.path().join("escape"))?;
+    for kind in [
+        PathCheckKind::ResolvedRead,
+        PathCheckKind::ResolvedWrite,
+        PathCheckKind::TrustedRead,
+        PathCheckKind::TrustedWrite,
+    ] {
+        assert!(
+            !policy.check_path(&root.path().join("escape/new/file"), kind),
+            "unsafe result for {kind:?}"
+        );
+        assert!(!policy.check_path(&root.path().join("../outside"), kind));
+    }
+    std::os::unix::fs::symlink("/etc", root.path().join("system"))?;
+    policy.0.enabled = false;
+    assert!(!policy.check_path(
+        &root.path().join("system/passwd"),
+        PathCheckKind::ResolvedRead
+    ));
+    Ok(())
+}
+#[test]
+fn string_checks_deny_resolved_forbidden_subtrees_inside_workspace()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let mut policy = scope(root.path());
+    policy.0.workspace_only = false;
+    policy.0.forbidden_paths = vec!["secrets".into()];
+    std::fs::create_dir(root.path().join("secrets"))?;
+    std::fs::write(root.path().join("secrets/file"), "x")?;
+    assert!(!policy.string_allowed(&root.path().join("secrets/file").to_string_lossy()));
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(root.path().join("secrets"), root.path().join("alias"))?;
+        assert!(!policy.string_allowed("alias/file"));
+    }
+    Ok(())
+}
+#[cfg(any(windows, target_os = "macos"))]
+#[test]
+fn prospective_denial_roots_match_native_case_aliases() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let mut policy = scope(root.path());
+    policy.0.forbidden_paths = vec!["secrets".into()];
+    policy.0.reserved_paths.push(PathReservation {
+        path: root.path().join("reserved"),
+        children_only: false,
+        exceptions: vec![],
+    });
+    policy.0.readonly_paths.push(root.path().join("outputs"));
+    policy
+        .0
+        .reserved_prefixes
+        .push(tinysecurity_bus::PathReservedPrefix {
+            root: root.path().into(),
+            prefix: "state-".into(),
+        });
+    for input in [
+        "Secrets/file",
+        "RESERVED/new/file",
+        "Outputs/file",
+        "STATE-alice/file",
+        ".ENV",
+    ] {
+        assert_eq!(
+            policy.validate(input, true),
+            PathValidationResult::Denied {
+                category: Rejection::PolicyDenied
+            },
+            "case alias {input}"
+        );
+    }
+    Ok(())
+}
+/// Denial folding normalizes decomposed names and non-ASCII native case aliases.
+#[test]
+fn conservative_denial_fold_covers_unicode_case_and_normalization() {
+    assert_eq!(denial_fold("SeCrEtS"), denial_fold("secrets"));
+    assert_eq!(denial_fold("caf\u{e9}"), denial_fold("cafe\u{301}"));
+    assert_eq!(denial_fold("\u{131}nternal"), denial_fold("Internal"));
+}
+/// Trusted grants and exception roots must never use conservative denial folding.
+#[test]
+fn case_distinct_missing_grants_and_exceptions_are_not_broadened()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let outside = tempfile::tempdir()?;
+    let mut policy = scope(root.path());
+    policy.0.trusted_roots.push(PathTrustedRoot {
+        path: outside.path().join("Granted"),
+        access: PathAccess::ReadWrite,
+    });
+    assert!(!policy.trusted(&outside.path().join("granted/file"), true));
+    policy.0.reserved_paths.push(PathReservation {
+        path: root.path().join("state"),
+        children_only: false,
+        exceptions: vec![root.path().join("state/Readable")],
+    });
+    assert!(policy.internal(&root.path().join("state/readable/new/file")));
+    assert!(!policy.internal(&root.path().join("state/Readable/new/file")));
+    Ok(())
+}
+/// Read grants cannot remove a configured write restriction inside a writable workspace.
+#[test]
+fn readonly_trusted_root_overrides_forbidden_paths_only_for_reads()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let mut policy = scope(root.path());
+    policy.0.workspace_only = false;
+    policy.0.forbidden_paths = vec!["blocked".into()];
+    policy.0.trusted_roots.push(PathTrustedRoot {
+        path: root.path().join("blocked"),
+        access: PathAccess::ReadOnly,
+    });
+    std::fs::create_dir(root.path().join("blocked"))?;
+    let path = root.path().join("blocked/file");
+    std::fs::write(&path, "x")?;
+    assert!(matches!(
+        policy.validate(&path.to_string_lossy(), false),
+        PathValidationResult::Allowed { .. }
+    ));
+    assert_eq!(
+        policy.validate(&path.to_string_lossy(), true),
+        PathValidationResult::Denied {
+            category: Rejection::PolicyDenied
+        }
+    );
+    Ok(())
+}
+/// Acting-scope roots deliberately preserve the host's configurable installation paths.
+#[test]
+fn acting_scope_and_conservative_bootstrap_have_distinct_system_root_contracts() {
+    for root in [
+        "/usr", "/bin", "/sbin", "/lib", "/lib64", "/library", "/dev",
+    ] {
+        assert!(
+            !protected_path(Path::new(root)),
+            "acting scopes leave {root} configurable"
+        );
+        assert!(
+            crate::path::floor(root),
+            "bootstrap checks remain conservative for {root}"
+        );
+    }
+}

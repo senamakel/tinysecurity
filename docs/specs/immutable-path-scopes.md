@@ -13,11 +13,15 @@ trusted roots, host-state reservations and read-only subtrees. Product-specific
 state directory names remain in host configuration. The engine never reads the
 process's home environment or imports a host crate.
 
-The registry deduplicates equal configurations and accepts at most 1024 distinct
+The registry assigns 256-bit OS-entropy references and deduplicates equal configurations and accepts at most 1024 distinct
 scopes per module process. Registration never replaces an existing scope. A full
 registry fails closed; SDK reinitialization preserves registered scopes. A new
 module process requires fresh registration. Unknown identities fail as invalid
-arguments. Scope handles are cloned under the registry lock; filesystem work
+arguments. Entropy failure or repeated identifier collisions also fail closed.
+References prevent insertion-index enumeration as defense in depth; they are not
+caller ownership or an authentication mechanism. Only trusted host bus adapters
+may register or submit scopes, and registration itself does not authorize an
+untrusted caller. Scope handles are cloned under the registry lock; filesystem work
 runs on blocking workers after releasing it, keeping the module runtime and
 unrelated agent requests responsive during a stalled filesystem operation.
 
@@ -34,13 +38,21 @@ even with policy disabled. System paths include every Windows drive and native
 extended aliases, administrative UNC shares and GLOBALROOT device namespaces. Unlike the conservative bootstrap Check path contract, portable
 acting scopes leave `/usr`, `/bin`, `/dev` and library roots to configurable
 forbidden roots, preserving explicit grants for legitimate tool workloads. Enabled scopes also protect host state regardless of
-trusted grants. Trusted grants override configurable forbidden roots; read-only
+trusted grants. Trusted grants override configurable forbidden roots only for operations their
+access permits; read-only
 grants cannot authorize writes outside the workspace. Relative requests resolve
 against the action root, while relative forbidden roots resolve against the
 workspace root. Reserved single-component filenames retain the host's lexical
-reservation contract. Reservations may allow child exceptions and may reserve
+reservation contract. Public resolved and trusted-root queries resolve the
+candidate, including existing symlinks and missing descendants, before checking
+containment and the protected floor. String checks apply resolved forbidden
+roots within the workspace as well as outside it. Reservations may allow child exceptions and may reserve
 only children so an artifact container remains listable. Read-only subtrees
-remain unwritable through a broad workspace grant.
+remain unwritable through a broad workspace grant. Denial roots, reserved names
+and prefixes compare case-insensitively on Windows and conservatively on macOS,
+including missing components. The macOS comparison can deny an additional case
+alias on a case-sensitive volume. Trusted grants and reservation exceptions use
+exact canonical containment, so denial folding never broadens their authority.
 
 Authorization is distinct from approval. These methods neither prompt nor park
 a tool invocation. Their canonical-path results do not make later filesystem I/O

@@ -47,6 +47,10 @@ tinybus-module = { path = "vendor/tinybus/crates/tinybus-module", version = "0.1
 # Derive macros for the crate-wide error type in `crates/tinysecurity-module/src/error/`.
 # Every dependency entry should carry a comment like this one saying why it is
 # here.
+# OS entropy for opaque module-process scope references.
+getrandom = "0.3"
+# Conservative denial comparison on case-insensitive/normalizing filesystems.
+unicode-normalization = "0.1"
 thiserror = "2"
 # The bus payload types are serialized into TinyBus frames.
 serde = { version = "1", features = ["derive"] }

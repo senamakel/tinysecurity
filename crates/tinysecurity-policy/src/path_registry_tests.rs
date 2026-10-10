@@ -121,3 +121,69 @@ fn each_registered_root_kind_must_be_native_absolute()
     }
     Ok(())
 }
+/// Scope references must not expose registry insertion offsets.
+#[test]
+fn generated_scope_ids_are_random_references_and_equal_policies_reuse_them()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let policy = PathPolicy {
+        enabled: false,
+        workspace_only: false,
+        workspace_dir: root.path().into(),
+        action_dir: root.path().into(),
+        home_dir: None,
+        forbidden_paths: vec![],
+        trusted_roots: vec![],
+        reserved_paths: vec![],
+        reserved_prefixes: vec![],
+        readonly_paths: vec![],
+        reserved_names: vec![],
+    };
+    let mut first = PathPolicyRegistry::default();
+    let mut second = PathPolicyRegistry::default();
+    let id = first.register(policy.clone())?;
+    assert!(first.get(&PathPolicyId("path-scope-0".into())).is_err());
+    assert_ne!(id, second.register(policy.clone())?);
+    assert_eq!(id, first.register(policy)?);
+    assert!(first.get(&id).is_ok());
+    Ok(())
+}
+/// Entropy failure and repeated collisions cannot mint predictable fallback IDs.
+#[test]
+fn scope_registration_fails_closed_on_entropy_failure_or_collisions()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let mut policy = PathPolicy {
+        enabled: false,
+        workspace_only: false,
+        workspace_dir: root.path().into(),
+        action_dir: root.path().into(),
+        home_dir: None,
+        forbidden_paths: vec![],
+        trusted_roots: vec![],
+        reserved_paths: vec![],
+        reserved_prefixes: vec![],
+        readonly_paths: vec![],
+        reserved_names: vec![],
+    };
+    let mut registry = PathPolicyRegistry::default();
+    assert_eq!(
+        registry.register_with_entropy(policy.clone(), |_| Err(Error::Unavailable)),
+        Err(Error::Unavailable)
+    );
+    let id = registry.register_with_entropy(policy.clone(), |bytes| {
+        bytes.fill(0);
+        Ok(())
+    })?;
+    policy.reserved_names.push("different".into());
+    assert_eq!(
+        registry.register_with_entropy(policy, |bytes| {
+            bytes.fill(0);
+            Ok(())
+        }),
+        Err(Error::Unavailable)
+    );
+    assert!(registry.get(&id).is_ok());
+    assert!(registry.get_owned(&PathPolicyId("bogus".into())).is_err());
+    Ok(())
+}
