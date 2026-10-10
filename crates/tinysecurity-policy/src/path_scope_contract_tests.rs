@@ -324,3 +324,53 @@ fn tilde_directory_reads_do_not_authorize_filename_less_parent_writes()
     ));
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn aliases_to_protected_roots_keep_the_protected_denial_category()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::os::unix::fs::symlink("/etc", root.path().join("alias"))?;
+    let scope = scope(root.path())?;
+    for input in ["alias", "alias/passwd"] {
+        for write in [false, true] {
+            assert_eq!(
+                scope.validate(input, write),
+                PathValidationResult::Denied {
+                    category: Rejection::Protected
+                }
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_inside_broad_forbidden_root_keeps_access_but_nested_forbidden_root_denies()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(workspace.join("private"))?;
+    std::fs::write(workspace.join("file"), "fixture")?;
+    std::fs::write(workspace.join("private/file"), "fixture")?;
+    let mut policy = scope(&workspace)?.policy().clone();
+    policy.enabled = true;
+    policy.workspace_only = true;
+    policy.forbidden_paths = vec![root.path().to_string_lossy().into_owned(), "private".into()];
+    let mut registry = crate::PathPolicyRegistry::default();
+    let id = registry.register(policy)?;
+    let scope = registry.get(&id)?;
+    for write in [false, true] {
+        assert!(matches!(
+            scope.validate("file", write),
+            PathValidationResult::Allowed { .. }
+        ));
+        assert_eq!(
+            scope.validate("private/file", write),
+            PathValidationResult::Denied {
+                category: Rejection::PolicyDenied
+            }
+        );
+    }
+    Ok(())
+}

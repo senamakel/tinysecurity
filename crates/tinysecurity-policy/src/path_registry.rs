@@ -3,32 +3,19 @@ use crate::PathScope;
 use std::sync::Arc;
 const HEX: &[u8; 16] = b"0123456789abcdef";
 use tinysecurity_bus::{Error, PathPolicy, PathPolicyId, Result};
-/// Registry of immutable host-authorized scopes, preserved across SDK reinit.
+/// A policy whose roots and reservation exceptions have passed admission checks.
 ///
-/// This in-process library does not authenticate its Rust caller or confer OS
-/// access. The host must keep registration and scope references behind its own
-/// authenticated dispatch and private module bus.
-#[derive(Debug, Default)]
-pub struct PathPolicyRegistry {
-    scopes: Vec<(PathPolicyId, Arc<PathScope>)>,
-}
-impl PathPolicyRegistry {
-    /// Register or retrieve an identical immutable policy.
+/// Preparing a policy may inspect the filesystem. Do this on a blocking worker,
+/// before acquiring a shared registry lock. The contents cannot be constructed
+/// or modified by callers; runtime checks still validate mutable symlinks.
+#[derive(Debug)]
+pub struct PreparedPathPolicy(PathPolicy);
+impl PreparedPathPolicy {
+    /// Validate configuration without accessing the registry.
     ///
     /// # Errors
-    /// Rejects malformed roots, reservation exceptions that cannot resolve to
-    /// strict descendants, a full registry (1024 distinct scopes), entropy
-    /// failure, or repeated identifier collisions.
-    pub fn register(&mut self, policy: PathPolicy) -> Result<PathPolicyId> {
-        self.register_with_entropy(policy, |bytes| {
-            getrandom::fill(bytes).map_err(|_| Error::Unavailable)
-        })
-    }
-    fn register_with_entropy(
-        &mut self,
-        policy: PathPolicy,
-        mut entropy: impl FnMut(&mut [u8]) -> Result<()>,
-    ) -> Result<PathPolicyId> {
+    /// Rejects malformed roots or exceptions that do not resolve to strict descendants.
+    pub fn new(policy: PathPolicy) -> Result<Self> {
         if !policy.workspace_dir.is_absolute()
             || !policy.action_dir.is_absolute()
             || policy
@@ -55,6 +42,52 @@ impl PathPolicyRegistry {
         {
             return Err(Error::InvalidArguments);
         }
+        Ok(Self(policy))
+    }
+}
+/// Registry of immutable host-authorized scopes, preserved across SDK reinit.
+///
+/// This in-process library does not authenticate its Rust caller or confer OS
+/// access. The host must keep registration and scope references behind its own
+/// authenticated dispatch and private module bus.
+#[derive(Debug, Default)]
+pub struct PathPolicyRegistry {
+    scopes: Vec<(PathPolicyId, Arc<PathScope>)>,
+}
+impl PathPolicyRegistry {
+    /// Register or retrieve an identical immutable policy.
+    ///
+    /// # Errors
+    /// Rejects malformed roots, reservation exceptions that cannot resolve to
+    /// strict descendants, a full registry (1024 distinct scopes), entropy
+    /// failure, or repeated identifier collisions.
+    pub fn register(&mut self, policy: PathPolicy) -> Result<PathPolicyId> {
+        self.register_with_entropy(policy, |bytes| {
+            getrandom::fill(bytes).map_err(|_| Error::Unavailable)
+        })
+    }
+    /// Insert a previously validated policy without filesystem I/O.
+    ///
+    /// # Errors
+    /// Rejects a full registry, entropy failure, or repeated identifier collisions.
+    pub fn register_prepared(&mut self, policy: PreparedPathPolicy) -> Result<PathPolicyId> {
+        self.insert_with_entropy(policy.0, |bytes| {
+            getrandom::fill(bytes).map_err(|_| Error::Unavailable)
+        })
+    }
+    fn register_with_entropy(
+        &mut self,
+        policy: PathPolicy,
+        entropy: impl FnMut(&mut [u8]) -> Result<()>,
+    ) -> Result<PathPolicyId> {
+        let policy = PreparedPathPolicy::new(policy)?.0;
+        self.insert_with_entropy(policy, entropy)
+    }
+    fn insert_with_entropy(
+        &mut self,
+        policy: PathPolicy,
+        mut entropy: impl FnMut(&mut [u8]) -> Result<()>,
+    ) -> Result<PathPolicyId> {
         if let Some((id, _)) = self
             .scopes
             .iter()

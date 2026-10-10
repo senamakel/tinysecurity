@@ -9,4 +9,4 @@ pub use engine::Policy;
 mod path_scope;
 pub use path_scope::{PathScope, protected_path, resolve_ancestor};
 mod path_registry;
-pub use path_registry::PathPolicyRegistry;
+pub use path_registry::{PathPolicyRegistry, PreparedPathPolicy};

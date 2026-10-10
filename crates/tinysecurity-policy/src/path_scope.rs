@@ -374,10 +374,10 @@ impl PathScope {
             return Err(Rejection::Protected);
         }
         if !self.string_allowed(input) {
-            return Err(if resolve_ancestor(&self.absolute(input)).is_err() {
-                Rejection::Resolution
-            } else {
-                Rejection::PolicyDenied
+            return Err(match resolve_ancestor(&self.absolute(input)) {
+                Err(_) => Rejection::Resolution,
+                Ok(resolved) if protected_path(&resolved) => Rejection::Protected,
+                Ok(_) => Rejection::PolicyDenied,
             });
         }
         let absolute = self.absolute(input);

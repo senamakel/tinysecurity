@@ -288,3 +288,66 @@ async fn blocked_filesystem_query_does_not_block_policy_info_or_another_scope()
     assert!(matches!(result, PathValidationResult::Allowed { .. }));
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn blocked_registration_does_not_block_policy_info_or_another_scope()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let service = PolicyService {
+        policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
+        paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
+    };
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let server = Connection::connect(bus.connect().await?).await?;
+    server
+        .serve_at(names::OBJECT_PATH.try_into()?, service.clone())
+        .await?;
+    server.request_name(names::INTERFACE).await?;
+    let client = Connection::connect(bus.connect().await?).await?;
+    let proxy = client.proxy(names::INTERFACE, names::OBJECT_PATH, names::INTERFACE)?;
+    let mut second = fixture_policy(root.path());
+    second.enabled = false;
+    let second = service.register_path_policy(second).await?;
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let blocked = service.clone();
+    let registration = fixture_policy(root.path());
+    let pending = tokio::spawn(async move {
+        blocked
+            .register_path_with(registration, move |policy| {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+                tinysecurity::PreparedPathPolicy::new(policy)
+            })
+            .await
+    });
+    started_rx.await?;
+    if service.paths.try_lock().is_err() {
+        release_tx.send(())?;
+        let _ = pending.await?;
+        return Err(std::io::Error::other("registration retained the registry lock").into());
+    }
+    // Release regardless of assertions so a failing test cannot strand a worker.
+    let responses = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let info: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
+        let result: PathValidationResult = proxy
+            .call(
+                names::methods::VALIDATE_PARENT,
+                (PathValidationRequest {
+                    policy_id: second,
+                    path: "new/file".into(),
+                },),
+            )
+            .await?;
+        tinybus::Result::Ok((info, result))
+    })
+    .await;
+    release_tx.send(())?;
+    let _registered = pending.await??;
+    broker.abort();
+    let (info, result) = responses??;
+    assert_eq!(info.generation, 1);
+    assert!(matches!(result, PathValidationResult::Allowed { .. }));
+    Ok(())
+}

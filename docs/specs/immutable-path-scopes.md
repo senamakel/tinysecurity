@@ -15,7 +15,9 @@ process's home environment or imports a host crate.
 
 The registry assigns 256-bit OS-entropy references and deduplicates equal configurations and accepts at most 1024 distinct
 scopes per module process. Registration never replaces an existing scope. A full
-registry fails closed; SDK reinitialization preserves registered scopes. A new
+registry fails closed. Filesystem admission runs on a blocking worker before
+acquiring the shared registry lock, so a stalled mount cannot block other scopes
+or the module runtime. SDK reinitialization preserves registered scopes. A new
 module process requires fresh registration. Unknown identities fail as invalid
 arguments. Entropy failure or repeated identifier collisions also fail closed.
 References prevent insertion-index enumeration as defense in depth; they are not
@@ -50,7 +52,9 @@ even with policy disabled. System paths include every Windows drive and native
 extended aliases, administrative UNC shares and GLOBALROOT device namespaces. Unlike the conservative bootstrap Check path contract, portable
 acting scopes leave `/usr`, `/bin`, `/dev` and library roots to configurable
 forbidden roots, preserving explicit grants for legitimate tool workloads. Enabled scopes also protect host state regardless of
-trusted grants. Trusted grants override configurable forbidden roots only for operations their
+trusted grants. To preserve the host contract, an absolute forbidden root containing the entire
+workspace does not revoke workspace access; a forbidden subtree inside the
+workspace still denies access. Trusted grants override configurable forbidden roots only for operations their
 access permits; read-only
 grants cannot authorize writes outside the workspace. Relative requests resolve
 against the action root, while relative forbidden roots resolve against the

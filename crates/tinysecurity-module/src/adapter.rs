@@ -35,6 +35,32 @@ impl PolicyService {
             .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))
     }
 
+    async fn register_path_with<F>(
+        &self,
+        policy: tinysecurity_bus::PathPolicy,
+        prepare: F,
+    ) -> BusResult<tinysecurity_bus::PathPolicyId>
+    where
+        F: FnOnce(
+                tinysecurity_bus::PathPolicy,
+            ) -> tinysecurity_bus::Result<tinysecurity::PreparedPathPolicy>
+            + Send
+            + 'static,
+    {
+        let paths = Arc::clone(&self.paths);
+        tokio::task::spawn_blocking(move || {
+            let prepared = prepare(policy).map_err(|error| failure(&error))?;
+            let mut registry = paths
+                .lock()
+                .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
+            registry
+                .register_prepared(prepared)
+                .map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+    }
+
     fn read(&self) -> BusResult<std::sync::RwLockReadGuard<'_, Policy>> {
         self.policy
             .read()
@@ -63,13 +89,8 @@ impl PolicyService {
         &self,
         policy: tinysecurity_bus::PathPolicy,
     ) -> BusResult<tinysecurity_bus::PathPolicyId> {
-        let result = self
-            .paths
-            .lock()
-            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
-            .register(policy)
-            .map_err(|error| failure(&error));
-        std::future::ready(result).await
+        self.register_path_with(policy, tinysecurity::PreparedPathPolicy::new)
+            .await
     }
     async fn validate_path(
         &self,
