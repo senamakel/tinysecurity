@@ -882,3 +882,75 @@ fn redirect_targets_preserve_native_path_and_escape_rules()
     }
     Ok(())
 }
+
+#[test]
+fn commented_heredocs_preserve_following_live_commands()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    assert_ne!(
+        decision(
+            policy(true, CommandAutonomy::Supervised)?,
+            "echo ok # <<'EOF'\ntouch review-proof"
+        )?
+        .gate,
+        CommandGate::Allow
+    );
+    Ok(())
+}
+
+#[test]
+fn commented_heredocs_preserve_the_disabled_credential_floor()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(
+        decision(
+            policy(false, CommandAutonomy::Full)?,
+            "echo ok # <<'EOF'\ncat ~/.ssh/id_rsa"
+        )?
+        .denial,
+        Some(CommandDenial::Protected)
+    );
+    Ok(())
+}
+
+#[test]
+fn continued_heredoc_headers_preserve_protected_arguments()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    for command in [
+        "cat <<'EOF' \\\n~/.ssh/id_rsa\nbody\nEOF",
+        "cat <<'EOF' \\\n<~/.ssh/id_rsa\nbody\nEOF",
+    ] {
+        assert_eq!(
+            decision(policy(false, CommandAutonomy::Full)?, command)?.denial,
+            Some(CommandDenial::Protected),
+            "{command}"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn bash_comments_and_continued_headers_keep_live_execution()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let output = std::process::Command::new("bash")
+        .args(["-c", "echo ok # <<'EOF'\ntouch comment-proof"])
+        .current_dir(root.path())
+        .output()?;
+    assert!(output.status.success());
+    assert!(root.path().join("comment-proof").exists());
+    for quote in ["", "'", "\""] {
+        let command =
+            format!("printf '%s\\n' <<'EOF' \\\n{quote}continued-argument{quote}\nbody\nEOF");
+        let output = std::process::Command::new("bash")
+            .args(["-c", &command])
+            .current_dir(root.path())
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"continued-argument\n");
+    }
+    Ok(())
+}

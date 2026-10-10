@@ -341,3 +341,98 @@ fn mixed_heredocs_follow_lexical_order_without_parsing_body_operators() {
         assert_eq!(strip_quoted_heredoc_bodies(command), expected);
     }
 }
+
+#[test]
+fn comments_never_declare_heredocs() {
+    for command in [
+        "echo ok # <<'EOF'\ntouch review-proof",
+        "echo ok;# <<'EOF'\ncat ~/.ssh/id_rsa",
+        "echo ok # ignored \\\ntouch review-proof",
+    ] {
+        assert_eq!(strip_quoted_heredoc_bodies(command), command);
+    }
+    for prefix in [
+        "echo '#'",
+        "echo \\#",
+        "echo word#",
+        "echo ''#",
+        "echo \\ #",
+    ] {
+        let command = format!("{prefix} <<'EOF'\nliteral\nEOF\ntouch after");
+        assert_eq!(
+            strip_quoted_heredoc_bodies(&command),
+            format!("{prefix} <<'EOF'\n\nEOF\ntouch after")
+        );
+    }
+}
+
+#[test]
+fn heredoc_bodies_wait_for_the_logical_unquoted_newline() {
+    for header in [
+        "cat <<'EOF' \\\n~/.ssh/id_rsa",
+        "cat <<'EOF' \\\n\\\n~/.ssh/id_rsa",
+        "cat <<'EOF' \\\n'~/.ssh/id_rsa'",
+        "cat <<'EOF' \\\n\"~/.ssh/id_rsa\"",
+        "cat <<'EOF' \"continued\n~/.ssh/id_rsa\"",
+        "cat <<'EOF' \"continued\\\n~/.ssh/id_rsa\"",
+        "cat <<'EOF' 'literal\\\n~/.ssh/id_rsa'",
+    ] {
+        let command = format!("{header}\nbody\nEOF\ntouch after");
+        assert_eq!(
+            strip_quoted_heredoc_bodies(&command),
+            format!("{header}\n\nEOF\ntouch after")
+        );
+    }
+    let command = "cat <<'A' \\\n<<B <<-'C'x # <<'fake'\nquoted\nA\nlive <<'nested'\nB\n\tquoted\n\tCx\ntouch after";
+    assert_eq!(
+        strip_quoted_heredoc_bodies(command),
+        "cat <<'A' \\\n<<B <<-'C'x # <<'fake'\n\nA\nlive <<'nested'\nB\n\n\tCx\ntouch after"
+    );
+}
+
+#[test]
+fn unsupported_header_syntax_preserves_all_command_text() {
+    for header in [
+        "cat <<'A' <<$'B'",
+        "cat <<'A' <<E\\\nOF",
+        "cat <<'A' <<'unfinished",
+        "cat <<'A' $(echo <<'NESTED')",
+        "cat <<'A' \"$(echo <<'NESTED')\"",
+        "cat <<'A' $(unfinished",
+        "cat <<'A' `echo literal`",
+        "cat <<'A' \"`echo literal`\"",
+        "cat <<'A' ${value:-<<'NESTED'}",
+        "cat <<'A' \"${value:-<<'NESTED'}\"",
+        "cat <<'A' $'literal'",
+    ] {
+        let command = format!("{header}\ncat ~/.ssh/id_rsa\nA\ntouch after");
+        assert_eq!(strip_quoted_heredoc_bodies(&command), command);
+    }
+    let command = "cat <<'A' \"$(echo safe)\"\nbody\nA";
+    assert_eq!(
+        strip_quoted_heredoc_bodies(command),
+        "cat <<'A' \"$(echo safe)\"\n\nA"
+    );
+}
+
+#[test]
+fn comment_boundaries_survive_line_continuation_and_literal_backslashes() {
+    for (command, expected) in [
+        ("echo word\\\n# <<'A'\nbody\nA", "echo word\\\n# <<'A'\n\nA"),
+        (
+            "echo \\\n# <<'A'\ncat ~/.ssh/id_rsa",
+            "echo \\\n# <<'A'\ncat ~/.ssh/id_rsa",
+        ),
+        ("cat <<'A' \\\\\nbody\nA", "cat <<'A' \\\\\n\nA"),
+        (
+            "cat <<'A' \"literal\\x\"\nbody\nA",
+            "cat <<'A' \"literal\\x\"\n\nA",
+        ),
+        (
+            "cat <<'A' # comment \\\nbody\nA",
+            "cat <<'A' # comment \\\n\nA",
+        ),
+    ] {
+        assert_eq!(strip_quoted_heredoc_bodies(command), expected);
+    }
+}
