@@ -330,7 +330,7 @@ fn redactor_init_is_additive_and_secrets_never_enter_public_info()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let legacy = fixtures()?["ModuleConfig"].clone();
     let config: ModuleConfig = serde_json::from_value(legacy.clone())?;
-    assert!(config.redactor.secrets.is_empty());
+    assert_eq!(config.redactor.secrets, Vec::<Secret>::new());
     assert_eq!(serde_json::to_value(config)?, legacy);
     let config = ModuleConfig {
         redactor: RedactorConfig {

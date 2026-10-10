@@ -166,10 +166,10 @@ impl Redactor {
             _ => url.to_string().trim_end_matches('/').into(),
         };
         // Configured literals can appear in endpoint hosts or paths as well.
-        if self.0.patterns.literal(&out) != out {
-            Ok(MARKER.into())
-        } else {
+        if self.0.patterns.literal(&out) == out {
             Ok(out)
+        } else {
+            Ok(MARKER.into())
         }
     }
 }
