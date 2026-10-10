@@ -11,6 +11,14 @@ pub mod methods {
     pub const CHECK: &str = "Check";
     /// `PolicyInfo` member.
     pub const POLICY_INFO: &str = "PolicyInfo";
+    /// Register an immutable filesystem policy scope.
+    pub const REGISTER_PATH_POLICY: &str = "RegisterPathPolicy";
+    /// Resolve and authorize an existing read path.
+    pub const VALIDATE_PATH: &str = "ValidatePath";
+    /// Resolve and authorize a prospective write path.
+    pub const VALIDATE_PARENT: &str = "ValidateParent";
+    /// Boolean filesystem policy query.
+    pub const CHECK_PATH: &str = "CheckPath";
     /// Decide member.
     pub const DECIDE: &str = "Decide";
     /// `ListPending` member.
@@ -39,7 +47,15 @@ pub mod methods {
     pub const AUDIT: &str = "Audit";
 }
 /// Bootstrap implemented methods only.
-pub const METHODS: &[&str] = &[methods::EVALUATE, methods::CHECK, methods::POLICY_INFO];
+pub const METHODS: &[&str] = &[
+    methods::EVALUATE,
+    methods::CHECK,
+    methods::REGISTER_PATH_POLICY,
+    methods::VALIDATE_PATH,
+    methods::VALIDATE_PARENT,
+    methods::CHECK_PATH,
+    methods::POLICY_INFO,
+];
 /// Accepted policy activation event.
 pub const POLICY_CHANGED: &str = "PolicyChanged";
 /// Reserved host callback identities.

@@ -1,0 +1,149 @@
+//! Bounded immutable scopes; registration never changes another agent's policy.
+use crate::PathScope;
+use std::sync::Arc;
+const HEX: &[u8; 16] = b"0123456789abcdef";
+use tinysecurity_bus::{Error, PathPolicy, PathPolicyId, Result};
+/// A policy whose roots and reservation exceptions have passed admission checks.
+///
+/// Preparing a policy may inspect the filesystem. Do this on a blocking worker,
+/// before acquiring a shared registry lock. The contents cannot be constructed
+/// or modified by callers; runtime checks still validate mutable symlinks.
+#[derive(Debug)]
+pub struct PreparedPathPolicy(PathPolicy);
+impl PreparedPathPolicy {
+    /// Validate configuration without accessing the registry.
+    ///
+    /// # Errors
+    /// Rejects malformed roots or exceptions that do not resolve to strict descendants.
+    pub fn new(policy: PathPolicy) -> Result<Self> {
+        if !policy.workspace_dir.is_absolute()
+            || !policy.action_dir.is_absolute()
+            || policy
+                .trusted_roots
+                .iter()
+                .any(|root| !root.path.is_absolute())
+            || policy.reserved_paths.iter().any(|root| {
+                !root.path.is_absolute()
+                    || root.exceptions.iter().any(|path| {
+                        !path.is_absolute()
+                            || crate::path_scope::reservation_exception_root(&root.path, path)
+                                .is_none()
+                    })
+            })
+            || policy
+                .reserved_prefixes
+                .iter()
+                .any(|root| !root.root.is_absolute() || root.prefix.is_empty())
+            || policy.readonly_paths.iter().any(|path| !path.is_absolute())
+            || policy
+                .home_dir
+                .as_ref()
+                .is_some_and(|home| !home.is_absolute())
+        {
+            return Err(Error::InvalidArguments);
+        }
+        Ok(Self(policy))
+    }
+}
+/// Registry of immutable host-authorized scopes, preserved across SDK reinit.
+///
+/// This in-process library does not authenticate its Rust caller or confer OS
+/// access. The host must keep registration and scope references behind its own
+/// authenticated dispatch and private module bus.
+#[derive(Debug, Default)]
+pub struct PathPolicyRegistry {
+    scopes: Vec<(PathPolicyId, Arc<PathScope>)>,
+}
+impl PathPolicyRegistry {
+    /// Register or retrieve an identical immutable policy.
+    ///
+    /// # Errors
+    /// Rejects malformed roots, reservation exceptions that cannot resolve to
+    /// strict descendants, a full registry (1024 distinct scopes), entropy
+    /// failure, or repeated identifier collisions.
+    pub fn register(&mut self, policy: PathPolicy) -> Result<PathPolicyId> {
+        self.register_with_entropy(policy, |bytes| {
+            getrandom::fill(bytes).map_err(|_| Error::Unavailable)
+        })
+    }
+    /// Insert a previously validated policy without filesystem I/O.
+    ///
+    /// # Errors
+    /// Rejects a full registry, entropy failure, or repeated identifier collisions.
+    pub fn register_prepared(&mut self, policy: PreparedPathPolicy) -> Result<PathPolicyId> {
+        self.insert_with_entropy(policy.0, |bytes| {
+            getrandom::fill(bytes).map_err(|_| Error::Unavailable)
+        })
+    }
+    fn register_with_entropy(
+        &mut self,
+        policy: PathPolicy,
+        entropy: impl FnMut(&mut [u8]) -> Result<()>,
+    ) -> Result<PathPolicyId> {
+        let policy = PreparedPathPolicy::new(policy)?.0;
+        self.insert_with_entropy(policy, entropy)
+    }
+    fn insert_with_entropy(
+        &mut self,
+        policy: PathPolicy,
+        mut entropy: impl FnMut(&mut [u8]) -> Result<()>,
+    ) -> Result<PathPolicyId> {
+        if let Some((id, _)) = self
+            .scopes
+            .iter()
+            .find(|(_, scope)| scope.policy() == &policy)
+        {
+            return Ok(id.clone());
+        }
+        if self.scopes.len() >= 1024 {
+            return Err(Error::Unavailable);
+        }
+        for _ in 0..4 {
+            let mut bytes = [0_u8; 32];
+            entropy(&mut bytes)?;
+            let id = PathPolicyId(
+                bytes
+                    .iter()
+                    .flat_map(|byte| {
+                        [
+                            char::from(HEX[usize::from(byte >> 4)]),
+                            char::from(HEX[usize::from(byte & 15)]),
+                        ]
+                    })
+                    .collect(),
+            );
+            if self.scopes.iter().any(|(existing, _)| *existing == id) {
+                continue;
+            }
+            self.scopes
+                .push((id.clone(), Arc::new(PathScope::registered(policy))));
+            return Ok(id);
+        }
+        Err(Error::Unavailable)
+    }
+    /// Clone an immutable scope handle without cloning its configuration.
+    ///
+    /// # Errors
+    /// Rejects unknown or malformed identifiers.
+    pub fn get_owned(&self, id: &PathPolicyId) -> Result<Arc<PathScope>> {
+        self.scopes
+            .iter()
+            .find(|(registered, _)| registered == id)
+            .map(|(_, scope)| Arc::clone(scope))
+            .ok_or(Error::InvalidArguments)
+    }
+    /// Retrieve only a previously registered immutable scope.
+    ///
+    /// # Errors
+    /// Rejects unknown identifiers; identifiers do not confer caller ownership.
+    pub fn get(&self, id: &PathPolicyId) -> Result<&PathScope> {
+        self.scopes
+            .iter()
+            .find(|(registered, _)| registered == id)
+            .map(|(_, scope)| scope.as_ref())
+            .ok_or(Error::InvalidArguments)
+    }
+}
+#[cfg(test)]
+#[path = "path_registry_tests.rs"]
+mod tests;

@@ -72,6 +72,9 @@ jobs:
             macOS) module=target/debug/libtinysecurity_module.dylib ;;
           esac
           cargo run -p tinysecurity-module --example verify_module -- "$module"
+          # Installed examples must also work outside the workspace root.
+          module="$(pwd)/$module"
+          (cd target && ./debug/examples/verify_module "$module")
 
       - name: Verify Windows module through the restricted native copy
         if: ${{ runner.os == 'Windows' }}
@@ -111,6 +114,14 @@ jobs:
           $verifiedModule = Join-Path $verifyRoot "$libraryName.dll"
           Copy-Item -LiteralPath $module -Destination $verifiedModule
           cargo run --locked --package tinysecurity-module --example verify_module -- $verifiedModule
+          $verifier = (Resolve-Path 'target/debug/examples/verify_module.exe').Path
+          Push-Location $env:RUNNER_TEMP
+          try {
+            & $verifier $verifiedModule
+            if ($LASTEXITCODE -ne 0) { throw 'native verifier failed outside workspace' }
+          } finally {
+            Pop-Location
+          }
 
       # `crates/tinysecurity-bus` exists so a host can name the payload types
       # without compiling the module. That promise is invisible in a diff,

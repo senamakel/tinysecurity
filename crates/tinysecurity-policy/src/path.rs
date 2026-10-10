@@ -5,27 +5,11 @@ pub(super) fn floor(path: &str) -> bool {
     let normalized = path.to_ascii_lowercase().replace('\\', "/");
     // Windows canonicalize emits an extended-length prefix. It must not hide
     // the system-root floor when this engine runs natively on Windows.
-    let normalized = normalized
-        .strip_prefix("//?/")
-        .or_else(|| normalized.strip_prefix("/??/"))
-        .unwrap_or(&normalized);
+    let normalized = strip_native_namespace(&normalized);
     let segments: Vec<_> = normalized.split('/').filter(|s| !s.is_empty()).collect();
     // Both slash dialects are checked on every OS. The additional macOS
     // /private aliases are protected before canonicalization too.
-    if path.contains('\0')
-        || segments.contains(&"..")
-        || segments.iter().any(|s| {
-            let component = s
-                .split(':')
-                .next()
-                .unwrap_or(s)
-                .trim_end_matches([' ', '.']);
-            [".ssh", ".gnupg", ".aws", ".azure", ".kube", "keychains"].contains(&component)
-        })
-        || segments.windows(2).any(|w| {
-            w[0] == "microsoft" && matches!(w[1], "protect" | "credentials" | "crypto" | "vault")
-        })
-    {
+    if path.contains('\0') || segments.contains(&"..") || credential_store(&segments) {
         return true;
     }
     [
@@ -49,11 +33,46 @@ pub(super) fn floor(path: &str) -> bool {
     .any(|prefix| normalized == *prefix || normalized.starts_with(&format!("{prefix}/")))
         || windows_system_root(normalized)
 }
+pub(super) fn strip_native_namespace(path: &str) -> &str {
+    path.strip_prefix("//?/")
+        .or_else(|| path.strip_prefix("//./"))
+        .or_else(|| path.strip_prefix("/??/"))
+        .unwrap_or(path)
+}
+pub(super) fn credential_store(segments: &[&str]) -> bool {
+    let normalized: Vec<_> = segments
+        .iter()
+        .map(|segment| {
+            segment
+                .split(':')
+                .next()
+                .unwrap_or(segment)
+                .trim_end_matches([' ', '.'])
+        })
+        .collect();
+    normalized.iter().any(|component| {
+        [".ssh", ".gnupg", ".aws", ".azure", ".kube", "keychains"].contains(component)
+    }) || normalized.windows(2).any(|pair| {
+        pair[0] == "microsoft" && matches!(pair[1], "protect" | "credentials" | "crypto" | "vault")
+    })
+}
+
 // Match Windows system roots on every drive, including native/extended aliases.
 // This is lexical on every OS so a foreign path cannot evade the floor.
-fn windows_system_root(path: &str) -> bool {
+pub(super) fn windows_system_root(path: &str) -> bool {
     let components: Vec<_> = path.split('/').filter(|part| !part.is_empty()).collect();
-    let root_index = if components.first().is_some_and(|part| {
+    let components = components
+        .strip_prefix(&["globalroot"])
+        .unwrap_or(&components);
+    let components = components.strip_prefix(&["unc"]).unwrap_or(components);
+    let admin_share = |component: &&str| {
+        let bytes = component.trim_end_matches([' ', '.']).as_bytes();
+        bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b'$'
+    };
+    let root_index = if components.get(1).is_some_and(admin_share) {
+        // UNC server + administrative drive share; canonical UNC retains this form.
+        2
+    } else if components.first().is_some_and(|part| {
         let bytes = part.as_bytes();
         (bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
             || part.starts_with("volume{")
