@@ -177,9 +177,9 @@ fn unterminated_heredoc_blanks_to_the_end() {
 }
 
 #[test]
-fn delimiter_line_is_matched_after_trimming() {
+fn delimiter_line_requires_exact_match() {
     let out = strip_quoted_heredoc_bodies("cat << 'EOF'\nEOF is not it\n  EOF  \nnext");
-    assert_eq!(out, "cat << 'EOF'\n\n  EOF  \nnext");
+    assert_eq!(out, "cat << 'EOF'\n\n\n");
 }
 
 #[test]
@@ -238,4 +238,82 @@ fn skipping_env_assignments() {
     assert_eq!(skip_env_assignments("1A=b cmd"), "1A=b cmd");
     // The assignment filter is intentionally looser than the shape check.
     assert_eq!(skip_env_assignments("foo[bar]=1 cmd"), "cmd");
+}
+
+#[test]
+fn concatenated_and_escaped_delimiters_use_complete_quote_removal() {
+    for token in ["'EO'\"F\"x", "E'O'F\\x", "\\EOFx", "'EOF'x"] {
+        let command = format!("cat <<{token}\nbody ~/.ssh/id_rsa $(touch x)\nEOFx\ntouch after");
+        assert_eq!(
+            strip_quoted_heredoc_bodies(&command),
+            format!("cat <<{token}\n\nEOFx\ntouch after")
+        );
+    }
+    assert!(strip_quoted_heredoc_bodies("cat <<'unfinished\nbody").contains("body"));
+    assert_eq!(
+        strip_quoted_heredoc_bodies("cat <<'EOF'\n\tEOF\nEOF\nls"),
+        "cat <<'EOF'\n\nEOF\nls"
+    );
+    assert_eq!(
+        strip_quoted_heredoc_bodies("cat <<-'EOF'\nbody\n\tEOF\nls"),
+        "cat <<-'EOF'\n\n\tEOF\nls"
+    );
+}
+
+#[test]
+fn native_shell_literals_round_trip_through_the_lexical_representation() {
+    use scan::{encoded_command_words, native_command};
+    use tinysecurity_bus::ShellDialect;
+    for (dialect, source, expected) in [
+        (
+            ShellDialect::PowerShell,
+            "echo 'it''s (data)'",
+            "it's (data)",
+        ),
+        (ShellDialect::PowerShell, "echo \"(data)\"", "(data)"),
+        (ShellDialect::PowerShell, "echo `(data`)", "(data)"),
+        (ShellDialect::PowerShell, "echo \"a`\"b\"", "a\"b"),
+        (
+            ShellDialect::PowerShell,
+            "echo 'C:\\ordinary'",
+            "C:\\ordinary",
+        ),
+        (ShellDialect::Cmd, "echo 'literal'", "'literal'"),
+        (ShellDialect::Cmd, "echo ^(data^)", "(data)"),
+        (ShellDialect::Cmd, "echo \"a^b\"", "a^b"),
+    ] {
+        let encoded = native_command(source, dialect);
+        assert_eq!(
+            encoded_command_words(&encoded),
+            Some(vec!["echo".into(), expected.into()])
+        );
+    }
+    assert_eq!(
+        encoded_command_words(&native_command("echo trailing^", ShellDialect::Cmd)),
+        None
+    );
+    assert_eq!(
+        native_command("echo ordinary", ShellDialect::Posix),
+        "echo ordinary"
+    );
+}
+
+#[test]
+fn literal_nested_heredoc_operator_never_blanks_following_execution() {
+    let command = "cat <<'EOF'\ncat <<'NESTED'\nEOF\ncat ~/.ssh/id_rsa\nNESTED";
+    assert_eq!(
+        strip_quoted_heredoc_bodies(command),
+        "cat <<'EOF'\n\nEOF\ncat ~/.ssh/id_rsa\nNESTED"
+    );
+}
+
+#[test]
+fn unsupported_delimiter_expansions_are_never_blanked() {
+    for command in [
+        "cat <<$'EOF'\nbody\nEOF\ncat ~/.ssh/id_rsa",
+        "cat <<$\"EOF\"\nbody\nEOF\ntouch after",
+        "cat <<E\\\nOF\n$(touch proof)\nEOF",
+    ] {
+        assert_eq!(strip_quoted_heredoc_bodies(command), command);
+    }
 }

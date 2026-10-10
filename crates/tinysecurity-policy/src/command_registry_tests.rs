@@ -6,6 +6,7 @@ fn policy(enabled: bool, autonomy: CommandAutonomy) -> std::io::Result<CommandPo
         enabled,
         autonomy,
         execution_mode: CommandExecutionMode::HarnessGated,
+        shell_dialect: tinysecurity_bus::ShellDialect::Posix,
         allowed_commands: vec![
             "ls".into(),
             "cat".into(),

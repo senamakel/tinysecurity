@@ -303,6 +303,7 @@ async fn register_native_command_scope(
     let policy = CommandPolicy {
         enabled: true,
         execution_mode: CommandExecutionMode::HarnessGated,
+        shell_dialect: tinysecurity_bus::ShellDialect::Posix,
         autonomy: CommandAutonomy::Full,
         allowed_commands: vec![],
         max_actions_per_hour: 1,

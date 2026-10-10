@@ -364,6 +364,11 @@ pub(crate) fn has_hidden_execution(command: &str) -> bool {
     // titles read "Chicken & Spinach". An *unquoted* delimiter is left in place
     // by the helper, because expansion IS live in that body.
     let command = &strip_quoted_heredoc_bodies(command);
+    has_hidden_execution_lexical(command)
+}
+
+/// Inspect already normalized source; the caller owns dialect-specific data removal.
+pub(crate) fn has_hidden_execution_lexical(command: &str) -> bool {
     // The backtick check is deliberately NOT quote-aware: any backtick in the
     // command string is blocked, even inside a double-quoted literal. Over-
     // blocking is the safe direction here. (By contrast the `&` case below is

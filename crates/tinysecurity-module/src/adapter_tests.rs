@@ -460,6 +460,7 @@ fn command_fixture() -> std::result::Result<CommandPolicy, Box<dyn std::error::E
     Ok(CommandPolicy {
         enabled: true,
         execution_mode: CommandExecutionMode::HarnessGated,
+        shell_dialect: tinysecurity_bus::ShellDialect::Posix,
         autonomy: CommandAutonomy::Full,
         allowed_commands: vec![],
         max_actions_per_hour: 1,

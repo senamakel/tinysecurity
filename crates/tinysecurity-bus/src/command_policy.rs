@@ -9,7 +9,8 @@ pub enum CommandAutonomy {
     ReadOnly,
     /// Ask before acting.
     Supervised,
-    /// Ordinary writes may run; network/install/destructive operations still prompt.
+    /// Full access. Harness execution still prompts for network/install/destructive
+    /// classes; legacy allowlisted execution uses only configured risk restrictions.
     Full,
 }
 /// Deterministic permission bucket in increasing severity.
@@ -73,6 +74,18 @@ pub enum CommandExecutionMode {
     /// Legacy curated allowlist plus command risk restrictions.
     Allowlisted,
 }
+/// Shell grammar selected by the trusted host that executes the command.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellDialect {
+    /// POSIX shell quoting and backslash escapes.
+    #[default]
+    Posix,
+    /// PowerShell quoting and backtick escapes.
+    PowerShell,
+    /// Windows command interpreter quoting and caret escapes.
+    Cmd,
+}
 /// Immutable settings registered by a trusted host for one acting agent.
 /// Registering identical settings creates a distinct budget. Reinit never resets it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +95,9 @@ pub struct CommandPolicy {
     pub enabled: bool,
     /// Host execution integration, fixed for this scope.
     pub execution_mode: CommandExecutionMode,
+    /// Actual execution backend grammar; requests cannot override it.
+    #[serde(default)]
+    pub shell_dialect: ShellDialect,
     /// Acting tier.
     pub autonomy: CommandAutonomy,
     /// Curated executable basenames for supervised legacy execution.

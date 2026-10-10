@@ -315,7 +315,7 @@ pub(crate) fn strip_quoted_heredoc_bodies(command: &str) -> Cow<'_, str> {
         return Cow::Borrowed(command);
     }
 
-    let mut delimiters: Vec<String> = Vec::new();
+    let mut delimiters: Vec<(String, bool)> = Vec::new();
     let mut quote = QuoteState::None;
     let mut escaped = false;
     let mut chars = command.char_indices().peekable();
@@ -356,7 +356,7 @@ pub(crate) fn strip_quoted_heredoc_bodies(command: &str) -> Cow<'_, str> {
                         }
                         let rest = &command[idx + 2..];
                         if let Some((delim, consumed)) = quoted_heredoc_delimiter(rest) {
-                            delimiters.push(delim);
+                            delimiters.push((delim, rest.starts_with('-')));
                             operators.push(idx);
                             // Skip past the delimiter token so its quotes do not
                             // re-enter the quote state machine.
@@ -379,15 +379,26 @@ pub(crate) fn strip_quoted_heredoc_bodies(command: &str) -> Cow<'_, str> {
     // following line is body until its terminator line appears.
     let mut out = String::with_capacity(command.len());
     let mut next_delim = 0usize;
-    let mut open: Option<String> = None;
+    let mut open: Option<(String, bool)> = None;
     let mut consumed_bytes = 0usize;
 
     for line in command.split_inclusive('\n') {
         let line_start = consumed_bytes;
         consumed_bytes += line.len();
 
-        if let Some(delim) = open.clone() {
-            if line.trim() == delim {
+        if let Some((delim, strip_tabs)) = open.clone() {
+            // Operators inside a quoted body are literal data, including ones
+            // that resemble nested heredocs. Never let them open a later body.
+            while next_delim < operators.len() && operators[next_delim] < consumed_bytes {
+                next_delim += 1;
+            }
+            let terminator = line.trim_end_matches('\n');
+            let terminator = if strip_tabs {
+                terminator.trim_start_matches('\t')
+            } else {
+                terminator
+            };
+            if terminator == delim {
                 open = None;
                 out.push_str(line);
             } else {
@@ -414,8 +425,9 @@ pub(crate) fn strip_quoted_heredoc_bodies(command: &str) -> Cow<'_, str> {
 }
 
 /// Parse a heredoc delimiter token immediately after `<<`, returning the
-/// delimiter and how many chars of `rest` it spans — **only** when the token is
-/// quoted (`'EOF'` or `"EOF"`), optionally preceded by `-` and whitespace.
+/// delimiter after complete quote removal and how many chars of `rest` it spans.
+/// Any quoted or escaped part disables expansion, including concatenated runs
+/// such as `'EO'"F"x`; optional `-` and whitespace precede the token.
 /// An unquoted delimiter returns `None`, because its body is still expanded.
 fn quoted_heredoc_delimiter(rest: &str) -> Option<(String, usize)> {
     let mut consumed = 0usize;
@@ -430,23 +442,47 @@ fn quoted_heredoc_delimiter(rest: &str) -> Option<(String, usize)> {
         consumed += 1;
     }
 
-    let Some(quote @ ('\'' | '"')) = chars.next() else {
-        return None;
-    };
-    consumed += 1;
-
     let mut delim = String::new();
-    for c in chars {
+    let mut quote = QuoteState::None;
+    let mut quoted = false;
+    while let Some(c) = chars.next() {
+        if quote == QuoteState::None && (c.is_whitespace() || ";&|<>()".contains(c)) {
+            break;
+        }
         consumed += 1;
-        if c == quote {
-            return (!delim.is_empty()).then_some((delim, consumed));
+        match (quote, c) {
+            (QuoteState::None, '$') if chars.peek().is_some_and(|c| matches!(c, '\'' | '"')) => {
+                // ANSI-C and locale quotes require expansion beyond quote removal.
+                return None;
+            }
+            (QuoteState::None, '\'') => {
+                quote = QuoteState::Single;
+                quoted = true;
+            }
+            (QuoteState::None, '"') => {
+                quote = QuoteState::Double;
+                quoted = true;
+            }
+            (QuoteState::Single, '\'') | (QuoteState::Double, '"') => quote = QuoteState::None,
+            (QuoteState::None | QuoteState::Double, '\\') => {
+                let next = chars.next()?;
+                if next == '\n' {
+                    return None;
+                }
+                consumed += 1;
+                quoted = true;
+                if quote == QuoteState::Double && !matches!(next, '$' | '`' | '"' | '\\' | '\n') {
+                    delim.push('\\');
+                }
+                if next != '\n' {
+                    delim.push(next);
+                }
+            }
+            (_, '\n') => return None,
+            _ => delim.push(c),
         }
-        if c == '\n' {
-            return None;
-        }
-        delim.push(c);
     }
-    None
+    (quoted && quote == QuoteState::None && !delim.is_empty()).then_some((delim, consumed))
 }
 
 /// The last path component of a command word, splitting on both `/` and `\`.
@@ -525,6 +561,15 @@ pub(crate) fn skip_env_assignments(s: &str) -> &str {
 /// Unfinished quotes/escapes fail closed. This is lexical executable recognition,
 /// not a promise that an executable is trusted or that dynamic expansion is safe.
 pub(crate) fn command_words(command: &str) -> Option<Vec<String>> {
+    parse_command_words(command, true)
+}
+
+/// Decode the POSIX representation produced by `native_command`.
+pub(crate) fn encoded_command_words(command: &str) -> Option<Vec<String>> {
+    parse_command_words(command, false)
+}
+
+fn parse_command_words(command: &str, preserve_windows: bool) -> Option<Vec<String>> {
     let mut words = Vec::new();
     let mut word = String::new();
     let mut active = false;
@@ -534,7 +579,8 @@ pub(crate) fn command_words(command: &str) -> Option<Vec<String>> {
     while let Some((offset, ch)) = chars.next() {
         if !active && !ch.is_whitespace() {
             let start = command[offset..].trim_start_matches(['\'', '"']);
-            windows = start.as_bytes().get(1) == Some(&b':') || start.starts_with("\\\\");
+            windows = preserve_windows
+                && (start.as_bytes().get(1) == Some(&b':') || start.starts_with("\\\\"));
             active = true;
         }
         match (quote, ch) {
@@ -573,4 +619,58 @@ pub(crate) fn command_words(command: &str) -> Option<Vec<String>> {
         .count();
     words.drain(..prefix);
     Some(words)
+}
+
+/// Translate native literal quoting to the POSIX lexical representation used by
+/// the scanner. This never expands variables or evaluates executable expressions.
+pub(crate) fn native_command(
+    command: &str,
+    dialect: tinysecurity_bus::ShellDialect,
+) -> Cow<'_, str> {
+    use tinysecurity_bus::ShellDialect;
+    if dialect == ShellDialect::Posix {
+        return Cow::Borrowed(command);
+    }
+    let mut out = String::with_capacity(command.len());
+    let mut quote = QuoteState::None;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        let escape = match dialect {
+            ShellDialect::PowerShell => c == '`' && quote != QuoteState::Single,
+            ShellDialect::Cmd => c == '^' && quote == QuoteState::None,
+            ShellDialect::Posix => false,
+        };
+        if escape {
+            if let Some(next) = chars.next() {
+                // Encode a literal escaped native character without accidentally
+                // turning it into a POSIX operator, quote or escape.
+                if quote == QuoteState::None || matches!(next, '$' | '`' | '"' | '\\') {
+                    out.push('\\');
+                }
+                out.push(next);
+            } else {
+                out.push('\\');
+            }
+            continue;
+        }
+        match (quote, c) {
+            (QuoteState::None, '\'') if dialect == ShellDialect::PowerShell => {
+                quote = QuoteState::Single;
+            }
+            (QuoteState::Single, '\'') => {
+                if chars.next_if_eq(&'\'').is_some() {
+                    out.push_str("'\\''");
+                    continue;
+                }
+                quote = QuoteState::None;
+            }
+            (QuoteState::None, '"') => quote = QuoteState::Double,
+            (QuoteState::Double, '"') => quote = QuoteState::None,
+            (_, '\\') if quote != QuoteState::Single => out.push('\\'),
+            (QuoteState::None, '\'') => out.push('\\'),
+            _ => {}
+        }
+        out.push(c);
+    }
+    Cow::Owned(out)
 }

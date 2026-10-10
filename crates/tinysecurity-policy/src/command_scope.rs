@@ -1,12 +1,13 @@
 //! Immutable command classification and both host execution-policy flows.
 use crate::command_shell::{
-    classify::{classify_segment, has_hidden_execution},
+    classify::{classify_segment, has_hidden_execution, has_hidden_execution_lexical},
     env_guard::has_dangerous_env_prefix,
     executor::is_command_executor,
     scan::{
         command_basename, command_words, contains_unquoted_char,
-        contains_unquoted_single_ampersand, has_leading_env_assignment, normalized_command_name,
-        skip_env_assignments, split_unquoted_segments, strip_quoted_heredoc_bodies,
+        contains_unquoted_single_ampersand, encoded_command_words, has_leading_env_assignment,
+        native_command, normalized_command_name, skip_env_assignments, split_unquoted_segments,
+        strip_quoted_heredoc_bodies,
     },
 };
 use crate::{protected_path, resolve_ancestor};
@@ -44,10 +45,11 @@ impl CommandScope {
         if request.command.len() > 1_048_576 {
             return Err(Error::InvalidArguments);
         }
-        let command = strip_quoted_heredoc_bodies(&request.command);
+        let native = native_command(&request.command, self.policy.shell_dialect);
+        let command = self.shell_source(&native);
         let mut class = CommandClass::Read;
         for segment in split_unquoted_segments(&command) {
-            let Some(words) = command_words(&segment) else {
+            let Some(words) = self.words(&segment) else {
                 class = class.max(CommandClass::Write);
                 continue;
             };
@@ -75,7 +77,7 @@ impl CommandScope {
         if let Some(declared) = request.declared_class {
             class = class.max(declared);
         }
-        let risk = Self::risk(&command);
+        let risk = self.risk(&command);
         let mut result = CommandDecision {
             class,
             risk,
@@ -93,36 +95,45 @@ impl CommandScope {
         if result.denial.is_some() || !self.policy.enabled {
             return Ok(result);
         }
-        let denial = if result.gate == CommandGate::Block {
-            Some(CommandDenial::ReadOnly)
-        } else if self.policy.autonomy != CommandAutonomy::Full
-            && has_hidden_execution(&request.command)
-        {
-            Some(CommandDenial::Command)
-        } else if self.policy.execution_mode == CommandExecutionMode::Allowlisted {
+        let native = native_command(&request.command, self.policy.shell_dialect);
+        let command = self.shell_source(&native);
+        let hidden = (if self.policy.shell_dialect == tinysecurity_bus::ShellDialect::Posix {
+            has_hidden_execution(&command)
+        } else {
+            has_hidden_execution_lexical(&command)
+        }) || self.has_native_execution(&command);
+        let denial = if self.policy.execution_mode == CommandExecutionMode::Allowlisted {
+            // Legacy admission is deliberately independent of the harness class
+            // gate. Only the configured risk restrictions raise its allow result.
+            result.gate = CommandGate::Allow;
             if !self.is_command_allowed(&request.command) {
-                Some(CommandDenial::Command)
+                Some(if self.policy.autonomy == CommandAutonomy::ReadOnly {
+                    CommandDenial::ReadOnly
+                } else {
+                    CommandDenial::Command
+                })
             } else if result.risk == CommandRisk::High && self.policy.block_high_risk_commands {
                 Some(CommandDenial::HighRisk)
             } else {
+                if self.policy.autonomy == CommandAutonomy::Supervised
+                    && (result.risk == CommandRisk::High
+                        || (result.risk == CommandRisk::Medium
+                            && self.policy.require_approval_for_medium_risk))
+                {
+                    result.gate = CommandGate::Prompt;
+                }
                 None
             }
+        } else if result.gate == CommandGate::Block {
+            Some(CommandDenial::ReadOnly)
+        } else if self.policy.autonomy != CommandAutonomy::Full && hidden {
+            Some(CommandDenial::Command)
         } else {
             None
         };
         if let Some(denial) = denial {
             result.gate = CommandGate::Block;
             result.denial = Some(denial);
-        }
-        // Risk can only raise the class gate; an approval flag in tool args cannot bypass it.
-        if result.gate == CommandGate::Allow
-            && self.policy.autonomy == CommandAutonomy::Supervised
-            && self.policy.execution_mode == CommandExecutionMode::Allowlisted
-            && (result.risk == CommandRisk::High
-                || (result.risk == CommandRisk::Medium
-                    && self.policy.require_approval_for_medium_risk))
-        {
-            result.gate = CommandGate::Prompt;
         }
         Ok(result)
     }
@@ -142,6 +153,30 @@ impl CommandScope {
             }
         }
     }
+    fn has_native_execution(&self, command: &str) -> bool {
+        use tinysecurity_bus::ShellDialect;
+        match self.policy.shell_dialect {
+            ShellDialect::Posix => false,
+            ShellDialect::PowerShell => {
+                contains_unquoted_char(command, '(') || contains_unquoted_char(command, '{')
+            }
+            ShellDialect::Cmd => contains_unquoted_char(command, '('),
+        }
+    }
+    fn shell_source<'a>(&self, command: &'a str) -> std::borrow::Cow<'a, str> {
+        if self.policy.shell_dialect == tinysecurity_bus::ShellDialect::Posix {
+            strip_quoted_heredoc_bodies(command)
+        } else {
+            std::borrow::Cow::Borrowed(command)
+        }
+    }
+    fn words(&self, command: &str) -> Option<Vec<String>> {
+        if self.policy.shell_dialect == tinysecurity_bus::ShellDialect::Posix {
+            command_words(command)
+        } else {
+            encoded_command_words(command)
+        }
+    }
     fn literals_allowed(&self, command: &str) -> bool {
         // Raw source literals protect interpreter strings. Decoded shell words
         // protect quoted/escaped argument paths, including native paths with spaces.
@@ -153,7 +188,7 @@ impl CommandScope {
             .all(|word| self.literal_allowed(word));
         raw_allowed
             && split_unquoted_segments(command).iter().all(|segment| {
-                command_words(segment)
+                self.words(segment)
                     .is_none_or(|words| words.iter().all(|word| self.literal_allowed(word)))
             })
     }
@@ -183,11 +218,11 @@ impl CommandScope {
                 .ok()
                 .is_some_and(|p| protected_path(&p))
     }
-    fn risk(command: &str) -> CommandRisk {
+    fn risk(&self, command: &str) -> CommandRisk {
         let mut saw_medium = false;
 
         for segment in split_unquoted_segments(command) {
-            let Some(words) = command_words(&segment) else {
+            let Some(words) = self.words(&segment) else {
                 saw_medium = true;
                 continue;
             };
@@ -288,12 +323,16 @@ impl CommandScope {
         if self.policy.autonomy == CommandAutonomy::ReadOnly {
             return false;
         }
-        let command = &strip_quoted_heredoc_bodies(command);
+        let native = native_command(command, self.policy.shell_dialect);
+        let command = &self.shell_source(&native);
 
         if self.policy.autonomy == CommandAutonomy::Full {
             return true;
         }
 
+        if self.has_native_execution(command) {
+            return false;
+        }
         if command.contains('`')
             || command.contains("$(")
             || command.contains("${")
@@ -324,7 +363,7 @@ impl CommandScope {
                 return false;
             }
 
-            let Some(words) = command_words(segment) else {
+            let Some(words) = self.words(segment) else {
                 return false;
             };
             let base_raw = words.first().map_or("", String::as_str);

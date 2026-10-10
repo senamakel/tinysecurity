@@ -5,6 +5,7 @@ fn policy(enabled: bool, autonomy: CommandAutonomy) -> std::io::Result<CommandPo
         enabled,
         autonomy,
         execution_mode: CommandExecutionMode::HarnessGated,
+        shell_dialect: tinysecurity_bus::ShellDialect::Posix,
         allowed_commands: ["ls", "cat", "git", "echo", "find", "date"]
             .map(str::to_string)
             .to_vec(),
@@ -489,5 +490,251 @@ fn validate_command_rejects_leading_env_var_assignment()
     // structural guard (it may still fail later on its own merits,
     // but the env-prefix gate doesn't fire).
     assert!(p.is_command_allowed("git ls-remote ssh://example.com"));
+    Ok(())
+}
+
+fn decision(p: CommandPolicy, command: &str) -> Result<CommandDecision> {
+    CommandScope::new(p)?.evaluate(&CommandRequest {
+        policy_id: CommandPolicyId(String::new()),
+        command: command.into(),
+        declared_class: Some(CommandClass::Read),
+    })
+}
+
+#[test]
+fn partial_quoted_heredoc_keeps_following_executable_visible()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let command = "cat <<'EOF'x\nbody\nEOFx\ncat ~/.ssh/id_rsa";
+    assert_eq!(
+        decision(policy(false, CommandAutonomy::Full)?, command)?.denial,
+        Some(CommandDenial::Protected)
+    );
+    assert_eq!(
+        decision(
+            policy(true, CommandAutonomy::Supervised)?,
+            "cat <<'EOF'x\nbody\nEOFx\ntouch review-proof"
+        )?
+        .gate,
+        CommandGate::Prompt
+    );
+    #[cfg(unix)]
+    {
+        let root = tempfile::tempdir()?;
+        let status = std::process::Command::new("bash")
+            .args(["-c", "cat <<'EOF'x\nbody\nEOFx\ntouch review-proof"])
+            .current_dir(root.path())
+            .status()?;
+        assert!(status.success());
+        assert!(root.path().join("review-proof").exists());
+    }
+    Ok(())
+}
+
+#[test]
+fn allowlisted_execution_uses_risk_independently_of_class()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut p = policy(true, CommandAutonomy::Supervised)?;
+    p.execution_mode = CommandExecutionMode::Allowlisted;
+    p.allowed_commands.extend(["curl".into(), "sudo".into()]);
+    assert_eq!(decision(p.clone(), "git add .")?.gate, CommandGate::Allow);
+    p.require_approval_for_medium_risk = false;
+    assert_eq!(
+        decision(p.clone(), "curl https://example.test")?.gate,
+        CommandGate::Allow
+    );
+    p.require_approval_for_medium_risk = true;
+    assert_eq!(
+        decision(p.clone(), "curl https://example.test")?.gate,
+        CommandGate::Prompt
+    );
+    p.block_high_risk_commands = false;
+    assert_eq!(
+        decision(p.clone(), "sudo echo safe")?.gate,
+        CommandGate::Prompt
+    );
+    p.block_high_risk_commands = true;
+    p.autonomy = CommandAutonomy::Full;
+    assert_eq!(
+        decision(p.clone(), "curl https://example.test")?.gate,
+        CommandGate::Allow
+    );
+    assert_eq!(
+        decision(p.clone(), "sudo echo safe")?.denial,
+        Some(CommandDenial::HighRisk)
+    );
+    p.block_high_risk_commands = false;
+    assert_eq!(
+        decision(p.clone(), "sudo echo safe")?.gate,
+        CommandGate::Allow
+    );
+    p.autonomy = CommandAutonomy::ReadOnly;
+    assert_eq!(decision(p, "cat safe")?.gate, CommandGate::Block);
+    Ok(())
+}
+
+#[test]
+fn native_shell_execution_and_escaping_cannot_bypass_policy()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut ps = policy(true, CommandAutonomy::Supervised)?;
+    ps.shell_dialect = tinysecurity_bus::ShellDialect::PowerShell;
+    assert_eq!(
+        decision(ps, "echo (Remove-Item review-proof)")?.gate,
+        CommandGate::Block
+    );
+    let mut cmd = policy(false, CommandAutonomy::Full)?;
+    cmd.shell_dialect = tinysecurity_bus::ShellDialect::Cmd;
+    assert_eq!(
+        decision(cmd, r"type C:\Users\u\.s^sh\id_rsa")?.denial,
+        Some(CommandDenial::Protected)
+    );
+    Ok(())
+}
+
+#[test]
+fn native_quoted_and_escaped_parentheses_remain_literal_data()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tinysecurity_bus::ShellDialect;
+    for dialect in [ShellDialect::PowerShell, ShellDialect::Cmd] {
+        let mut p = policy(true, CommandAutonomy::Supervised)?;
+        p.shell_dialect = dialect;
+        for mode in [
+            CommandExecutionMode::HarnessGated,
+            CommandExecutionMode::Allowlisted,
+        ] {
+            p.execution_mode = mode;
+            assert_eq!(
+                decision(p.clone(), "echo \"(Remove-Item file)\"")?.gate,
+                CommandGate::Allow
+            );
+            let escaped = if dialect == ShellDialect::PowerShell {
+                "echo `(Remove-Item file`)"
+            } else {
+                "echo ^(Remove-Item file^)"
+            };
+            assert_eq!(decision(p.clone(), escaped)?.gate, CommandGate::Allow);
+            assert_eq!(
+                decision(p.clone(), "echo (Remove-Item file)")?.gate,
+                CommandGate::Block
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn native_escape_decoding_preserves_credential_floor_and_ordinary_paths()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tinysecurity_bus::ShellDialect;
+    for dialect in [ShellDialect::PowerShell, ShellDialect::Cmd] {
+        for enabled in [false, true] {
+            for autonomy in [
+                CommandAutonomy::ReadOnly,
+                CommandAutonomy::Supervised,
+                CommandAutonomy::Full,
+            ] {
+                let mut p = policy(enabled, autonomy)?;
+                p.shell_dialect = dialect;
+                let protected = if dialect == ShellDialect::Cmd {
+                    r"type C:\Users\u\.s^sh\id_rsa"
+                } else {
+                    r"Get-Content C:\Users\u\.s`sh\id_rsa"
+                };
+                assert_eq!(
+                    decision(p.clone(), protected)?.denial,
+                    Some(CommandDenial::Protected)
+                );
+                for command in [
+                    r#"type "C:\Users\Some Person\.ssh\id_rsa""#,
+                    r#"type "\\server\share\Some Person\.ssh\id_rsa""#,
+                ] {
+                    assert_eq!(
+                        decision(p.clone(), command)?.denial,
+                        Some(CommandDenial::Protected)
+                    );
+                }
+                for command in [
+                    r#"type "C:\Users\Some Person\ordinary file""#,
+                    r#"type "\\server\share\ordinary file""#,
+                ] {
+                    assert_eq!(decision(p.clone(), command)?.gate, CommandGate::Allow);
+                }
+            }
+        }
+    }
+    let mut ps = policy(false, CommandAutonomy::Full)?;
+    ps.shell_dialect = ShellDialect::PowerShell;
+    assert_eq!(
+        decision(ps.clone(), r#"Get-Content "C:\Users\u\.s`sh\id_rsa""#)?.denial,
+        Some(CommandDenial::Protected)
+    );
+    assert_eq!(
+        decision(ps, r"Get-Content 'C:\Users\u\.s`sh\id_rsa'")?.denial,
+        None
+    );
+    let mut cmd = policy(false, CommandAutonomy::Full)?;
+    cmd.shell_dialect = ShellDialect::Cmd;
+    assert_eq!(
+        decision(cmd, r#"type "C:\Users\u\.s^sh\id_rsa""#)?.denial,
+        None
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn native_windows_shells_execute_the_reported_grammar()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::write(root.path().join("review-proof"), "safe fixture")?;
+    let result = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "echo (Remove-Item review-proof)",
+        ])
+        .current_dir(root.path())
+        .output()?;
+    assert!(result.status.success());
+    assert!(!root.path().join("review-proof").exists());
+    std::fs::create_dir(root.path().join(".ssh"))?;
+    std::fs::write(root.path().join(".ssh").join("id_rsa"), "safe fixture")?;
+    let result = std::process::Command::new("cmd.exe")
+        .args(["/D", "/C", r"type .s^sh\id_rsa"])
+        .current_dir(root.path())
+        .output()?;
+    assert!(result.status.success());
+    assert!(String::from_utf8(result.stdout)?.contains("safe fixture"));
+    Ok(())
+}
+
+#[test]
+fn native_dialects_never_treat_posix_heredocs_as_data()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    for dialect in [
+        tinysecurity_bus::ShellDialect::PowerShell,
+        tinysecurity_bus::ShellDialect::Cmd,
+    ] {
+        let mut p = policy(false, CommandAutonomy::Full)?;
+        p.shell_dialect = dialect;
+        assert_eq!(
+            decision(p, "echo <<'EOF'\ncat ~/.ssh/id_rsa\nEOF")?.denial,
+            Some(CommandDenial::Protected)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn script_blocks_are_powershell_execution_but_cmd_braces_are_data()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut p = policy(true, CommandAutonomy::Supervised)?;
+    p.shell_dialect = tinysecurity_bus::ShellDialect::PowerShell;
+    assert_eq!(
+        decision(p.clone(), "echo {Remove-Item file}")?.gate,
+        CommandGate::Block
+    );
+    p.shell_dialect = tinysecurity_bus::ShellDialect::Cmd;
+    assert_eq!(decision(p, "echo {ordinary}")?.gate, CommandGate::Allow);
     Ok(())
 }

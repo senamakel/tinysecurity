@@ -97,6 +97,7 @@ fn scope_settings_have_a_strict_host_owned_wire_shape()
     let config = CommandPolicy {
         enabled: true,
         execution_mode: CommandExecutionMode::HarnessGated,
+        shell_dialect: tinysecurity_bus::ShellDialect::Posix,
         autonomy: CommandAutonomy::Supervised,
         allowed_commands: vec!["ls".into()],
         max_actions_per_hour: 3,
@@ -105,8 +106,28 @@ fn scope_settings_have_a_strict_host_owned_wire_shape()
         action_dir: "acting".into(),
         home_dir: None,
     };
-    let expected = json!({"enabled":true,"execution_mode":"harness_gated","autonomy":"supervised","allowed_commands":["ls"],"max_actions_per_hour":3,"require_approval_for_medium_risk":true,"block_high_risk_commands":true,"action_dir":"acting","home_dir":null});
+    let expected = json!({"enabled":true,"execution_mode":"harness_gated","shell_dialect":"posix","autonomy":"supervised","allowed_commands":["ls"],"max_actions_per_hour":3,"require_approval_for_medium_risk":true,"block_high_risk_commands":true,"action_dir":"acting","home_dir":null});
     roundtrip(&config, &expected)?;
+    let mut legacy = expected.clone();
+    legacy
+        .as_object_mut()
+        .ok_or("policy is not an object")?
+        .remove("shell_dialect");
+    assert_eq!(
+        serde_json::from_value::<CommandPolicy>(legacy)?.shell_dialect,
+        tinysecurity_bus::ShellDialect::Posix
+    );
+    for dialect in [
+        tinysecurity_bus::ShellDialect::PowerShell,
+        tinysecurity_bus::ShellDialect::Cmd,
+    ] {
+        let mut native = config.clone();
+        native.shell_dialect = dialect;
+        assert_eq!(
+            serde_json::from_value::<CommandPolicy>(serde_json::to_value(&native)?)?,
+            native
+        );
+    }
     let mut invalid = expected;
     invalid["acting_agent_claim"] = json!("unverified");
     assert!(serde_json::from_value::<CommandPolicy>(invalid).is_err());
