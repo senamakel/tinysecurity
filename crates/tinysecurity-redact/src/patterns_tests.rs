@@ -55,3 +55,19 @@ fn private_keys_urls_assignments_and_validators_are_selective() -> Result<()> {
     assert!(!Validator::Iban.valid("DE00370400440532013000"));
     Ok(())
 }
+#[test]
+fn registry_rejects_literals_that_embed_generated_markers() {
+    for secret in [
+        "[REDACTED]x",
+        "prefix<HOME>",
+        "prefix<redacted: number>",
+        "<redacted: string (123 chars)>suffix",
+    ] {
+        assert!(
+            Patterns::new(&RedactorConfig {
+                secrets: vec![tinysecurity_bus::Secret(secret.into())]
+            })
+            .is_err()
+        );
+    }
+}

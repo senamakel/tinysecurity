@@ -182,7 +182,12 @@ impl Redactor {
                             && CONTENT_KEYS.contains(&lower.as_str()));
                     let value = if sensitive {
                         if *mode == RedactMode::StructuredArguments {
-                            count_marker(value)
+                            let counted = count_marker(value);
+                            if counted.is_null() && self.0.patterns.literal("null") != "null" {
+                                Value::String(MARKER.into())
+                            } else {
+                                counted
+                            }
                         } else {
                             Value::String(MARKER.into())
                         }
@@ -193,7 +198,7 @@ impl Redactor {
                     let mut sanitized = base.clone();
                     let suffix = counters.entry(base.clone()).or_insert(2usize);
                     while out.contains_key(&sanitized) {
-                        sanitized = format!("{base} ({suffix})");
+                        sanitized = self.0.patterns.text(&format!("{base} ({suffix})"))?;
                         *suffix += 1;
                     }
                     out.insert(sanitized, value);
@@ -226,7 +231,14 @@ impl Redactor {
                     }
                 })
             }
-            other => Ok(other.clone()),
+            other => {
+                let serialized = other.to_string();
+                if self.0.patterns.literal(&serialized) == serialized {
+                    Ok(other.clone())
+                } else {
+                    Ok(Value::String(MARKER.into()))
+                }
+            }
         }
     }
     pub(crate) fn scan_value(

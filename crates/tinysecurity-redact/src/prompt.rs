@@ -29,6 +29,11 @@ impl Scanner {
                 true,
             ),
             (
+                "exfiltrate.credentials",
+                r"\b(send|upload|transmit|post|transfer|forward|export)\s+(\S+\s+){0,2}(the|your|my|all|stored|active|internal|hidden|configured|saved|env|environment)\s+(\S+\s+){0,3}(api\s*keys?|secrets?|passwords?|private\s+keys?|credentials?|session\s+cookies?|jwts?|(access|auth|api|oauth|refresh|session|environment|stored|saved)\s+tokens?)($|\s+(to|via|over|into|onto)\b)",
+                true,
+            ),
+            (
                 "tool.approval_bypass",
                 r"\b(call|use|run|execute)\s+(the\s+)?(tool|tools|function|functions)\b.{0,256}\b(without approval|even if forbidden|no matter what)\b",
                 true,
@@ -82,6 +87,7 @@ impl Scanner {
             }
         }
         result.rule_ids.sort();
+        result.rule_ids.dedup();
         result
     }
 }

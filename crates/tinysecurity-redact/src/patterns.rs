@@ -35,7 +35,7 @@ impl Patterns {
                         "<redacted: bool>",
                     ]
                     .iter()
-                    .any(|marker| marker.contains(*s))
+                    .any(|marker| marker.contains(*s) || s.contains(marker))
                     || marker_collision(s)
             })
         {
@@ -126,7 +126,14 @@ impl Patterns {
                         u.set_password(None).ok()?;
                         u.set_query(None);
                         u.set_fragment(None);
-                        Some(u.to_string().trim_end_matches('/').to_owned())
+                        let normalized = u.to_string().trim_end_matches('/').to_owned();
+                        // URL normalization removes userinfo and folds authority case.
+                        // Check retained parts before emitting a parseable endpoint.
+                        Some(if self.retained_endpoint_is_sensitive(&normalized) {
+                            MARKER.into()
+                        } else {
+                            normalized
+                        })
                     })
                     .unwrap_or_else(|| MARKER.into())
             })
@@ -144,7 +151,19 @@ impl Patterns {
                 .into_owned();
             output_bounded(&out)?;
         }
+        // Transformations can create an exact literal that was absent initially.
+        // One final pass is bounded and markers cannot contain registered literals.
+        let out = self.literal(&out);
+        output_bounded(&out)?;
         Ok(out)
+    }
+    pub(crate) fn retained_endpoint_is_sensitive(&self, text: &str) -> bool {
+        self.literal.as_ref().is_some_and(|r| r.is_match(text))
+            || self.assignment.is_match(text)
+            || self
+                .rules
+                .iter()
+                .any(|(rule, validator)| rule.find_iter(text).any(|m| validator.valid(m.as_str())))
     }
 }
 fn marker_collision(secret: &str) -> bool {

@@ -165,11 +165,12 @@ impl Redactor {
             ),
             _ => url.to_string().trim_end_matches('/').into(),
         };
-        // Configured literals can appear in endpoint hosts or paths as well.
-        if self.0.patterns.literal(&out) == out {
-            Ok(out)
-        } else {
+        // Suppress sensitive retained parts instead of inserting a marker into
+        // URL syntax, where reparsing could escape it and break fixed-point output.
+        if self.0.patterns.retained_endpoint_is_sensitive(&out) {
             Ok(MARKER.into())
+        } else {
+            Ok(out)
         }
     }
 }
