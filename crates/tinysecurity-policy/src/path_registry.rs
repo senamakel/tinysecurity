@@ -4,6 +4,10 @@ use std::sync::Arc;
 const HEX: &[u8; 16] = b"0123456789abcdef";
 use tinysecurity_bus::{Error, PathPolicy, PathPolicyId, Result};
 /// Registry of immutable host-authorized scopes, preserved across SDK reinit.
+///
+/// This in-process library does not authenticate its Rust caller or confer OS
+/// access. The host must keep registration and scope references behind its own
+/// authenticated dispatch and private module bus.
 #[derive(Debug, Default)]
 pub struct PathPolicyRegistry {
     scopes: Vec<(PathPolicyId, Arc<PathScope>)>,
@@ -12,7 +16,9 @@ impl PathPolicyRegistry {
     /// Register or retrieve an identical immutable policy.
     ///
     /// # Errors
-    /// Rejects malformed policy roots and a full registry (1024 distinct scopes).
+    /// Rejects malformed roots, reservation exceptions that cannot resolve to
+    /// strict descendants, a full registry (1024 distinct scopes), entropy
+    /// failure, or repeated identifier collisions.
     pub fn register(&mut self, policy: PathPolicy) -> Result<PathPolicyId> {
         self.register_with_entropy(policy, |bytes| {
             getrandom::fill(bytes).map_err(|_| Error::Unavailable)
@@ -31,10 +37,11 @@ impl PathPolicyRegistry {
                 .any(|root| !root.path.is_absolute())
             || policy.reserved_paths.iter().any(|root| {
                 !root.path.is_absolute()
-                    || root
-                        .exceptions
-                        .iter()
-                        .any(|path| !path.is_absolute() || !path.starts_with(&root.path))
+                    || root.exceptions.iter().any(|path| {
+                        !path.is_absolute()
+                            || crate::path_scope::reservation_exception_root(&root.path, path)
+                                .is_none()
+                    })
             })
             || policy
                 .reserved_prefixes

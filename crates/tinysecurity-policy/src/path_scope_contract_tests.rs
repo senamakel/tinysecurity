@@ -180,8 +180,16 @@ fn missing_forbidden_roots_resolve_through_existing_symlink_ancestors()
             .into_owned(),
     ];
     let scope = PathScope::registered(policy);
-    let target = outside.path().join("missing/file");
+    let input = outside.path().join("missing/file");
+    let target = resolve_ancestor(&input)?;
     assert!(scope.forbidden(&target, true));
+    assert!(!scope.string_allowed(&input.to_string_lossy()));
+    assert_eq!(
+        scope.validate(&input.to_string_lossy(), true),
+        PathValidationResult::Denied {
+            category: Rejection::PolicyDenied
+        }
+    );
     assert!(!scope.string_allowed(&target.to_string_lossy()));
     Ok(())
 }
@@ -289,4 +297,30 @@ fn prospective_targets_require_not_found_rather_than_uninspectable_metadata() {
             Err(Rejection::Resolution)
         );
     }
+}
+
+#[test]
+fn tilde_directory_reads_do_not_authorize_filename_less_parent_writes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let mut policy = scope(root.path())?.policy().clone();
+    policy.home_dir = Some(root.path().into());
+    let scope = PathScope::registered(policy);
+    for input in ["~/", "~//", "~/.", "~/./"] {
+        assert!(matches!(
+            scope.validate(input, false),
+            PathValidationResult::Allowed { .. }
+        ));
+        assert_eq!(
+            scope.validate(input, true),
+            PathValidationResult::Denied {
+                category: Rejection::InvalidPath
+            }
+        );
+    }
+    assert!(matches!(
+        scope.validate("~/new-file", true),
+        PathValidationResult::Allowed { .. }
+    ));
+    Ok(())
 }

@@ -19,7 +19,7 @@ pub struct PathTrustedRoot {
     /// Allowed operations.
     pub access: PathAccess,
 }
-/// A reserved subtree, with explicitly readable child exceptions.
+/// A reserved subtree, with explicit child exceptions subject to other policy checks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PathReservation {
@@ -28,7 +28,8 @@ pub struct PathReservation {
     /// Reserve descendants while allowing the container directory itself.
     #[serde(default)]
     pub children_only: bool,
-    /// Subtrees excluded from this reservation.
+    /// Subtrees excluded from this reservation. Each must resolve to a strict
+    /// descendant of the reserved path at registration and evaluation.
     pub exceptions: Vec<PathBuf>,
 }
 /// A host-owned state directory family matched by its immediate child's prefix.
@@ -102,7 +103,7 @@ pub enum PathValidationResult {
         /// Resolved path.
         resolved: PathBuf,
     },
-    /// Rejected before filesystem I/O.
+    /// Rejected before the requested operation; validation may inspect filesystem metadata.
     Denied {
         /// Stable rejection category.
         category: PathErrorCategory,

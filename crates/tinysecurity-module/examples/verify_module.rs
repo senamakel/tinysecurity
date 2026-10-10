@@ -64,7 +64,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         checks: vec![
             Check::LocalDiagnostic {},
             Check::Path {
-                path: "/etc/passwd".into(),
+                path: native_protected_path().to_string_lossy().into_owned(),
                 write: false,
             },
         ],
@@ -89,9 +89,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .await
             .is_err()
     );
-    let path_scope = register_native_scope(&proxy).await?;
+    let (path_scope, fixture) = register_native_scope(&proxy).await?;
     verify_reconfiguration(&host, &proxy, &info.name).await?;
-    verify_native_scope(&proxy, path_scope).await?;
+    verify_native_scope(&proxy, path_scope, fixture.path()).await?;
     let evaluate = EvaluateRequest {
         caller,
         call: ToolCall {
@@ -202,8 +202,13 @@ async fn verify_reconfiguration(
 
 async fn register_native_scope(
     proxy: &tinybus::Proxy,
-) -> std::result::Result<tinysecurity_bus::PathPolicyId, Box<dyn std::error::Error>> {
-    let root = std::env::current_dir()?.canonicalize()?;
+) -> std::result::Result<
+    (tinysecurity_bus::PathPolicyId, tempfile::TempDir),
+    Box<dyn std::error::Error>,
+> {
+    let fixture = tempfile::tempdir()?;
+    std::fs::write(fixture.path().join("file"), "native scope fixture")?;
+    let root = fixture.path().canonicalize()?;
     let policy = tinysecurity_bus::PathPolicy {
         enabled: true,
         workspace_only: true,
@@ -217,41 +222,53 @@ async fn register_native_scope(
         readonly_paths: vec![],
         reserved_names: vec![],
     };
-    Ok(proxy
+    let id = proxy
         .call(names::methods::REGISTER_PATH_POLICY, (policy,))
-        .await?)
+        .await?;
+    Ok((id, fixture))
 }
 async fn verify_native_scope(
     proxy: &tinybus::Proxy,
     policy_id: tinysecurity_bus::PathPolicyId,
+    root: &std::path::Path,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     use tinysecurity_bus::{
         PathCheckKind, PathCheckRequest, PathValidationRequest, PathValidationResult,
     };
     let request = PathValidationRequest {
         policy_id: policy_id.clone(),
-        path: "Cargo.toml".into(),
+        path: "file".into(),
     };
     let read: PathValidationResult = proxy
         .call(names::methods::VALIDATE_PATH, (request,))
         .await?;
-    assert!(matches!(read, PathValidationResult::Allowed { .. }));
+    assert_eq!(
+        read,
+        PathValidationResult::Allowed {
+            resolved: root.canonicalize()?.join("file")
+        }
+    );
     let write: PathValidationResult = proxy
         .call(
             names::methods::VALIDATE_PARENT,
             (PathValidationRequest {
                 policy_id: policy_id.clone(),
-                path: "target/prospective/path/file".into(),
+                path: "prospective/path/file".into(),
             },),
         )
         .await?;
-    assert!(matches!(write, PathValidationResult::Allowed { .. }));
+    assert_eq!(
+        write,
+        PathValidationResult::Allowed {
+            resolved: root.canonicalize()?.join("prospective/path/file")
+        }
+    );
     let protected: bool = proxy
         .call(
             names::methods::CHECK_PATH,
             (PathCheckRequest {
                 policy_id,
-                path: "/etc/passwd".into(),
+                path: native_protected_path(),
                 kind: PathCheckKind::Protected,
             },),
         )
@@ -259,4 +276,18 @@ async fn verify_native_scope(
     assert!(protected);
     println!("native immutable path scope survives accepted SDK reinitialization");
     Ok(())
+}
+
+fn native_protected_path() -> PathBuf {
+    #[cfg(windows)]
+    {
+        std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+            .join("System32")
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from("/etc/passwd")
+    }
 }

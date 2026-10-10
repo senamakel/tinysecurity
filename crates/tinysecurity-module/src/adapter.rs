@@ -57,6 +57,8 @@ impl PolicyService {
             .await
             .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
     }
+    // Host-only configuration on a private, trusted in-process bus. This module
+    // evaluates policy; it is not a public authentication or filesystem service.
     async fn register_path_policy(
         &self,
         policy: tinysecurity_bus::PathPolicy,

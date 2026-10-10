@@ -83,6 +83,11 @@ pub fn resolve_ancestor(path: &Path) -> std::io::Result<PathBuf> {
         }
     }
 }
+pub(crate) fn reservation_exception_root(root: &Path, exception: &Path) -> Option<PathBuf> {
+    let root = resolve_ancestor(root).ok()?;
+    let exception = resolve_ancestor(exception).ok()?;
+    (exception != root && exception.starts_with(&root)).then_some(exception)
+}
 fn canonical_or_original(path: &Path) -> PathBuf {
     resolve_ancestor(path).unwrap_or_else(|_| path.to_path_buf())
 }
@@ -207,10 +212,10 @@ impl PathScope {
             {
                 return false;
             }
-            !reservation
-                .exceptions
-                .iter()
-                .any(|exception| within(&resolved, exception))
+            !reservation.exceptions.iter().any(|exception| {
+                reservation_exception_root(&reservation.path, exception)
+                    .is_some_and(|exception| resolved.starts_with(exception))
+            })
         }) || self.reserved_prefixes.iter().any(|reservation| {
             let root = canonical_or_original(&reservation.root);
             if !deny_starts_with(&resolved, &root) {
@@ -358,7 +363,10 @@ impl PathScope {
     fn validate_inner(&self, input: &str, write: bool) -> std::result::Result<PathBuf, Rejection> {
         if input.is_empty()
             || ambiguous_native(&expand(self, input))
-            || (write && expand(self, input).file_name().is_none())
+            || (write
+                && Path::new(input.strip_prefix("~/").unwrap_or(input))
+                    .file_name()
+                    .is_none())
         {
             return Err(Rejection::InvalidPath);
         }

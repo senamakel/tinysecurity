@@ -5,7 +5,7 @@ use tinysecurity_bus::{PathAccess, PathReservation, PathTrustedRoot};
 fn empty_validation_requests_never_authorize_the_action_directory()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let mut policy = scope(root.path());
+    let mut policy = scope(root.path())?;
     for enabled in [true, false] {
         policy.0.enabled = enabled;
         for write in [true, false] {
@@ -21,8 +21,9 @@ fn empty_validation_requests_never_authorize_the_action_directory()
     Ok(())
 }
 
-fn scope(root: &Path) -> PathScope {
-    PathScope(PathPolicy {
+fn scope(root: &Path) -> tinysecurity_bus::Result<PathScope> {
+    let mut registry = crate::PathPolicyRegistry::default();
+    let id = registry.register(PathPolicy {
         enabled: true,
         workspace_only: true,
         workspace_dir: root.into(),
@@ -34,12 +35,13 @@ fn scope(root: &Path) -> PathScope {
         reserved_prefixes: vec![],
         readonly_paths: vec![],
         reserved_names: vec![".env".into()],
-    })
+    })?;
+    Ok(registry.get(&id)?.clone())
 }
 #[test]
 fn prospective_write_resolves_missing_descendants() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let scope = scope(root.path());
+    let scope = scope(root.path())?;
     assert!(matches!(
         scope.validate("new/deep/file.txt", true),
         PathValidationResult::Allowed { .. }
@@ -56,7 +58,7 @@ fn prospective_write_resolves_missing_descendants() -> Result<(), Box<dyn std::e
 fn reserved_paths_override_grants_but_allow_readonly_exceptions()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let mut scope = scope(root.path());
+    let mut scope = scope(root.path())?;
     let artifacts = root.path().join("artifacts");
     let results = artifacts.join("tool-results");
     std::fs::create_dir_all(&results)?;
@@ -89,7 +91,7 @@ fn reserved_paths_override_grants_but_allow_readonly_exceptions()
 fn disabled_scope_keeps_floor_and_reserved_single_filenames()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let mut scope = scope(root.path());
+    let mut scope = scope(root.path())?;
     scope.0.enabled = false;
     assert!(!scope.string_allowed("../outside"));
     assert!(!scope.string_allowed(".ssh/key"));
@@ -105,7 +107,7 @@ fn symlink_to_reserved_state_is_denied_even_with_missing_suffix()
     let internal = root.path().join("state");
     std::fs::create_dir(&internal)?;
     std::os::unix::fs::symlink(&internal, root.path().join("alias"))?;
-    let mut scope = scope(root.path());
+    let mut scope = scope(root.path())?;
     scope.0.reserved_paths.push(PathReservation {
         path: internal,
         children_only: false,
@@ -124,7 +126,7 @@ fn read_only_grant_never_authorizes_a_write_outside_workspace()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let outside = tempfile::tempdir()?;
-    let mut scope = scope(root.path());
+    let mut scope = scope(root.path())?;
     scope.0.trusted_roots.push(PathTrustedRoot {
         path: outside.path().into(),
         access: PathAccess::ReadOnly,
@@ -147,7 +149,7 @@ fn immutable_registration_deduplicates_without_changing_other_agents()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let mut registry = crate::PathPolicyRegistry::default();
-    let first = scope(root.path()).0;
+    let first = scope(root.path())?.0;
     let first_id = registry.register(first.clone())?;
     assert_eq!(first_id, registry.register(first.clone())?);
     let mut second = first;
@@ -162,7 +164,7 @@ fn immutable_registration_deduplicates_without_changing_other_agents()
 fn absolute_requests_and_relative_forbidden_roots_preserve_policy_scope()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let mut scope = scope(root.path());
+    let mut scope = scope(root.path())?;
     std::fs::create_dir(root.path().join("blocked"))?;
     std::fs::write(root.path().join("blocked/file"), "x")?;
     scope.0.forbidden_paths = vec!["blocked".into()];
@@ -190,7 +192,7 @@ fn absolute_requests_and_relative_forbidden_roots_preserve_policy_scope()
 fn home_expansion_prefix_reservations_and_boolean_queries() -> Result<(), Box<dyn std::error::Error>>
 {
     let root = tempfile::tempdir()?;
-    let mut scope = scope(root.path());
+    let mut scope = scope(root.path())?;
     scope.0.trusted_roots.push(PathTrustedRoot {
         path: root.path().into(),
         access: PathAccess::ReadWrite,
@@ -215,7 +217,12 @@ fn home_expansion_prefix_reservations_and_boolean_queries() -> Result<(), Box<dy
         assert!(scope.check_path(&root.path().join("ordinary"), kind));
     }
     assert!(scope.check_path(&root.path().join("memory-alice"), PathCheckKind::Internal));
-    assert!(scope.check_path(Path::new("/etc/passwd"), PathCheckKind::Protected));
+    #[cfg(windows)]
+    let protected =
+        PathBuf::from(std::env::var_os("SystemRoot").ok_or("SystemRoot absent")?).join("System32");
+    #[cfg(not(windows))]
+    let protected = PathBuf::from("/etc/passwd");
+    assert!(scope.check_path(&protected, PathCheckKind::Protected));
     scope.0.enabled = false;
     let outside = tempfile::tempdir()?;
     assert!(scope.resolved_allowed(&outside.path().join("ordinary/outside"), true));
@@ -227,7 +234,7 @@ fn existing_write_symlink_and_broken_symlink_are_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let outside = tempfile::tempdir()?;
-    let mut scope = scope(root.path());
+    let mut scope = scope(root.path())?;
     scope.0.trusted_roots.push(PathTrustedRoot {
         path: outside.path().into(),
         access: PathAccess::ReadOnly,
@@ -299,7 +306,7 @@ fn public_boolean_authorization_resolves_symlinks_before_containment()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let outside = tempfile::tempdir()?;
-    let mut policy = scope(root.path());
+    let mut policy = scope(root.path())?;
     policy.0.trusted_roots.push(PathTrustedRoot {
         path: root.path().into(),
         access: PathAccess::ReadWrite,
@@ -329,7 +336,7 @@ fn public_boolean_authorization_resolves_symlinks_before_containment()
 fn string_checks_deny_resolved_forbidden_subtrees_inside_workspace()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let mut policy = scope(root.path());
+    let mut policy = scope(root.path())?;
     policy.0.workspace_only = false;
     policy.0.forbidden_paths = vec!["secrets".into()];
     std::fs::create_dir(root.path().join("secrets"))?;
@@ -346,7 +353,7 @@ fn string_checks_deny_resolved_forbidden_subtrees_inside_workspace()
 #[test]
 fn prospective_denial_roots_match_native_case_aliases() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let mut policy = scope(root.path());
+    let mut policy = scope(root.path())?;
     policy.0.forbidden_paths = vec!["secrets".into()];
     policy.0.reserved_paths.push(PathReservation {
         path: root.path().join("reserved"),
@@ -391,7 +398,7 @@ fn case_distinct_missing_grants_and_exceptions_are_not_broadened()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let outside = tempfile::tempdir()?;
-    let mut policy = scope(root.path());
+    let mut policy = scope(root.path())?;
     policy.0.trusted_roots.push(PathTrustedRoot {
         path: outside.path().join("Granted"),
         access: PathAccess::ReadWrite,
@@ -411,7 +418,7 @@ fn case_distinct_missing_grants_and_exceptions_are_not_broadened()
 fn readonly_trusted_root_overrides_forbidden_paths_only_for_reads()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let mut policy = scope(root.path());
+    let mut policy = scope(root.path())?;
     policy.0.workspace_only = false;
     policy.0.forbidden_paths = vec!["blocked".into()];
     policy.0.trusted_roots.push(PathTrustedRoot {
@@ -454,7 +461,7 @@ fn acting_scope_and_conservative_bootstrap_have_distinct_system_root_contracts()
 fn reserved_relative_filenames_ignore_leading_current_directory_components()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let mut policy = scope(root.path());
+    let mut policy = scope(root.path())?;
     for enabled in [true, false] {
         policy.0.enabled = enabled;
         for input in [".env", "./.env", "././.env"] {
@@ -489,7 +496,7 @@ fn reserved_relative_filenames_ignore_leading_current_directory_components()
 fn relative_forbidden_roots_do_not_block_same_named_action_subdirectories()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let mut policy = scope(root.path());
+    let mut policy = scope(root.path())?;
     let action = root.path().join("subproject");
     std::fs::create_dir(&action)?;
     policy.0.action_dir = action;

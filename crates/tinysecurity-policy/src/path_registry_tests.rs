@@ -187,3 +187,87 @@ fn scope_registration_fails_closed_on_entropy_failure_or_collisions()
     assert!(registry.get_owned(&PathPolicyId("bogus".into())).is_err());
     Ok(())
 }
+
+#[test]
+fn reservation_exceptions_cannot_resolve_to_the_reserved_root_or_its_ancestor()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let state = root.path().join("state");
+    std::fs::create_dir(&state)?;
+    let base = PathPolicy {
+        enabled: true,
+        workspace_only: true,
+        workspace_dir: root.path().into(),
+        action_dir: root.path().into(),
+        home_dir: None,
+        forbidden_paths: vec![],
+        trusted_roots: vec![],
+        reserved_paths: vec![],
+        reserved_prefixes: vec![],
+        readonly_paths: vec![],
+        reserved_names: vec![],
+    };
+    for exception in [state.clone(), state.join(".."), state.join("child/..")] {
+        let mut policy = base.clone();
+        policy
+            .reserved_paths
+            .push(tinysecurity_bus::PathReservation {
+                path: state.clone(),
+                children_only: false,
+                exceptions: vec![exception],
+            });
+        assert_eq!(
+            PathPolicyRegistry::default().register(policy),
+            Err(Error::InvalidArguments)
+        );
+    }
+    let mut policy = base;
+    policy
+        .reserved_paths
+        .push(tinysecurity_bus::PathReservation {
+            path: state.clone(),
+            children_only: false,
+            exceptions: vec![state.join("allowed/missing")],
+        });
+    assert!(PathPolicyRegistry::default().register(policy).is_ok());
+    Ok(())
+}
+#[cfg(unix)]
+#[test]
+fn reservation_exception_symlinks_cannot_escape_at_registration_or_afterward()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let state = root.path().join("state");
+    let child = state.join("child");
+    std::fs::create_dir_all(&child)?;
+    let exception = state.join("exception");
+    std::os::unix::fs::symlink(&child, &exception)?;
+    let policy = PathPolicy {
+        enabled: true,
+        workspace_only: true,
+        workspace_dir: root.path().into(),
+        action_dir: root.path().into(),
+        home_dir: None,
+        forbidden_paths: vec![],
+        trusted_roots: vec![],
+        reserved_paths: vec![tinysecurity_bus::PathReservation {
+            path: state.clone(),
+            children_only: false,
+            exceptions: vec![exception.clone()],
+        }],
+        reserved_prefixes: vec![],
+        readonly_paths: vec![],
+        reserved_names: vec![],
+    };
+    let mut registry = PathPolicyRegistry::default();
+    let id = registry.register(policy.clone())?;
+    assert!(!registry.get(&id)?.internal(&child.join("file")));
+    std::fs::remove_file(&exception)?;
+    std::os::unix::fs::symlink(root.path(), &exception)?;
+    assert!(registry.get(&id)?.internal(&state.join("private")));
+    assert_eq!(
+        PathPolicyRegistry::default().register(policy),
+        Err(Error::InvalidArguments)
+    );
+    Ok(())
+}

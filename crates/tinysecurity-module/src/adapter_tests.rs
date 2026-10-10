@@ -1,5 +1,6 @@
 //! Contract dispatch and malformed request tests through real in-memory `TinyBus`.
 use super::*;
+use std::path::PathBuf;
 use tinybus::{Interface, broker::Broker, transport::memory::MemoryBus};
 use tinysecurity_bus::*;
 #[test]
@@ -188,7 +189,12 @@ async fn verify_scope_dispatch(
             names::methods::CHECK_PATH,
             (PathCheckRequest {
                 policy_id: id.clone(),
-                path: "D:\\Windows\\file".into(),
+                path: if cfg!(windows) {
+                    PathBuf::from(std::env::var_os("SystemRoot").ok_or("SystemRoot absent")?)
+                        .join("System32")
+                } else {
+                    PathBuf::from("/etc/passwd")
+                },
                 kind: PathCheckKind::Protected,
             },),
         )

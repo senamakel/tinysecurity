@@ -19,9 +19,21 @@ registry fails closed; SDK reinitialization preserves registered scopes. A new
 module process requires fresh registration. Unknown identities fail as invalid
 arguments. Entropy failure or repeated identifier collisions also fail closed.
 References prevent insertion-index enumeration as defense in depth; they are not
-caller ownership or an authentication mechanism. Only trusted host bus adapters
-may register or submit scopes, and registration itself does not authorize an
-untrusted caller. Scope handles are cloned under the registry lock; filesystem work
+caller ownership or an authentication mechanism. The host is responsible for restricting this interface to its private,
+trusted in-process module bus; the service does not authenticate bus callers.
+Do not expose it through a network listener or an agent-controlled generic bus
+forwarder. First-party native modules share the host's address space and OS
+privileges; they are not a sandbox boundary. A hostile native module can already
+perform filesystem I/O without this policy engine. Untrusted code belongs in a
+separate execution sandbox, without a connection to the policy bus.
+
+A caller-authored scope cannot change another scope or the host's selected
+scope: registrations are immutable, and the host adapter derives the policy and
+keeps its returned reference private. Model arguments contain operation paths,
+never registration payloads or policy references. Registries constructed through
+the Rust library likewise operate inside the caller's process and grant no new
+OS authority. Identity authentication and bus admission belong to the host,
+not to this portable policy evaluator. Scope handles are cloned under the registry lock; filesystem work
 runs on blocking workers after releasing it, keeping the module runtime and
 unrelated agent requests responsive during a stalled filesystem operation.
 
@@ -92,3 +104,11 @@ before joining the action directory. Denial filename comparisons include NTFS
 stream aliases (split the stream suffix, then trim dots/spaces), while drive and
 UNC prefix components stay intact. Exact grants remain unchanged, and Unix
 colon filenames do not acquire Windows stream semantics.
+
+Reservation exceptions must resolve to strict descendants of their reservation
+at registration and at evaluation. A parent traversal or a symlink to the
+reservation's ancestor cannot exempt the whole reservation. Prospective child
+exceptions remain supported through their deepest existing ancestor.
+Home-directory requests using `~/` or equivalent forms such as `~/./` can be
+read, but cannot supply a filename for `ValidateParent`. Home expansion applies
+only to the leading `~/` form; a bare `~` is an ordinary relative filename.
