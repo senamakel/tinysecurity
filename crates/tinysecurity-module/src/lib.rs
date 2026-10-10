@@ -3,3 +3,5 @@
 //! Initialize through the SDK with [`tinysecurity_bus::ModuleConfig`]. Hosts
 //! depend only on the transport-free contract, never this implementation.
 mod adapter;
+
+mod callbacks;

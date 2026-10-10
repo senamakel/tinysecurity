@@ -9,6 +9,7 @@ use tinysecurity_bus::{
 static PATH_SCOPES: OnceLock<Arc<Mutex<PathPolicyRegistry>>> = OnceLock::new();
 static COMMAND_SCOPES: OnceLock<Arc<Mutex<CommandPolicyRegistry>>> = OnceLock::new();
 static EGRESS_SCOPES: OnceLock<Arc<Mutex<EgressPolicyRegistry>>> = OnceLock::new();
+static HOST_BINDING: OnceLock<crate::callbacks::PeerBinding> = OnceLock::new();
 static ACTIVE: OnceLock<Arc<RwLock<Policy>>> = OnceLock::new();
 #[derive(Clone)]
 struct PolicyService {
@@ -352,6 +353,13 @@ impl PolicyService {
 async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
     // Validate before activation. The SDK serializes reinitializations and
     // preserves a fault latch; this adapter never provides retry RPCs.
+    let requested_host = config.trusted_host.as_deref();
+    let binding = if let Some(binding) = HOST_BINDING.get() {
+        binding.verify_reinit(requested_host)?;
+        binding.clone()
+    } else {
+        crate::callbacks::PeerBinding::new(requested_host)?
+    };
     let previous = ACTIVE
         .get()
         .map(|active| {
@@ -403,23 +411,30 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
     connection
         .serve_at(
             names::OBJECT_PATH.try_into()?,
-            PolicyService {
-                policy: Arc::clone(&policy),
-                egress: Arc::clone(
-                    EGRESS_SCOPES
-                        .get_or_init(|| Arc::new(Mutex::new(EgressPolicyRegistry::default()))),
-                ),
-                commands: Arc::clone(
-                    COMMAND_SCOPES
-                        .get_or_init(|| Arc::new(Mutex::new(CommandPolicyRegistry::default()))),
-                ),
-                paths: Arc::clone(
-                    PATH_SCOPES.get_or_init(|| Arc::new(Mutex::new(PathPolicyRegistry::default()))),
-                ),
-            },
+            crate::callbacks::Authenticated::new(
+                PolicyService {
+                    policy: Arc::clone(&policy),
+                    egress: Arc::clone(
+                        EGRESS_SCOPES
+                            .get_or_init(|| Arc::new(Mutex::new(EgressPolicyRegistry::default()))),
+                    ),
+                    commands: Arc::clone(
+                        COMMAND_SCOPES
+                            .get_or_init(|| Arc::new(Mutex::new(CommandPolicyRegistry::default()))),
+                    ),
+                    paths: Arc::clone(
+                        PATH_SCOPES
+                            .get_or_init(|| Arc::new(Mutex::new(PathPolicyRegistry::default()))),
+                    ),
+                },
+                binding.clone(),
+            ),
         )
         .await?;
     connection.request_name(names::INTERFACE).await?;
+    HOST_BINDING
+        .set(binding)
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
     ACTIVE
         .set(policy)
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;

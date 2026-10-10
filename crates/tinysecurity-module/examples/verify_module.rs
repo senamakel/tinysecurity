@@ -16,11 +16,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let broker = Broker::new();
     let task = broker.spawn(bus.clone());
     let host = ModuleHost::new(broker);
-    let info = load_native_module(&host, &args)?;
+    let client = Connection::connect(bus.connect().await?).await?;
+    let info = load_native_module(&host, &args, &client)?;
     if info.name != "tinysecurity-module" {
         return Err(io::Error::other("unexpected module identity").into());
     }
-    let client = Connection::connect(bus.connect().await?).await?;
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if client
@@ -106,8 +106,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 fn load_native_module(
     host: &ModuleHost,
     args: &[String],
+    client: &Connection,
 ) -> std::result::Result<tinybus::module::ModuleInfo, Box<dyn std::error::Error>> {
-    let config = review_regression_config()?;
+    let mut config = review_regression_config()?;
+    config["trusted_host"] = serde_json::to_value(client.unique_name())?;
     let info = match args {
         [path] => {
             let path = PathBuf::from(path);

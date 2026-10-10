@@ -230,6 +230,10 @@ pub struct ModuleConfig {
     /// Init-only registry, omitted when empty for legacy wire compatibility.
     #[serde(default, skip_serializing_if = "crate::RedactorConfig::is_empty")]
     pub redactor: crate::RedactorConfig,
+    /// Exact trusted host unique connection, supplied only across SDK initialization.
+    /// Absent legacy initialization remains load-compatible but cannot invoke privileged members.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_host: Option<String>,
 }
 impl Default for ModuleConfig {
     fn default() -> Self {
@@ -238,6 +242,7 @@ impl Default for ModuleConfig {
             policy: PolicyConfig::default(),
             judge: None,
             redactor: crate::RedactorConfig::default(),
+            trusted_host: None,
         }
     }
 }

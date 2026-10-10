@@ -116,9 +116,11 @@ async fn sdk_setup_accepts_generation_and_rejects_invalid_reinit()
     let bus = MemoryBus::new();
     let task = Broker::new().spawn(bus.clone());
     let server = Connection::connect(bus.connect().await?).await?;
+    let client = Connection::connect(bus.connect().await?).await?;
     setup(
         server.clone(),
         ModuleConfig {
+            trusted_host: client.unique_name().map(|peer| peer.to_string()),
             redactor: RedactorConfig {
                 secrets: vec![Secret("literal-reinit-private".into())],
             },
@@ -126,8 +128,27 @@ async fn sdk_setup_accepts_generation_and_rejects_invalid_reinit()
         },
     )
     .await?;
-    let client = Connection::connect(bus.connect().await?).await?;
     let proxy = client.proxy(names::INTERFACE, names::OBJECT_PATH, names::INTERFACE)?;
+    let malicious = Connection::connect(bus.connect().await?).await?;
+    let forged = malicious.proxy(names::INTERFACE, names::OBJECT_PATH, names::INTERFACE)?;
+    let attempt = forged
+        .call::<CheckResponse>(
+            names::methods::CHECK,
+            (CheckRequest {
+                caller: CallerContext {
+                    agent: "forged-host".into(),
+                    call_id: "forged-call".into(),
+                    tier: AccessTier::Full,
+                    ..Default::default()
+                },
+                checks: vec![Check::LocalDiagnostic {}],
+            },),
+        )
+        .await;
+    assert!(
+        attempt.is_err(),
+        "serialized host claims from a second bus peer must not authorize checks"
+    );
     verify_invalid_registry_retains_redaction(&server, &proxy).await?;
     let (retained_egress, stale_egress) = issue_reinit_egress_grants(&proxy).await?;
     let before: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
