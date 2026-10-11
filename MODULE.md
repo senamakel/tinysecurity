@@ -103,3 +103,46 @@ Fault-injection and timeout latching remain SDK conformance work, not a
 bootstrap claim. Timing uses 500 sequential calls per method, one Evaluate call for one diagnostic or
 one Check call for two checks per sample. See measured results and migration
 budgets in [performance](docs/performance.md).
+
+## Confidential device handles
+
+Optional `ModuleConfig.device: DeviceConfig2` adds `EvaluateDevice2` and
+`ExecuteDevice2` to the native interface. Existing omitted-device payloads and
+v2/v3/v4 wire frames keep their serialized forms. These members require TinyBus
+confidential transport and the immutable verified `trusted_host` peer. Missing
+configuration, another sender, public identity claims, unconfidential calls,
+missing callbacks and required audit failures deny native authority.
+
+Each configured device scope references a subject already registered in
+`approvals`, captures its verified origin, and optionally consumes one static
+X25519 credential during SDK init. Absent credentials generate native static
+keys. Neither variant exports private material. Device calls select only an
+existing scope and a bounded operation: issue a static/ephemeral key handle,
+derive a role-bound tunnel, seal/open v2, seal/open v3 handshake or v4 ack,
+revoke a handle, or cancel the authenticated scope. Public keys retain the
+canonical 32-byte URL-safe unpadded base64 format.
+
+Evaluate builds the exact content digest internally and uses the existing
+verified approval callbacks. Execute requires the resulting exact human Once
+receipt and fresh required audit correlation; automatic, durable-tool or
+caller-asserted decisions cannot issue native authority. Every callback/worker
+await is followed by live generation/scope/deadline checks. Plaintext, keys,
+frames and handles do not reach approval/audit payloads, errors, Debug or
+`PolicyInfo`.
+
+Explicit init bounds cover registrations, handles, concurrent reservations,
+per-scope rate, TTL, message bytes and retained bootstrap nonces. Reinit may
+change bounds without reimporting credentials or changing immutable subjects.
+It invalidates all old handles; successful new-generation receipts issue new
+handles. Revoke removes dependent tunnels; scoped Cancel fences pending work.
+Bootstrap replay evidence survives alias issuance, Cancel and reinit and fails
+closed at capacity. Clock rollback/unavailability faults device authority for
+that process. Shutdown closes owned credentials even when an SDK observer
+retains the connection. See the [owned cleanup and replay limits](crates/tinysecurity-crypto/README.md#scoped-device-handles).
+
+`device_native_contract` loads the hashed shared library and exercises actual
+confidential dispatch, verified approval/audit callback continuity, v2/v3/v4,
+replay/revoke, valid generation-two receipts, old-handle denial and SDK shutdown.
+Run the retained runner with the absolute library path from both owner and
+non-owner working directories. Linux proves Linux behavior; macOS and Windows
+require their native runners. This does not release artifacts or migrate a host.

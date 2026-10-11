@@ -778,11 +778,11 @@ impl std::io::Write for CanonicalRequest {
     }
 }
 fn canonical_request(request: &DeviceRequest2) -> Result<CanonicalRequest> {
+    use DeviceOperation2 as Op;
     if request.scope_id.len() > 128 || request.call_id.len() > 128 {
         return Err(Error::Limit);
     }
     check_operation(&request.operation, 1 << 20)?;
-    use DeviceOperation2 as Op;
     let bytes = match &request.operation {
         Op::Seal { plaintext, .. }
         | Op::SealHandshake { plaintext, .. }

@@ -902,6 +902,24 @@ async fn configured_policy(config: ModuleConfig) -> BusResult<Policy> {
     .await
     .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
 }
+fn host_binding(requested: Option<&str>) -> BusResult<crate::callbacks::PeerBinding> {
+    if let Some(binding) = HOST_BINDING.get() {
+        binding.verify_reinit(requested)?;
+        Ok(binding.clone())
+    } else {
+        crate::callbacks::PeerBinding::new(requested)
+    }
+}
+fn queue_policy_changed(connection: &Connection, generation: u64) -> BusResult<()> {
+    let event = tinysecurity_bus::PolicyChanged { generation };
+    let signal = tinybus::Message::signal(
+        names::OBJECT_PATH.try_into()?,
+        names::INTERFACE.try_into()?,
+        names::POLICY_CHANGED.try_into()?,
+        serde_json::to_value((event,))?,
+    );
+    connection.try_send(signal)
+}
 async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()> {
     // Validate before activation. The SDK serializes reinitializations and
     // preserves a fault latch; this adapter never provides retry RPCs.
@@ -909,19 +927,13 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
         tinysecurity::crypto::device_handles::ConfidentialConfig::new(config.device.take());
     let device_clock: Arc<dyn tinysecurity::approval::Clock> =
         Arc::new(tinysecurity::approval::SystemClock::default());
-    let sandbox_config = config.sandbox.clone();
     let judge_config = config.judge.clone();
     let audit_config = config.audit.clone();
     let approval_config = config.approvals.clone();
     let requested_host = config.trusted_host.clone();
-    let binding = if let Some(binding) = HOST_BINDING.get() {
-        binding.verify_reinit(requested_host.as_deref())?;
-        binding.clone()
-    } else {
-        crate::callbacks::PeerBinding::new(requested_host.as_deref())?
-    };
+    let binding = host_binding(requested_host.as_deref())?;
     let sandbox = sandbox_configured(
-        sandbox_config,
+        config.sandbox.clone(),
         requested_host.as_deref(),
         audit_config.as_ref(),
         approval_config.as_ref(),
@@ -952,18 +964,9 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
             .write()
             .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
 
-        let event = tinysecurity_bus::PolicyChanged {
-            generation: candidate.info().generation,
-        };
-        let signal = tinybus::Message::signal(
-            names::OBJECT_PATH.try_into()?,
-            names::INTERFACE.try_into()?,
-            names::POLICY_CHANGED.try_into()?,
-            serde_json::to_value((event,))?,
-        );
-        // Queue publication before activation while holding the state lock.
+        // Queue publication under the state lock before activation.
         // A full/closed outbox rejects reinit and leaves the old state intact.
-        connection.try_send(signal)?;
+        queue_policy_changed(&connection, candidate.info().generation)?;
         EGRESS_SCOPES
             .get_or_init(|| Arc::new(Mutex::new(EgressPolicyRegistry::default())))
             .lock()

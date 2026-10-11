@@ -257,7 +257,12 @@ cannot satisfy constraints they do not enforce.
 Crypto is last: password encryption, keyring backends, device encryption and
 pairing have one implementation with consent callbacks. Authentication,
 credential ownership, sockets and consent UX stay host-side. Existing encrypted
-data compatibility and migration are acceptance requirements.
+data compatibility and migration are acceptance requirements. The incremental
+[native device handle surface](../../MODULE.md#confidential-device-handles) now
+adds optional SDK-init registrations, confidential authenticated dispatch and
+exact human/audit receipts over the frozen device primitives. Scoped lifecycle,
+bootstrap replay bounds and owned cleanup are implemented in the module; no
+password/keyring/pairing or production host migration is implied.
 
 Contract 1.8 adds bounded init-only judge settings and optional typed judge
 evidence on durable approval rows. Older init payloads retain their wire shape;

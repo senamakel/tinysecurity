@@ -274,6 +274,33 @@ impl Sink {
         .await
     }
 }
+async fn serve_approval_callbacks(
+    host: &Connection,
+    module: &tinybus::BusName,
+    store: &Arc<Mutex<store::DiskStore>>,
+) -> tinybus::Result<()> {
+    let scope = tinysecurity::approval::scope_handle(&device_registration().subject)
+        .map_err(|_| denied())?;
+    for interface in [
+        callback_names2::APPROVAL_STORE,
+        callback_names2::APPROVAL_PROMPT,
+    ] {
+        host.serve_at(
+            callback_names2::OBJECT_PATH.parse()?,
+            callback::Callback {
+                module: module.clone(),
+                host: host.clone(),
+                interface: interface.parse()?,
+                scope: scope.clone(),
+                store: store.clone(),
+                reentrant: Arc::new(AtomicBool::new(false)),
+                prompt_failure: Arc::new(AtomicBool::new(false)),
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
 async fn harness() -> std::result::Result<Harness, Box<dyn std::error::Error>> {
     let bus = MemoryBus::new();
     let broker = Broker::new().spawn(bus.clone());
@@ -340,25 +367,7 @@ async fn harness() -> std::result::Result<Harness, Box<dyn std::error::Error>> {
     let file = directory.path().join("ledger");
     std::fs::write(&file, [])?;
     let store = Arc::new(Mutex::new(store::DiskStore::open(&file)?));
-    let scope = tinysecurity::approval::scope_handle(&device_registration().subject)?;
-    for interface in [
-        callback_names2::APPROVAL_STORE,
-        callback_names2::APPROVAL_PROMPT,
-    ] {
-        host.serve_at(
-            callback_names2::OBJECT_PATH.parse()?,
-            callback::Callback {
-                module: module_peer.clone(),
-                host: host.clone(),
-                interface: interface.parse()?,
-                scope: scope.clone(),
-                store: store.clone(),
-                reentrant: Arc::new(AtomicBool::new(false)),
-                prompt_failure: Arc::new(AtomicBool::new(false)),
-            },
-        )
-        .await?;
-    }
+    serve_approval_callbacks(&host, &module_peer, &store).await?;
     let fault = Arc::new(AtomicU8::new(0));
     host.serve_at(
         callback_names2::OBJECT_PATH.parse()?,
@@ -381,7 +390,7 @@ async fn harness() -> std::result::Result<Harness, Box<dyn std::error::Error>> {
         store,
         fault,
         broker,
-        directory: directory,
+        directory,
     })
 }
 impl Harness {
@@ -754,8 +763,10 @@ async fn unpublished_worker_plaintext_is_wiped_on_clock_read_failure_and_join_ab
             let policy = fixture.service.policy.clone();
             assert!(
                 std::panic::catch_unwind(move || {
-                    let _guard = policy.write().unwrap_or_else(|p| p.into_inner());
-                    panic!("synthetic publication read poison");
+                    let _guard = policy
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    std::panic::resume_unwind(Box::new("synthetic publication read poison"));
                 })
                 .is_err()
             );

@@ -8,7 +8,10 @@ use std::{
     time::Duration,
 };
 use tinybus::{Connection, broker::Broker, module::ModuleHost, transport::memory::MemoryBus};
-use tinysecurity_bus::*;
+use tinysecurity_bus::{
+    ApprovalConfig2, ApprovalRow2, DeviceKeyPurpose2, DeviceOperation2, DeviceResponse2,
+    DeviceRole2, EvaluateDeviceRequest2, ExecuteDeviceRequest2, ModuleConfig, PolicyInfo, names,
+};
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let library = std::path::PathBuf::from(
@@ -35,7 +38,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let task = broker.spawn(bus.clone());
     let lifecycle = ModuleHost::new(broker);
     let host = Connection::connect(bus.connect().await?).await?;
-    let mut configuration = ModuleConfig {
+    let configuration = ModuleConfig {
         device: Some(fixture::device_config()),
         trusted_host: host.unique_name().map(|n| n.to_string()),
         approvals: Some(ApprovalConfig2 {
@@ -49,15 +52,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     };
     let loaded =
         lifecycle.load_file_with_config(&library, serde_json::to_value(&configuration)?)?;
-    let module = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Some(peer) = host.name_owner(names::INTERFACE).await? {
-                break tinybus::Result::Ok(peer);
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await??;
+    let module = wait_owner(&host).await?;
     let store = Arc::new(Mutex::new(fixture::store::DiskStore::open(
         &root.join("approvals.journal"),
     )?));
@@ -65,206 +60,22 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let proxy = host
         .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
         .with_timeout(Duration::from_secs(10));
-    assert!(proxy.attestation().await?.is_some());
-    let info: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
-    assert!(
-        info.capabilities
-            .contains(&names::methods::EXECUTE_DEVICE2.to_owned())
-    );
-    assert!(!serde_json::to_string(&info)?.contains("static_secret"));
-    let rejected = EvaluateDeviceRequest2 {
-        request: fixture::request(1, DeviceOperation2::Cancel),
-        audit: fixture::audit(1),
-    };
-    assert!(
-        proxy
-            .call::<ApprovalRow2>(names::methods::EVALUATE_DEVICE2, (rejected.clone(),))
-            .await
-            .is_err()
-    );
-    let attacker = Connection::connect(bus.connect().await?).await?;
-    assert!(
-        attacker
-            .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
-            .call_confidential::<ApprovalRow2>(names::methods::EVALUATE_DEVICE2, (rejected,))
-            .await
-            .is_err()
-    );
-    let malformed = serde_json::json!([{"request":{"scope_id":"a","call_id":"private-secret","ttl_ms":1,"operation":{"kind":"seal","handle":"private-secret","plaintext":"private-secret"}},"audit":fixture::audit(1)}]);
-    let error = proxy
-        .call_confidential::<ApprovalRow2>(names::methods::EVALUATE_DEVICE2, malformed)
-        .await
-        .err()
-        .ok_or("fixture malformed call accepted")?;
-    assert!(!error.to_string().contains("private-secret"));
+    routing_checks(&proxy, &bus, &module).await?;
     let mut sequence = 1;
-    let server = fixture::run(
+    let key = native_protocols(&proxy, &store, &mut sequence).await?;
+    let observer = generation_boundary(
+        &lifecycle,
+        &loaded.name,
+        configuration,
         &proxy,
         &store,
         &mut sequence,
-        DeviceOperation2::Key {
-            purpose: DeviceKeyPurpose2::Static,
-        },
+        key,
     )
     .await?;
-    let client = fixture::run(
-        &proxy,
-        &store,
-        &mut sequence,
-        DeviceOperation2::Key {
-            purpose: DeviceKeyPurpose2::Ephemeral,
-        },
-    )
-    .await?;
-    let core_public = server.public_key.ok_or("fixture public")?;
-    let server = server.handle.ok_or("fixture handle")?;
-    let client_public = client.public_key.ok_or("fixture public")?;
-    let client = client.handle.ok_or("fixture handle")?;
-    let handshake = fixture::run(
-        &proxy,
-        &store,
-        &mut sequence,
-        DeviceOperation2::SealHandshake {
-            handle: client.clone(),
-            peer: core_public.clone(),
-            plaintext: b"private-secret".to_vec(),
-        },
-    )
-    .await?
-    .bytes;
-    let opened = fixture::run(
-        &proxy,
-        &store,
-        &mut sequence,
-        DeviceOperation2::OpenHandshake {
-            handle: server.clone(),
-            frame: handshake.clone(),
-        },
-    )
-    .await?;
-    assert_eq!(opened.bytes, b"private-secret");
-    assert_eq!(opened.public_key, Some(client_public.clone()));
-    assert!(
-        fixture::run(
-            &proxy,
-            &store,
-            &mut sequence,
-            DeviceOperation2::OpenHandshake {
-                handle: server.clone(),
-                frame: handshake
-            }
-        )
-        .await
-        .is_err()
-    );
-    let ack = fixture::run(
-        &proxy,
-        &store,
-        &mut sequence,
-        DeviceOperation2::SealAck {
-            handle: server.clone(),
-            peer: client_public,
-            plaintext: b"ack".to_vec(),
-        },
-    )
-    .await?
-    .bytes;
-    assert_eq!(
-        fixture::run(
-            &proxy,
-            &store,
-            &mut sequence,
-            DeviceOperation2::OpenAck {
-                handle: client,
-                peer: core_public.clone(),
-                frame: ack
-            }
-        )
-        .await?
-        .bytes,
-        b"ack"
-    );
-    native_tunnel(&proxy, &store, &mut sequence, &server, &core_public).await?;
-    fixture::run(
-        &proxy,
-        &store,
-        &mut sequence,
-        DeviceOperation2::Revoke {
-            handle: server.clone(),
-        },
-    )
-    .await?;
-    assert!(
-        fixture::run(
-            &proxy,
-            &store,
-            &mut sequence,
-            DeviceOperation2::OpenHandshake {
-                handle: server,
-                frame: vec![3; 73]
-            }
-        )
-        .await
-        .is_err()
-    );
-    let key = fixture::run(
-        &proxy,
-        &store,
-        &mut sequence,
-        DeviceOperation2::Key {
-            purpose: DeviceKeyPurpose2::Static,
-        },
-    )
-    .await?
-    .handle
-    .ok_or("fixture handle")?;
-    // Actual SDK reinit retains the callback peer/registrations while advancing generation.
-    for scope in &mut configuration
-        .device
-        .as_mut()
-        .ok_or("fixture config")?
-        .scopes
-    {
-        scope.static_secret = None;
-    }
-    configuration
-        .device
-        .as_mut()
-        .ok_or("fixture config")?
-        .max_handles = 16;
-    lifecycle
-        .reinitialize(&loaded.name, serde_json::to_value(configuration)?)
-        .await?;
-    // Valid new-generation approval/audit receipts cannot revive the old handle.
-    assert!(
-        fixture::run_at(
-            &proxy,
-            &store,
-            &mut sequence,
-            DeviceOperation2::Revoke { handle: key },
-            2
-        )
-        .await
-        .is_err()
-    );
-    let current = fixture::run_at(
-        &proxy,
-        &store,
-        &mut sequence,
-        DeviceOperation2::Key {
-            purpose: DeviceKeyPurpose2::Static,
-        },
-        2,
-    )
-    .await?;
-    let observer = current.handle.ok_or("fixture handle")?;
     let after: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
     assert_eq!(after.generation, 2);
-    let journal = std::fs::read(root.join("approvals.journal"))?;
-    assert!(!String::from_utf8_lossy(&journal).contains("private-secret"));
-    let audit = std::fs::read(root.join("audit.journal"))?;
-    assert!(!audit.is_empty());
-    assert!(!String::from_utf8_lossy(&audit).contains("private-secret"));
+    verify_journals(&root)?;
     lifecycle.shutdown(Duration::from_secs(5)).await;
     assert!(
         proxy
@@ -381,4 +192,268 @@ async fn native_tunnel(
         .is_err()
     );
     Ok(())
+}
+async fn routing_checks(
+    proxy: &tinybus::Proxy,
+    bus: &MemoryBus,
+    module: &tinybus::BusName,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    assert!(proxy.attestation().await?.is_some());
+    let info: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
+    assert!(
+        info.capabilities
+            .contains(&names::methods::EXECUTE_DEVICE2.to_owned())
+    );
+    assert!(!serde_json::to_string(&info)?.contains("static_secret"));
+    let rejected = EvaluateDeviceRequest2 {
+        request: fixture::request(1, DeviceOperation2::Cancel),
+        audit: fixture::audit(1),
+    };
+    assert!(
+        proxy
+            .call::<ApprovalRow2>(names::methods::EVALUATE_DEVICE2, (rejected.clone(),))
+            .await
+            .is_err()
+    );
+    let attacker = Connection::connect(bus.connect().await?).await?;
+    assert!(
+        attacker
+            .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
+            .call_confidential::<ApprovalRow2>(names::methods::EVALUATE_DEVICE2, (rejected,))
+            .await
+            .is_err()
+    );
+    let malformed = serde_json::json!([{"request":{"scope_id":"a","call_id":"private-secret","ttl_ms":1,"operation":{"kind":"seal","handle":"private-secret","plaintext":"private-secret"}},"audit":fixture::audit(1)}]);
+    let error = proxy
+        .call_confidential::<ApprovalRow2>(names::methods::EVALUATE_DEVICE2, malformed)
+        .await
+        .err()
+        .ok_or("fixture malformed call accepted")?;
+    assert!(!error.to_string().contains("private-secret"));
+    Ok(())
+}
+async fn handshake_roundtrip(
+    proxy: &tinybus::Proxy,
+    store: &Arc<Mutex<fixture::store::DiskStore>>,
+    sequence: &mut u64,
+    client: &str,
+    server: &str,
+    core_public: &str,
+    client_public: &str,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let handshake = fixture::run(
+        proxy,
+        store,
+        sequence,
+        DeviceOperation2::SealHandshake {
+            handle: client.into(),
+            peer: core_public.into(),
+            plaintext: b"private-secret".to_vec(),
+        },
+    )
+    .await?
+    .bytes;
+    let opened = fixture::run(
+        proxy,
+        store,
+        sequence,
+        DeviceOperation2::OpenHandshake {
+            handle: server.into(),
+            frame: handshake.clone(),
+        },
+    )
+    .await?;
+    assert_eq!(opened.bytes, b"private-secret");
+    assert_eq!(opened.public_key, Some(client_public.into()));
+    assert!(
+        fixture::run(
+            proxy,
+            store,
+            sequence,
+            DeviceOperation2::OpenHandshake {
+                handle: server.into(),
+                frame: handshake
+            }
+        )
+        .await
+        .is_err()
+    );
+    Ok(())
+}
+async fn native_protocols(
+    proxy: &tinybus::Proxy,
+    store: &Arc<Mutex<fixture::store::DiskStore>>,
+    sequence: &mut u64,
+) -> std::result::Result<String, Box<dyn std::error::Error>> {
+    let server = fixture::run(
+        proxy,
+        store,
+        sequence,
+        DeviceOperation2::Key {
+            purpose: DeviceKeyPurpose2::Static,
+        },
+    )
+    .await?;
+    let client = fixture::run(
+        proxy,
+        store,
+        sequence,
+        DeviceOperation2::Key {
+            purpose: DeviceKeyPurpose2::Ephemeral,
+        },
+    )
+    .await?;
+    let core_public = server.public_key.ok_or("fixture public")?;
+    let server = server.handle.ok_or("fixture handle")?;
+    let client_public = client.public_key.ok_or("fixture public")?;
+    let client = client.handle.ok_or("fixture handle")?;
+    handshake_roundtrip(
+        proxy,
+        store,
+        sequence,
+        &client,
+        &server,
+        &core_public,
+        &client_public,
+    )
+    .await?;
+    let ack = fixture::run(
+        proxy,
+        store,
+        sequence,
+        DeviceOperation2::SealAck {
+            handle: server.clone(),
+            peer: client_public,
+            plaintext: b"ack".to_vec(),
+        },
+    )
+    .await?
+    .bytes;
+    assert_eq!(
+        fixture::run(
+            proxy,
+            store,
+            sequence,
+            DeviceOperation2::OpenAck {
+                handle: client,
+                peer: core_public.clone(),
+                frame: ack
+            }
+        )
+        .await?
+        .bytes,
+        b"ack"
+    );
+    native_tunnel(proxy, store, sequence, &server, &core_public).await?;
+    fixture::run(
+        proxy,
+        store,
+        sequence,
+        DeviceOperation2::Revoke {
+            handle: server.clone(),
+        },
+    )
+    .await?;
+    assert!(
+        fixture::run(
+            proxy,
+            store,
+            sequence,
+            DeviceOperation2::OpenHandshake {
+                handle: server,
+                frame: vec![3; 73]
+            }
+        )
+        .await
+        .is_err()
+    );
+    let key = fixture::run(
+        proxy,
+        store,
+        sequence,
+        DeviceOperation2::Key {
+            purpose: DeviceKeyPurpose2::Static,
+        },
+    )
+    .await?
+    .handle
+    .ok_or("fixture handle")?;
+    Ok(key)
+}
+async fn generation_boundary(
+    lifecycle: &ModuleHost,
+    name: &str,
+    mut configuration: ModuleConfig,
+    proxy: &tinybus::Proxy,
+    store: &Arc<Mutex<fixture::store::DiskStore>>,
+    sequence: &mut u64,
+    key: String,
+) -> std::result::Result<String, Box<dyn std::error::Error>> {
+    // Actual SDK reinit retains the callback peer/registrations while advancing generation.
+    for scope in &mut configuration
+        .device
+        .as_mut()
+        .ok_or("fixture config")?
+        .scopes
+    {
+        scope.static_secret = None;
+    }
+    configuration
+        .device
+        .as_mut()
+        .ok_or("fixture config")?
+        .max_handles = 16;
+    lifecycle
+        .reinitialize(name, serde_json::to_value(configuration)?)
+        .await?;
+    // Valid new-generation approval/audit receipts cannot revive the old handle.
+    assert!(
+        fixture::run_at(
+            proxy,
+            store,
+            sequence,
+            DeviceOperation2::Revoke { handle: key },
+            2
+        )
+        .await
+        .is_err()
+    );
+    let current = fixture::run_at(
+        proxy,
+        store,
+        sequence,
+        DeviceOperation2::Key {
+            purpose: DeviceKeyPurpose2::Static,
+        },
+        2,
+    )
+    .await?;
+    let observer = current.handle.ok_or("fixture handle")?;
+    Ok(observer)
+}
+
+fn verify_journals(root: &std::path::Path) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let journal = std::fs::read(root.join("approvals.journal"))?;
+    assert!(!String::from_utf8_lossy(&journal).contains("private-secret"));
+    let audit = std::fs::read(root.join("audit.journal"))?;
+    if audit.is_empty() {
+        return Err("fixture empty audit".into());
+    }
+    assert!(!String::from_utf8_lossy(&audit).contains("private-secret"));
+    Ok(())
+}
+
+async fn wait_owner(
+    host: &Connection,
+) -> std::result::Result<tinybus::BusName, Box<dyn std::error::Error>> {
+    let peer = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(peer) = host.name_owner(names::INTERFACE).await? {
+                break tinybus::Result::Ok(peer);
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await??;
+    Ok(peer)
 }

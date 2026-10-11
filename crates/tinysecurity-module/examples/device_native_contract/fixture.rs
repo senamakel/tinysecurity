@@ -4,7 +4,12 @@ pub(crate) mod callback;
 #[path = "../approval_native_contract/store.rs"]
 pub(crate) mod store;
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
-use tinysecurity_bus::*;
+use tinysecurity_bus::{
+    AccessTier, ApprovalChoice2, ApprovalLifecycle2, ApprovalRow2, ApprovalScope2, AuditConfig2,
+    AuditCorrelation2, DecideRequest2, DeviceConfig2, DeviceOperation2, DeviceRequest2,
+    DeviceResponse2, DeviceScope2, EvaluateDeviceRequest2, ExecuteDeviceRequest2, Origin,
+    SubjectScope, callback_names2, names,
+};
 pub(crate) fn audit(sequence: u64) -> AuditCorrelation2 {
     AuditCorrelation2 {
         event_id: format!("{sequence:032x}"),
