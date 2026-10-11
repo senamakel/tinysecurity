@@ -34,16 +34,20 @@ jobs:
           # the token in git config.
           persist-credentials: false
           submodules: recursive
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
 
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Test native coverage gate
+        run: python .github/scripts/check-native-coverage_tests.py
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -200,12 +204,47 @@ jobs:
             exit 1
           fi
 
-      # LLVM paths on Windows use native drive prefixes while Git Bash pwd
-      # uses /d/... . The Linux lane owns the exact per-file coverage gate;
-      # all three native lanes still build, test and load the real module.
+      # Keep the existing Linux gate; Windows reports use native drive paths
+      # and have a separate exact-root parser and required Windows sources.
       - name: Require 90% line coverage in every source file
         if: ${{ runner.os == 'Linux' }}
         run: .github/scripts/check-file-coverage.sh 90 coverage.json
+
+      - name: Collect native Windows coverage
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo llvm-cov --locked --workspace --all-targets --all-features --json --output-path coverage-windows.json
+          if ($LASTEXITCODE -ne 0) { throw 'native Windows coverage tests failed' }
+          cargo llvm-cov report --all-features --lcov --output-path coverage-windows.info
+          if ($LASTEXITCODE -ne 0) { throw 'native Windows LCOV report failed' }
+
+      - name: Require native Windows file and changed-line coverage
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = $env:PR_BASE
+          if (-not $base) {
+            $base = git merge-base HEAD "refs/remotes/origin/$env:BASE_BRANCH"
+            if ($LASTEXITCODE -ne 0) { throw 'canonical base resolution failed' }
+          }
+          python .github/scripts/check-native-coverage.py --json coverage-windows.json --lcov coverage-windows.info --base $base --root (Get-Location).Path
+          if ($LASTEXITCODE -ne 0) { throw 'native Windows coverage gate failed' }
+
+      - name: Upload native Windows coverage reports
+        if: ${{ always() && runner.os == 'Windows' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-native-windows-${{ github.sha }}
+          path: |
+            coverage-windows.json
+            coverage-windows.info
+          if-no-files-found: warn
 
       - name: Upload coverage report
         if: ${{ always() && runner.os == 'Linux' }}
