@@ -3,7 +3,11 @@
 //! Generic get/set ports provide neither cross-provider CAS nor durable deletion
 //! authority. Callers must keep one boot owner per target; legacy sources are
 //! retained even after exact readback. An in-process reservation rejects overlap
-//! without holding a lock across driver I/O.
+//! without holding a lock across driver I/O. Once mutation starts, cancellation,
+//! panic, backend failure or failed readback permanently latches this resolver
+//! unavailable. Generic ports cannot prove a canceled mutation has stopped.
+//! Replacing the resolver is not recovery authority: the owner must establish
+//! that all old backend mutations are quiescent before restarting resolution.
 use crate::{Error, Result, secretstore::project_error};
 use std::sync::{
     Arc,
@@ -109,6 +113,8 @@ impl MasterResolver {
     /// # Errors
     /// Unresolved, malformed, ambiguous or inaccessible state fails closed.
     /// Overlap returns unavailable; no async I/O runs under a state lock.
+    /// Mutation uncertainty remains unavailable until independently reconciled;
+    /// constructing a new resolver does not establish backend quiescence.
     pub async fn resolve(&self) -> Result<MasterKey> {
         if self
             .reserved
@@ -117,7 +123,10 @@ impl MasterResolver {
         {
             return Err(Error::KeyringUnavailable);
         }
-        let _reservation = Reservation(&self.reserved);
+        let mut reservation = Reservation {
+            reserved: &self.reserved,
+            uncertain: false,
+        };
         if let Some(bytes) = self
             .target
             .get(&self.name)
@@ -150,6 +159,8 @@ impl MasterResolver {
             let encoded = crypto::key_to_hex(&key);
             (MasterKey(key), Zeroizing::new(encoded.as_bytes().to_vec()))
         };
+        // Set futures can detach backend work when dropped. Fence before polling.
+        reservation.uncertain = true;
         self.target
             .set(&self.name, &encoded)
             .await
@@ -163,13 +174,19 @@ impl MasterResolver {
         if *readback != *encoded {
             return Err(Error::SecretInvalid);
         }
+        reservation.uncertain = false;
         Ok(key)
     }
 }
-struct Reservation<'a>(&'a AtomicBool);
+struct Reservation<'a> {
+    reserved: &'a AtomicBool,
+    uncertain: bool,
+}
 impl Drop for Reservation<'_> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        if !self.uncertain {
+            self.reserved.store(false, Ordering::Release);
+        }
     }
 }
 fn parse(bytes: &[u8]) -> Result<MasterKey> {

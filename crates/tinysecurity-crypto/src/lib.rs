@@ -3,7 +3,7 @@
 //! Password operations preserve the legacy Argon2id/AES-256-GCM payload.
 //! Keys stay native and are never included in diagnostic representations.
 //! Injected secret storage and bounded same-slot master resolution delegate
-//! historical ChaCha formats to the accepted storage driver; no OS capability
+//! historical `ChaCha` formats to the accepted storage driver; no OS capability
 //! or bus advertisement is added by this library checkpoint.
 //!
 //! ```

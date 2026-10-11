@@ -243,6 +243,7 @@ enum Fault {
     WrongReadback,
     DeniedReadback,
     Pending,
+    PanicWrite,
 }
 #[derive(Debug)]
 struct FaultTarget {
@@ -268,6 +269,10 @@ impl SecretStore for FaultTarget {
     }
     async fn set(&self, _: &str, _: &[u8]) -> DriverResult<()> {
         self.writes.fetch_add(1, Ordering::SeqCst);
+        assert!(
+            !matches!(self.fault, Fault::PanicWrite),
+            "fixture write panic"
+        );
         if matches!(self.fault, Fault::Write) {
             Err(StorageError::unavailable("private fixture"))
         } else {
@@ -311,6 +316,12 @@ async fn failed_copy_or_readback_preserves_legacy_without_mint()
         assert!(resolver.resolve().await.is_err());
         assert_eq!(mint.0.load(Ordering::SeqCst), 0);
         assert_eq!(target.writes.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            resolver.resolve().await,
+            Err(Error::KeyringUnavailable)
+        ));
+        assert_eq!(target.writes.load(Ordering::SeqCst), 1);
+        assert_eq!(mint.0.load(Ordering::SeqCst), 0);
         assert_eq!(
             &*source
                 .get("app:master_key")
@@ -370,5 +381,166 @@ async fn a_later_denied_source_blocks_copy_of_an_earlier_valid_master()
     );
     assert!(target.get("app:master_key").await?.is_none());
     assert_eq!(mint.0.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[derive(Debug)]
+struct DetachedTarget {
+    memory: Arc<MemorySecrets>,
+    writes: AtomicUsize,
+    reads: AtomicUsize,
+    entered: Arc<tokio::sync::Notify>,
+    completed: Arc<tokio::sync::Notify>,
+    release: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    readback_gate: bool,
+}
+#[async_trait]
+impl SecretStore for DetachedTarget {
+    async fn get(&self, name: &str) -> DriverResult<Option<Zeroizing<Vec<u8>>>> {
+        let read = self.reads.fetch_add(1, Ordering::SeqCst);
+        if self.readback_gate && read == 1 {
+            self.entered.notify_one();
+            return std::future::pending().await;
+        }
+        self.memory.get(name).await
+    }
+    async fn set(&self, name: &str, value: &[u8]) -> DriverResult<()> {
+        let write = self.writes.fetch_add(1, Ordering::SeqCst);
+        if write != 0 || self.readback_gate {
+            return self.memory.set(name, value).await;
+        }
+        let release = self
+            .release
+            .lock()
+            .map_err(|_| StorageError::unavailable("fixture gate"))?
+            .take()
+            .ok_or_else(|| StorageError::unavailable("fixture gate"))?;
+        let memory = self.memory.clone();
+        let name = name.to_owned();
+        let value = Zeroizing::new(value.to_vec());
+        let entered = self.entered.clone();
+        let completed = self.completed.clone();
+        let runtime = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            entered.notify_one();
+            release
+                .blocking_recv()
+                .map_err(|_| StorageError::unavailable("fixture gate"))?;
+            let result = runtime.block_on(memory.set(&name, &value));
+            completed.notify_one();
+            result
+        })
+        .await
+        .map_err(|_| StorageError::unavailable("fixture worker"))?
+    }
+    async fn delete(&self, _: &str) -> DriverResult<bool> {
+        Err(StorageError::unavailable("must preserve"))
+    }
+    async fn list(&self, _: &str) -> DriverResult<Vec<String>> {
+        Err(StorageError::unavailable("must not enumerate"))
+    }
+    fn backend_name(&self) -> &'static str {
+        "fixture"
+    }
+}
+#[tokio::test]
+async fn canceled_detached_write_blocks_retry_until_safe_reconciliation()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let (release, receiver) = tokio::sync::oneshot::channel();
+    let target = Arc::new(DetachedTarget {
+        memory: Arc::new(MemorySecrets::new()),
+        writes: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+        entered: Arc::new(tokio::sync::Notify::new()),
+        completed: Arc::new(tokio::sync::Notify::new()),
+        release: std::sync::Mutex::new(Some(receiver)),
+        readback_gate: false,
+    });
+    let mint = Arc::new(CountingMint::default());
+    let resolver = MasterResolver::new(target.clone(), vec![], &MasterSlot::App, mint.clone())?;
+    let mut future = Box::pin(resolver.resolve());
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(std::future::Future::poll(future.as_mut(), &mut context).is_pending());
+    target.entered.notified().await;
+    drop(future);
+    let retry = resolver.resolve().await;
+    release.send(()).map_err(|()| "release gate")?;
+    target.completed.notified().await;
+    assert!(matches!(retry, Err(Error::KeyringUnavailable)));
+    assert_eq!(mint.0.load(Ordering::SeqCst), 1);
+    assert_eq!(target.writes.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        resolver.resolve().await,
+        Err(Error::KeyringUnavailable)
+    ));
+    let stored = target
+        .memory
+        .get("app:master_key")
+        .await?
+        .ok_or("missing original")?;
+    assert!(parse(&stored)?.bytes().eq(&[7; 32]));
+    Ok(())
+}
+#[tokio::test]
+async fn canceled_post_write_readback_retains_uncertain_reservation()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let target = Arc::new(DetachedTarget {
+        memory: Arc::new(MemorySecrets::new()),
+        writes: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+        entered: Arc::new(tokio::sync::Notify::new()),
+        completed: Arc::new(tokio::sync::Notify::new()),
+        release: std::sync::Mutex::new(None),
+        readback_gate: true,
+    });
+    let mint = Arc::new(CountingMint::default());
+    let resolver = MasterResolver::new(target.clone(), vec![], &MasterSlot::App, mint.clone())?;
+    let mut future = Box::pin(resolver.resolve());
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(std::future::Future::poll(future.as_mut(), &mut context).is_pending());
+    target.entered.notified().await;
+    drop(future);
+    assert!(matches!(
+        resolver.resolve().await,
+        Err(Error::KeyringUnavailable)
+    ));
+    assert_eq!(mint.0.load(Ordering::SeqCst), 1);
+    assert_eq!(target.writes.load(Ordering::SeqCst), 1);
+    assert!(target.memory.get("app:master_key").await?.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn mutation_panic_latches_without_losing_legacy_key()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let target = Arc::new(FaultTarget {
+        fault: Fault::PanicWrite,
+        reads: AtomicUsize::new(0),
+        writes: AtomicUsize::new(0),
+    });
+    let source = Arc::new(MemorySecrets::new());
+    let original = Zeroizing::new("ab".repeat(32));
+    source.set("app:master_key", original.as_bytes()).await?;
+    let mint = Arc::new(CountingMint::default());
+    let resolver = Arc::new(MasterResolver::new(
+        target.clone(),
+        vec![source.clone()],
+        &MasterSlot::App,
+        mint.clone(),
+    )?);
+    let caller = resolver.clone();
+    let task = tokio::spawn(async move { caller.resolve().await });
+    assert!(task.await.err().ok_or("expected panic")?.is_panic());
+    assert!(matches!(
+        resolver.resolve().await,
+        Err(Error::KeyringUnavailable)
+    ));
+    assert_eq!(target.writes.load(Ordering::SeqCst), 1);
+    assert_eq!(mint.0.load(Ordering::SeqCst), 0);
+    let preserved = source
+        .get("app:master_key")
+        .await?
+        .ok_or("missing legacy")?;
+    assert!(preserved.as_slice().eq(original.as_bytes()));
     Ok(())
 }

@@ -91,9 +91,9 @@ impl SecretCipher {
     }
     /// Write only enc2; empty and disabled values retain historical passthrough.
     /// # Errors
-    /// Oversized input or driver encryption failure.
+    /// Plaintext exceeding one MiB or driver encryption failure.
     pub fn encrypt(&self, value: &str) -> Result<String> {
-        check_value(value)?;
+        check_length(value.len(), MAX_PLAINTEXT_BYTES)?;
         if !self.enabled || value.is_empty() {
             return Ok(value.into());
         }
@@ -103,16 +103,21 @@ impl SecretCipher {
     /// Read enc2, legacy enc or plaintext without changing stored bytes.
     /// # Errors
     /// Malformed, unauthenticated or oversized ciphertext fails closed.
+    /// Encoded limits include historical hex expansion and nonce/tag overhead;
+    /// decoded plaintext is limited to one MiB regardless of encryption setting.
     pub fn decrypt(&self, value: &str) -> Result<Zeroizing<String>> {
-        check_value(value)?;
         let crypto = if value.starts_with("enc2:") {
+            check_envelope(value, 5, 28)?;
             tinystoragedrivers::secrets::crypto::decrypt_enc2(&self.key, value)
         } else if value.starts_with("enc:") {
+            check_envelope(value, 4, 0)?;
             tinystoragedrivers::secrets::crypto::decrypt_legacy_enc(&self.key, value)
         } else {
+            check_length(value.len(), MAX_PLAINTEXT_BYTES)?;
             return Ok(Zeroizing::new(value.into()));
         };
         let bytes = crypto.map_err(|e| project_error(&e))?;
+        check_length(bytes.len(), MAX_PLAINTEXT_BYTES)?;
         let text = std::str::from_utf8(&bytes).map_err(|_| Error::SecretInvalid)?;
         let output = Zeroizing::new(text.into());
         Ok(output)
@@ -131,8 +136,18 @@ impl SecretCipher {
         Ok((plain, replacement))
     }
 }
-fn check_value(value: &str) -> Result<()> {
-    if value.len() > 1_048_576 {
+const MAX_PLAINTEXT_BYTES: usize = 1_048_576;
+// Hex envelopes include their historical prefix, nonce and authentication tag.
+fn check_envelope(value: &str, prefix: usize, overhead: usize) -> Result<()> {
+    let maximum = MAX_PLAINTEXT_BYTES
+        .checked_add(overhead)
+        .and_then(|bytes| bytes.checked_mul(2))
+        .and_then(|hex| hex.checked_add(prefix))
+        .ok_or(Error::Limit)?;
+    check_length(value.len(), maximum)
+}
+fn check_length(length: usize, maximum: usize) -> Result<()> {
+    if length > maximum {
         Err(Error::Limit)
     } else {
         Ok(())

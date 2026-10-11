@@ -249,3 +249,65 @@ async fn denied_read_and_delete_leave_existing_entry_unchanged()
     );
     Ok(())
 }
+
+#[test]
+fn successful_boundary_encryption_is_readable()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let cipher = SecretCipher::new(Zeroizing::new([0x42; 32]), true);
+    for size in [524_257, 524_258, 1_048_576] {
+        let plain = "x".repeat(size);
+        let encrypted = cipher.encrypt(&plain)?;
+        assert_eq!(encrypted.len(), 5 + 2 * (size + 12 + 16));
+        let decoded = cipher.decrypt(&encrypted)?;
+        assert!(decoded.as_str().eq(&plain));
+    }
+    Ok(())
+}
+#[test]
+fn largest_historical_legacy_envelope_migrates_to_readable_enc2()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let cipher = SecretCipher::new(Zeroizing::new([0x42; 32]), true);
+    let legacy = format!("enc:{}", "23".repeat(524_286));
+    assert_eq!(legacy.len(), 1_048_576);
+    let (plain, migrated) = cipher.decrypt_and_migrate(&legacy)?;
+    let migrated = migrated.ok_or("expected replacement")?;
+    assert!(cipher.decrypt(&migrated)?.as_str().eq(plain.as_str()));
+    Ok(())
+}
+
+#[test]
+fn encoded_and_plaintext_limits_cover_enabled_and_disabled_modes()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    for enabled in [true, false] {
+        let cipher = SecretCipher::new(Zeroizing::new([0x42; 32]), enabled);
+        let plain = "x".repeat(1_048_576);
+        assert!(cipher.decrypt(&plain)?.as_str().eq(&plain));
+        assert!(
+            cipher
+                .decrypt(&cipher.encrypt(&plain)?)?
+                .as_str()
+                .eq(&plain)
+        );
+        let oversized = "x".repeat(1_048_577);
+        assert!(matches!(cipher.encrypt(&oversized), Err(Error::Limit)));
+        assert!(matches!(cipher.decrypt(&oversized), Err(Error::Limit)));
+        let legacy = format!("enc:{}", "23".repeat(1_048_576));
+        let (decoded, replacement) = cipher.decrypt_and_migrate(&legacy)?;
+        assert_eq!(decoded.len(), 1_048_576);
+        let replacement = replacement.ok_or("expected migration")?;
+        assert!(cipher.decrypt(&replacement)?.as_str().eq(decoded.as_str()));
+        assert!(matches!(
+            cipher.decrypt(&format!("{legacy}00")),
+            Err(Error::Limit)
+        ));
+        let enc2 =
+            tinystoragedrivers::secrets::crypto::encrypt_enc2(&[0x42; 32], plain.as_bytes())?;
+        assert_eq!(enc2.len(), 2_097_213);
+        assert!(cipher.decrypt(&enc2)?.as_str().eq(&plain));
+        assert!(matches!(
+            cipher.decrypt(&format!("{enc2}00")),
+            Err(Error::Limit)
+        ));
+    }
+    Ok(())
+}
