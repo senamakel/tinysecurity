@@ -101,15 +101,34 @@ class NativeCoverageAdmission(unittest.TestCase):
         workflow = Path(__file__).parents[1].joinpath('workflows/ci.yml').read_text()
         commands = [shlex.split(line.strip()) for line in workflow.splitlines()
                     if line.strip().startswith('cargo llvm-cov ')]
-        collection, export = commands
-        for option in ('--locked', '--workspace', '--all-targets', '--all-features', '--json'):
-            self.assertIn(option, collection)
-        # Validate the actual reporter's parser, rather than trusting its help
-        # table: 0.9.1 lists --all-features there but rejects it for report.
-        parsed = subprocess.run(export + ['--help'], capture_output=True, text=True)
-        self.assertEqual(parsed.returncode, 0, parsed.stderr)
-        self.assertIn('Generate coverage report', parsed.stdout)
-        self.assertEqual(export[:4], ['cargo', 'llvm-cov', 'report', '--lcov'])
+        self.assertEqual(len(commands), 3, 'collect once, then export JSON and LCOV')
+        collection, json_export, lcov_export = commands
+        self.assertEqual(collection, [
+            'cargo', 'llvm-cov', '--locked', '--workspace', '--all-targets',
+            '--all-features', '--no-report',
+        ])
+        # The native fixtures must add their profiles after collection (which
+        # cleans old profiles) and before either export reads that same cohort.
+        native = '.github/scripts/run-native-master-cipher-coverage.sh'
+        steps = [line.strip() for line in workflow.splitlines()]
+        self.assertEqual(steps.count(native), 1)
+        self.assertLess(steps.index(shlex.join(collection)), steps.index(native))
+        self.assertLess(steps.index(native), steps.index(shlex.join(json_export)))
+        for export, format_option, output in (
+                (json_export, '--json', 'coverage-native.json'),
+                (lcov_export, '--lcov', 'coverage-native.info')):
+            with self.subTest(format=format_option):
+                # Report-only commands preserve profiles and cannot recollect
+                # tests or pass collection-only flags to the reporter.
+                self.assertEqual(export, [
+                    'cargo', 'llvm-cov', 'report', format_option,
+                    '--output-path', output,
+                ])
+                # Validate the actual reporter's parser, rather than trusting
+                # its help table: 0.9.1 lists --all-features there but rejects it.
+                parsed = subprocess.run(export + ['--help'], capture_output=True, text=True)
+                self.assertEqual(parsed.returncode, 0, parsed.stderr)
+                self.assertIn('Generate coverage report', parsed.stdout)
 
     def test_accepts_native_drive_paths_and_backslashes(self):
         data = report((WINDOWS, 10, 9), (ACL, 10, 10))
