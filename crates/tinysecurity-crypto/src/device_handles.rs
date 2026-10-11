@@ -41,6 +41,7 @@ struct Entry {
 }
 struct State {
     generation: u64,
+    peer: String,
     scopes: BTreeMap<String, Scope>,
     handles: BTreeMap<String, Entry>,
     bootstrap: BTreeSet<(String, Vec<u8>)>,
@@ -83,18 +84,19 @@ impl Registry {
     /// # Errors
     /// Rejects missing/duplicate subjects, invalid bounds, keys, clocks or entropy.
     pub fn new(
-        mut config: DeviceConfig2,
+        config: DeviceConfig2,
         registrations: &[ApprovalScope2],
         peer: &str,
         generation: u64,
         now: Time,
     ) -> Result<Self> {
-        validate_config(&config)?;
+        let mut config = InitConfig(config);
+        validate_config(&config.0)?;
         if !peer.starts_with(':') || peer.len() > 128 || generation == 0 {
             return Err(Error::DeviceDenied);
         }
         let mut scopes = BTreeMap::new();
-        for scope in &mut config.scopes {
+        for scope in &mut config.0.scopes {
             let registration = registrations
                 .iter()
                 .find(|r| r.scope_id == scope.scope_id)
@@ -103,6 +105,14 @@ impl Registry {
                 || !registration.require_approval
                 || registration.auto_approve_all
                 || scope.scope_id.len() != 32
+                || !scope.scope_id.bytes().all(|b| b.is_ascii_hexdigit())
+                || [
+                    &registration.subject.user,
+                    &registration.subject.workspace,
+                    &registration.subject.agent,
+                ]
+                .iter()
+                .any(|s| s.is_empty() || s.len() > 256)
                 || scopes.contains_key(&scope.scope_id)
             {
                 return Err(Error::DeviceDenied);
@@ -127,13 +137,14 @@ impl Registry {
         }
         Ok(Self(Arc::new(Mutex::new(State {
             generation,
+            peer: peer.into(),
             scopes,
             handles: BTreeMap::new(),
             bootstrap: BTreeSet::new(),
             time: now,
             faulted: false,
             in_flight: 0,
-            limits: config,
+            limits: config.0.clone(),
         }))))
     }
     fn lock(&self) -> Result<MutexGuard<'_, State>> {
@@ -163,6 +174,14 @@ impl Registry {
         if state.in_flight >= state.limits.max_in_flight {
             return Err(Error::DeviceCapacity);
         }
+        let expires_wall = now
+            .wall
+            .checked_add(u64::from(request.ttl_ms))
+            .ok_or(Error::DeviceDenied)?;
+        let expires_monotonic = now
+            .monotonic
+            .checked_add(u64::from(request.ttl_ms))
+            .ok_or(Error::DeviceDenied)?;
         let rate = state.limits.operations_per_minute;
         let scope = state
             .scopes
@@ -184,14 +203,8 @@ impl Registry {
             scope: request.scope_id.clone(),
             epoch,
             generation,
-            expires_wall: now
-                .wall
-                .checked_add(u64::from(request.ttl_ms))
-                .ok_or(Error::DeviceDenied)?,
-            expires_monotonic: now
-                .monotonic
-                .checked_add(u64::from(request.ttl_ms))
-                .ok_or(Error::DeviceDenied)?,
+            expires_wall,
+            expires_monotonic,
         })
     }
     /// Check a reservation after an external await, before returning authority.
@@ -221,12 +234,13 @@ impl Registry {
             Zeroizing::new(serde_json::to_vec(request).map_err(|_| Error::DeviceDenied)?);
         let mut digest = Sha256::new();
         digest.update(b"tinysecurity/device-operation/v1\0");
+        digest.update(state.peer.as_bytes());
         digest.update(&*original);
         let binding = format!("{:x}", digest.finalize());
         Ok(tinysecurity_bus::EvaluateRequest {
             caller: tinysecurity_bus::CallerContext {
                 agent: scope.registration.subject.agent.clone(),
-                call_id: request.call_id.clone(),
+                call_id: format!("device-{binding}"),
                 origin: tinysecurity_bus::Origin::Operator,
                 tier: scope.registration.ceiling.clone(),
                 ..Default::default()
@@ -256,12 +270,32 @@ impl Registry {
         check_operation(operation, state.limits.max_message_bytes)?;
         state.execute(work, operation)
     }
+    /// Return init registrations and current limits without retaining credential inputs.
+    /// # Errors
+    /// Rejects a poisoned native registry.
+    pub fn configuration(&self) -> Result<DeviceConfig2> {
+        Ok(self.lock()?.limits.clone())
+    }
+    /// Validate a proposed SDK configuration before publishing any new generation.
+    /// # Errors
+    /// Rejects changed registrations/credentials, invalid limits or stale generation.
+    pub fn validate_configuration(&self, config: &DeviceConfig2, generation: u64) -> Result<()> {
+        validate_config(config)?;
+        let state = self.lock()?;
+        if generation <= state.generation
+            || config.scopes != state.limits.scopes
+            || state.bootstrap.len() > config.max_bootstrap_nonces as usize
+        {
+            return Err(Error::DeviceDenied);
+        }
+        Ok(())
+    }
     /// Advance accepted SDK configuration atomically, invalidating every old handle/work item.
     /// Credentials and registered subjects are immutable; limits may change explicitly.
     /// # Errors
     /// Rejects invalid limits, changed registrations/credentials or non-increasing generation.
     pub fn reconfigure(&self, mut config: DeviceConfig2, generation: u64) -> Result<()> {
-        validate_config(&config)?;
+        self.validate_configuration(&config, generation)?;
         let mut state = self.lock()?;
         if generation <= state.generation
             || config.scopes.iter().any(|s| s.static_secret.is_some())
@@ -273,9 +307,8 @@ impl Registry {
             scope.static_secret = None;
         }
         state.handles.clear();
-        state.bootstrap.clear();
         for scope in state.scopes.values_mut() {
-            scope.epoch += 1;
+            scope.epoch = scope.epoch.checked_add(1).ok_or(Error::DeviceDenied)?;
         }
         state.generation = generation;
         state.limits = config;
@@ -299,8 +332,21 @@ impl State {
     fn prune(&mut self, now: Time) {
         self.handles
             .retain(|_, e| now.wall < e.expires_wall && now.monotonic < e.expires_monotonic);
-        let handles = &self.handles;
-        self.bootstrap.retain(|(key, _)| handles.contains_key(key));
+        let expired = self
+            .handles
+            .iter()
+            .filter_map(|(id, entry)| match &entry.native {
+                Native::Tunnel(_, key, ephemeral)
+                    if !self.handles.contains_key(key) || !self.handles.contains_key(ephemeral) =>
+                {
+                    Some(id.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for handle in expired {
+            self.handles.remove(&handle);
+        }
     }
     fn live(&self, work: &Reservation, generation: u64, now: Time) -> Result<()> {
         if work.generation != self.generation
@@ -366,29 +412,26 @@ impl State {
         if frame.len() < header + 40 {
             return Err(Error::InvalidInput);
         }
-        let nonce = (handle.to_owned(), frame[..header + 24].to_vec());
+        let purpose = if peer.is_some() {
+            DeviceKeyPurpose2::Ephemeral
+        } else {
+            DeviceKeyPurpose2::Static
+        };
+        let key = self.key(handle, work, purpose)?;
+        let nonce = (
+            format!("{}:{}", work.scope, key.public_key().encode()),
+            frame[..header + 24].to_vec(),
+        );
         if self.bootstrap.contains(&nonce) {
             return Err(Error::Replay);
         }
-        if self
-            .bootstrap
-            .iter()
-            .filter(|(key, _)| key == handle)
-            .count()
-            >= self.limits.max_bootstrap_nonces as usize
-        {
+        if self.bootstrap.len() >= self.limits.max_bootstrap_nonces as usize {
             return Err(Error::DeviceCapacity);
         }
         let (public, plaintext) = if let Some(peer) = peer {
-            (
-                None,
-                self.key(handle, work, DeviceKeyPurpose2::Ephemeral)?
-                    .open_ack(PublicKey::decode(peer)?, frame)?,
-            )
+            (None, key.open_ack(PublicKey::decode(peer)?, frame)?)
         } else {
-            let (public, plaintext) = self
-                .key(handle, work, DeviceKeyPurpose2::Static)?
-                .open_handshake(frame)?;
+            let (public, plaintext) = key.open_handshake(frame)?;
             (Some(public.encode()), plaintext)
         };
         self.bootstrap.insert(nonce);
@@ -489,22 +532,25 @@ impl State {
                 self.entry(handle, work)?;
                 self.handles.remove(handle);
                 self.handles.retain(|_, e| !matches!(&e.native, Native::Tunnel(_, a, b) if a == handle || b == handle));
-                self.bootstrap.retain(|(key, _)| key != handle);
-                // Fence work admitted before revocation, including work already awaiting audit.
-                self.scopes
+                // Fence already admitted work while leaving unrelated handles usable.
+                let scope = self
+                    .scopes
                     .get_mut(&work.scope)
-                    .ok_or(Error::DeviceDenied)?
-                    .epoch += 1;
-                self.handles.retain(|_, e| e.scope != work.scope);
+                    .ok_or(Error::DeviceDenied)?;
+                scope.epoch = scope.epoch.checked_add(1).ok_or(Error::DeviceDenied)?;
+                for entry in self.handles.values_mut().filter(|e| e.scope == work.scope) {
+                    entry.epoch = scope.epoch;
+                }
             }
             Op::Cancel => {
-                self.scopes
+                let scope = self
+                    .scopes
                     .get_mut(&work.scope)
-                    .ok_or(Error::DeviceDenied)?
-                    .epoch += 1;
+                    .ok_or(Error::DeviceDenied)?;
+                scope.epoch = scope.epoch.checked_add(1).ok_or(Error::DeviceDenied)?;
                 self.handles.retain(|_, e| e.scope != work.scope);
-                self.bootstrap
-                    .retain(|(key, _)| self.handles.contains_key(key));
+                // Keep authenticated replay evidence through cancellation: an imported
+                // static key must not accept an old bootstrap when a new handle is issued.
             }
         }
         Ok(response)
@@ -564,3 +610,47 @@ fn check_operation(operation: &DeviceOperation2, max: u32) -> Result<()> {
 #[cfg(test)]
 #[path = "device_handles_tests.rs"]
 mod tests;
+
+struct InitConfig(DeviceConfig2);
+impl Drop for InitConfig {
+    fn drop(&mut self) {
+        for scope in &mut self.0.scopes {
+            if let Some(secret) = &mut scope.static_secret {
+                zeroize::Zeroize::zeroize(secret);
+            }
+        }
+    }
+}
+/// Owned invocation payload wiped after native work or callback cancellation.
+pub struct ConfidentialRequest(DeviceRequest2);
+impl std::fmt::Debug for ConfidentialRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ConfidentialRequest([REDACTED])")
+    }
+}
+impl ConfidentialRequest {
+    /// Take ownership of a decoded confidential request.
+    #[must_use]
+    pub fn new(request: DeviceRequest2) -> Self {
+        Self(request)
+    }
+    /// Borrow its exact operation without duplicating private buffers.
+    #[must_use]
+    pub fn request(&self) -> &DeviceRequest2 {
+        &self.0
+    }
+}
+impl Drop for ConfidentialRequest {
+    fn drop(&mut self) {
+        use DeviceOperation2 as Op;
+        match &mut self.0.operation {
+            Op::Seal { plaintext, .. }
+            | Op::SealHandshake { plaintext, .. }
+            | Op::SealAck { plaintext, .. } => zeroize::Zeroize::zeroize(plaintext),
+            Op::Open { frame, .. }
+            | Op::OpenHandshake { frame, .. }
+            | Op::OpenAck { frame, .. } => zeroize::Zeroize::zeroize(frame),
+            _ => {}
+        }
+    }
+}

@@ -64,7 +64,16 @@ impl<T: Interface> Interface for Authenticated<T> {
         context: &CallContext,
     ) -> Result<Value> {
         self.binding.authorize(context)?;
-        self.inner.call(member, args).await
+        let result = self.inner.call(member, args).await;
+        if matches!(
+            member.as_str(),
+            tinysecurity_bus::names::methods::EVALUATE_DEVICE2
+                | tinysecurity_bus::names::methods::EXECUTE_DEVICE2
+        ) {
+            result.map_err(|_| tinybus::Error::failed("device authority denied"))
+        } else {
+            result
+        }
     }
 }
 

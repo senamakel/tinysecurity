@@ -88,3 +88,158 @@ fn authenticated_bootstrap_is_accepted_once_and_duplicate_is_denied() -> TestRes
     );
     Ok(())
 }
+
+#[test]
+fn static_key_aliases_cannot_bypass_bootstrap_replay() -> TestResult {
+    let reg = registry()?;
+    let (first, public) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (alias, same) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    assert_eq!(public, same);
+    let client = KeyPair::from_secret(Zeroizing::new([3; 32]))?;
+    let frame = client.seal_handshake(PublicKey::decode(&public)?, b"fixture-private")?;
+    run(
+        &reg,
+        'a',
+        DeviceOperation2::OpenHandshake {
+            handle: first,
+            frame: frame.clone(),
+        },
+    )?;
+    assert!(matches!(
+        run(
+            &reg,
+            'a',
+            DeviceOperation2::OpenHandshake {
+                handle: alias,
+                frame
+            }
+        ),
+        Err(Error::Replay)
+    ));
+    Ok(())
+}
+#[test]
+fn failed_deadline_reservation_does_not_consume_work_capacity() -> TestResult {
+    let mut cfg = config();
+    cfg.max_in_flight = 1;
+    let reg = Registry::new(
+        cfg,
+        &[registration(&"a".repeat(32)), registration(&"b".repeat(32))],
+        ":1.1",
+        1,
+        Time {
+            wall: u64::MAX - 1,
+            monotonic: 0,
+        },
+    )?;
+    let mut req = request('a', DeviceOperation2::Cancel);
+    req.ttl_ms = 2;
+    assert!(
+        reg.reserve(
+            &req,
+            1,
+            Time {
+                wall: u64::MAX - 1,
+                monotonic: 0
+            }
+        )
+        .is_err()
+    );
+    req.ttl_ms = 1;
+    assert!(
+        reg.reserve(
+            &req,
+            1,
+            Time {
+                wall: u64::MAX - 1,
+                monotonic: 0
+            }
+        )
+        .is_ok()
+    );
+    Ok(())
+}
+fn tunnel(
+    reg: &Registry,
+    key: &str,
+    eph: &str,
+    peer: &str,
+    peer_eph: &str,
+    role: DeviceRole2,
+) -> Result<String> {
+    run(
+        reg,
+        'a',
+        DeviceOperation2::Tunnel {
+            key: key.into(),
+            ephemeral: eph.into(),
+            peer_static: peer.into(),
+            peer_ephemeral: peer_eph.into(),
+            role,
+        },
+    )?
+    .handle
+    .ok_or(Error::DeviceDenied)
+}
+#[test]
+fn tunnel_authority_ends_when_its_parent_key_expires() -> TestResult {
+    let reg = registry()?;
+    let mut req = request(
+        'a',
+        DeviceOperation2::Key {
+            purpose: DeviceKeyPurpose2::Static,
+        },
+    );
+    req.ttl_ms = 1;
+    let work = reg.reserve(&req, 1, time(0))?;
+    let own = reg
+        .execute(&work, &req.operation, 1, time(0))?
+        .handle
+        .ok_or(Error::DeviceDenied)?;
+    drop(work);
+    let (eph, _) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let peer = KeyPair::from_secret(Zeroizing::new([3; 32]))?;
+    let peer_eph = KeyPair::from_secret(Zeroizing::new([4; 32]))?;
+    let handle = tunnel(
+        &reg,
+        &own,
+        &eph,
+        &peer.public_key().encode(),
+        &peer_eph.public_key().encode(),
+        DeviceRole2::Client,
+    )?;
+    let req = request(
+        'a',
+        DeviceOperation2::Seal {
+            handle,
+            plaintext: vec![],
+        },
+    );
+    let work = reg.reserve(&req, 1, time(1))?;
+    assert!(reg.execute(&work, &req.operation, 1, time(1)).is_err());
+    Ok(())
+}
+#[test]
+fn revocation_fences_pending_work_but_preserves_unrelated_handles() -> TestResult {
+    let reg = registry()?;
+    let (revoked, _) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (unrelated, _) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let pending = reg.reserve(&request('a', DeviceOperation2::Cancel), 1, time(0))?;
+    run(&reg, 'a', DeviceOperation2::Revoke { handle: revoked })?;
+    assert!(reg.validate(&pending, 1, time(0)).is_err());
+    drop(pending);
+    let peer = KeyPair::from_secret(Zeroizing::new([5; 32]))?;
+    assert!(
+        run(
+            &reg,
+            'a',
+            DeviceOperation2::SealHandshake {
+                handle: unrelated,
+                peer: peer.public_key().encode(),
+                plaintext: vec![]
+            }
+        )
+        .is_ok()
+    );
+    Ok(())
+}

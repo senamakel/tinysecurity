@@ -5,6 +5,10 @@ pub const INTERFACE: &str = "ai.tinyhumans.tinysecurity.Policy";
 pub const OBJECT_PATH: &str = "/ai/tinyhumans/tinysecurity/Policy";
 /// Method names; availability is reported by `PolicyInfo`.
 pub mod methods {
+    /// Begin exact authenticated-human review for confidential native device work.
+    pub const EVALUATE_DEVICE2: &str = "EvaluateDevice2";
+    /// Execute exact reviewed confidential work using scoped opaque handles.
+    pub const EXECUTE_DEVICE2: &str = "ExecuteDevice2";
     /// Trusted legacy history migration without broad grant revival.
     pub const IMPORT_APPROVAL_HISTORY2: &str = "ImportApprovalHistory2";
     /// Durable exact approval evaluation.
@@ -92,6 +96,8 @@ pub mod methods {
 }
 /// Bootstrap implemented methods only.
 pub const METHODS: &[&str] = &[
+    methods::EVALUATE_DEVICE2,
+    methods::EXECUTE_DEVICE2,
     methods::PLAN,
     methods::EVALUATE_SANDBOX_APPROVAL2,
     methods::CONSUME_SANDBOX_PLAN2,

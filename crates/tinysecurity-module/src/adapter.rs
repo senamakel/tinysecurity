@@ -27,6 +27,7 @@ static ACTIVE: OnceLock<Arc<RwLock<Policy>>> = OnceLock::new();
 #[derive(Clone)]
 struct PolicyService {
     sandbox_clock: Arc<dyn tinysecurity::approval::Clock>,
+    device: Option<Arc<tinysecurity::crypto::device_handles::Registry>>,
     sandbox: Option<Arc<tinysecurity::sandbox::Engine>>,
     approvals: Option<Arc<tinysecurity::approval::Engine>>,
     policy: Arc<RwLock<Policy>>,
@@ -177,6 +178,20 @@ impl PolicyService {
 }
 #[tinybus::interface(name = "ai.tinyhumans.tinysecurity.Policy")]
 impl PolicyService {
+    #[tinybus(confidential)]
+    async fn evaluate_device2(
+        &self,
+        request: tinysecurity_bus::EvaluateDeviceRequest2,
+    ) -> BusResult<tinysecurity_bus::ApprovalRow2> {
+        self.device_approval(request).await
+    }
+    #[tinybus(confidential)]
+    async fn execute_device2(
+        &self,
+        request: tinysecurity_bus::ExecuteDeviceRequest2,
+    ) -> BusResult<tinysecurity_bus::DeviceResponse2> {
+        self.device_execute(request).await
+    }
     async fn plan(
         &self,
         _request: tinysecurity_bus::SandboxPlanRequest,
@@ -737,6 +752,7 @@ fn service_for(
 ) -> PolicyService {
     PolicyService {
         sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
+        device: None,
         sandbox: None,
         approvals: None,
         policy,
@@ -886,9 +902,12 @@ async fn configured_policy(config: ModuleConfig) -> BusResult<Policy> {
     .await
     .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
 }
-async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
+async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()> {
     // Validate before activation. The SDK serializes reinitializations and
     // preserves a fault latch; this adapter never provides retry RPCs.
+    let device_config = config.device.take();
+    let device_clock: Arc<dyn tinysecurity::approval::Clock> =
+        Arc::new(tinysecurity::approval::SystemClock::default());
     let sandbox_config = config.sandbox.clone();
     let judge_config = config.judge.clone();
     let audit_config = config.audit.clone();
@@ -909,6 +928,14 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
     )
     .await?;
     let candidate = configured_policy(config).await?;
+    let device = device::configured(
+        device_config.clone(),
+        requested_host.as_deref(),
+        approval_config.as_ref(),
+        audit_config.as_ref(),
+        candidate.info().generation,
+        device_clock.as_ref(),
+    )?;
     let audit = configured_audit(&connection, &binding, audit_config.clone(), &candidate)?;
     let approvals = configured_approvals(
         &connection,
@@ -956,11 +983,14 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
                 .advance_generation(candidate.info().generation)
                 .map_err(approval_failure)?;
         }
+        device::advance(device.as_ref(), device_config, candidate.info().generation)?;
         *guard = candidate;
         return Ok(());
     }
     let policy = Arc::new(RwLock::new(candidate));
     let mut service = service_for(Arc::clone(&policy), audit.clone());
+    service.device = device.clone();
+    service.sandbox_clock = device_clock;
     service.sandbox = sandbox.as_ref().map(|(_, engine)| Arc::clone(engine));
     service.approvals = approvals.as_ref().map(|(_, engine)| Arc::clone(engine));
     if let Some(engine) = &service.approvals {
@@ -973,6 +1003,7 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
         )
         .await?;
     connection.request_name(names::INTERFACE).await?;
+    device::activate(device.as_ref())?;
     SANDBOX
         .set(sandbox)
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
@@ -995,7 +1026,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
+    methods = ["EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = ["ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],
@@ -1008,3 +1039,6 @@ mod tests;
 #[path = "adapter_sandbox.rs"]
 mod sandbox;
 use sandbox::sandbox_configured;
+
+#[path = "adapter_device.rs"]
+mod device;

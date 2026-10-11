@@ -17,7 +17,7 @@ pub struct DeviceConfig2 {
     pub max_ttl_ms: u32,
     /// Plaintext bound, in 1..=1048576 bytes.
     pub max_message_bytes: u32,
-    /// Authenticated bootstrap nonces retained per key, in 1..=4096.
+    /// Authenticated bootstrap nonces retained across the registry, in 1..=4096.
     pub max_bootstrap_nonces: u32,
 }
 /// Init-only static credential and immutable approval registration reference.
