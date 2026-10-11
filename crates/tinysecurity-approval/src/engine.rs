@@ -154,8 +154,18 @@ impl Engine {
         }
         Self::correlation(&request.audit, reg.generation)?;
         let rows = self.rows(&reg).await?;
+        // Durable identities replace retry identities once confirmed by exact
+        // load. Retain every indeterminate creation not present in this snapshot.
+        self.creations
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .retain(|_, pending| {
+                !rows.iter().any(|row| {
+                    row.request_id == pending.request_id && row.binding == pending.binding
+                })
+            });
         if let Some(row) = rows.iter().find(|r| r.binding == bound) {
-            return self.resume(row, now).await;
+            return self.resume(&reg, row, now).await;
         }
         let reusable = rows.iter().find(|r| {
             r.binding.content_sha256 == bound.content_sha256
@@ -172,6 +182,11 @@ impl Engine {
                 && (r.choice == Some(ApprovalChoice2::Tool)
                     || (r.choice == Some(ApprovalChoice2::Flow) && bound.caller.flow.is_some()))
         });
+        if let Some(source) = reusable {
+            // A decision CAS can succeed before its required audit fails. Reuse
+            // must reconcile that exact phase before a derived permission exists.
+            self.ports.audit(source.clone()).await?;
+        }
         let automatic =
             (reg.auto_approve_all || !reg.require_approval || bound.origin == Origin::Cron)
                 && bound.origin != Origin::Saas;
@@ -220,18 +235,43 @@ impl Engine {
                 .or_insert(row)
                 .clone()
         };
-        self.persist(None, &row).await?;
+        self.finish_begin(&reg, &row, approved, now).await
+    }
+    async fn finish_begin(
+        &self,
+        reg: &ApprovalScope2,
+        row: &ApprovalRow2,
+        approved: bool,
+        now: u64,
+    ) -> Result<ApprovalRow2> {
+        // A concurrent begin may have committed while this call loaded an older
+        // snapshot and its memo was reclaimed. Use the durable winner rather
+        // than creating a second request with a fresh random identity.
+        if let Some(current) = self
+            .rows(reg)
+            .await?
+            .iter()
+            .find(|current| current.binding == row.binding)
+        {
+            return self.resume(reg, current, now).await;
+        }
+        self.persist(None, row).await?;
         if !approved {
             self.deliver(row.clone()).await?;
         }
         // Reentrant decision may already have won while prompt was being delivered.
-        let current = self.row(&reg, &row.request_id).await?;
+        let current = self.row(reg, &row.request_id).await?;
         if current.binding != row.binding {
             return Err(Error::Denied);
         }
         Ok(current)
     }
-    async fn resume(&self, row: &ApprovalRow2, now: u64) -> Result<ApprovalRow2> {
+    async fn resume(
+        &self,
+        reg: &ApprovalScope2,
+        row: &ApprovalRow2,
+        now: u64,
+    ) -> Result<ApprovalRow2> {
         if row.host_instance != self.instance || row.expires_at_ms <= now {
             return Err(Error::Denied);
         }
@@ -239,7 +279,12 @@ impl Engine {
         if row.state == ApprovalLifecycle2::Pending {
             self.deliver(row.clone()).await?;
         }
-        Ok(row.clone())
+        let current = self.row(reg, &row.request_id).await?;
+        if current.binding != row.binding || current.host_instance != self.instance {
+            return Err(Error::Denied);
+        }
+        Self::current(reg, &current)?;
+        Ok(current)
     }
     /// Resolve a trusted registration to its full-digest durable scope handle.
     /// # Errors

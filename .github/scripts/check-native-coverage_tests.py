@@ -234,6 +234,45 @@ class NativeCoverageAdmission(unittest.TestCase):
             with self.subTest(path=path), self.assertRaisesRegex(ValueError, 'invalid checkout source path'):
                 gate.relative_source(ROOT + '/' + path, ROOT)
 
+    def test_unix_platform_requires_native_sink_journal_rotation_and_no_windows_sources(self):
+        for platform in ('linux', 'macos'):
+            data = report(*((name, 10, 9) for name in gate.UNIX_REQUIRED))
+            files = gate.check_files(data, ROOT, 90, platform)
+            lines = {name: {3: 1} for name in gate.UNIX_REQUIRED}
+            self.assertEqual(gate.check_changed(lines, {gate.UNIX_REQUIRED[0]: {3}}, 80, files, platform), (1, 1))
+            self.assertNotIn(WINDOWS, files)
+            with self.assertRaisesRegex(ValueError, 'missing required.*sink.rs'):
+                gate.check_files(report(*((name, 10, 10) for name in gate.UNIX_REQUIRED[1:])), ROOT, 90, platform)
+
+    def test_unix_native_coverage_rejects_low_files_and_missing_compiled_inventory(self):
+        for platform in ('linux', 'macos'):
+            data = report(*((name, 10, 10) for name in gate.UNIX_REQUIRED), (ADAPTER, 10, 8))
+            with self.assertRaisesRegex(ValueError, 'below 90'):
+                gate.check_files(data, ROOT, 90, platform)
+            files = {name: (10, 10) for name in gate.UNIX_REQUIRED}
+            lines = {name: {3: 1} for name in gate.UNIX_REQUIRED}
+            with self.assertRaisesRegex(ValueError, 'missing.*LCOV.*adapter.rs'):
+                gate.check_changed(lines, {}, 80, {**files, ADAPTER: (1, 1)}, platform)
+            with self.assertRaisesRegex(ValueError, 'absent from executable JSON.*adapter.rs'):
+                gate.check_changed({**lines, ADAPTER: {3: 1}}, {}, 80, files, platform)
+
+    def test_unix_uncovered_changes_join_the_eighty_percent_denominator(self):
+        for platform in ('linux', 'macos'):
+            files = {name: (10, 10) for name in gate.UNIX_REQUIRED}
+            lines = {name: {3: 1} for name in gate.UNIX_REQUIRED}
+            lines[ADAPTER] = dict.fromkeys(range(100, 104), 0)
+            with self.assertRaisesRegex(ValueError, 'changed lines: 1/5 below 80'):
+                gate.check_changed(lines, {gate.UNIX_REQUIRED[0]: {3}, ADAPTER: set(range(100, 104))}, 80, {**files, ADAPTER: (90, 100)}, platform)
+
+    def test_changes_only_to_platform_disabled_sources_do_not_create_a_fake_denominator(self):
+        self.assertIsNone(gate.check_changed({WINDOWS: {3: 1}, ACL: {4: 1}},
+                                            {'crates/tinysecurity-audit/src/unix.rs': {100}},
+                                            80, COMPILED))
+        for platform in ('linux', 'macos'):
+            files = {name: (1, 1) for name in gate.UNIX_REQUIRED}
+            lines = {name: {3: 1} for name in gate.UNIX_REQUIRED}
+            self.assertIsNone(gate.check_changed(lines, {WINDOWS: {100}}, 80, files, platform))
+
     def test_added_and_modified_line_ranges_come_from_zero_context_diff(self):
         diff = '+++ b/' + WINDOWS + '\n@@ -1,2 +3,2 @@\n+x\n+y\n+++ b/' + ACL + '\n@@ -0,0 +4 @@\n+z\n'
         self.assertEqual(gate.changed_lines(diff), {WINDOWS: {3, 4}, ACL: {4}})

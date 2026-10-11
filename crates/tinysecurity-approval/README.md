@@ -31,6 +31,12 @@ expected version and durably commits the next row plus a mutation receipt
 ledger. An identical mutation retry must return its original exact receipt,
 even after later row versions; reuse with changed content must reject. Store
 and audit acknowledgment precede both prompt delivery and `RequireApproval`.
+Creation retries keep at most 1024 unresolved identities in memory. Exact durable
+loads retire confirmed identities; concurrent stale loads reconcile the stored
+winner before creating a new row. This bound applies to outstanding creation
+retries, not the lifetime number of completed actions. The host must keep its
+bounded load history without dropping active rows or unexpired reusable grants.
+Replayed prompt delivery reloads the durable winner after reentrant decisions.
 A failed or indeterminate acknowledgment denies execution; `Load` never guesses
 whether an unacknowledged mutation succeeded.
 
@@ -56,7 +62,8 @@ Digests are unkeyed binding/correlation, not authentication or anonymization.
 Pending requests become approved or denied through first-winner CAS. An exact
 approved call must win a unique irreversible reservation before execution;
 only that reservation can receive one immutable terminal outcome. Reusable
-tool/flow choices retain exact reviewed content and context, with flow review
+tool/flow choices reconcile the source row's exact required audit phase before
+deriving new permission. They retain exact reviewed content and context, with flow review
 restricted to at most 100 already human-approved exact row IDs. Cancellation,
 expiry and stale generation deny; a rollback in wall or monotonic time faults
 approval use. Default TTL is 600000 ms, or 180000 ms for copilot/sub-agent;
@@ -81,3 +88,9 @@ replay after later versions and reopening the ledger, exact reusable grants
 after restart, orphan denial, native expiry, cancellation and absent prompt denial. CI executes it on Linux, macOS and Windows from the owner root
 and an unrelated working directory. Windows uses a protected preprovisioned
 current-user fixture namespace, following the native audit contract.
+
+Each native CI runner collects JSON and LCOV from all features and targets,
+requires 90% line coverage per compiled source and 80% coverage of changed
+executable production lines against the canonical base, and uploads the reports
+with checkout, base, toolchain and platform metadata. Platform admission requires
+Windows audit sources on Windows and the native sink/journal/rotation on Unix.

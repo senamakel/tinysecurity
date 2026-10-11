@@ -27,7 +27,13 @@ struct Fixture {
     ledger: Mutex<std::collections::BTreeMap<String, (ApprovalCasRequest2, ApprovalCasResponse2)>>,
     order: Mutex<Vec<&'static str>>,
     fail: AtomicU64,
+    pause_load: AtomicU64,
+    loaded: tokio::sync::Notify,
+    release_load: tokio::sync::Notify,
     choice: AtomicU64,
+    reentrant: Mutex<Option<std::sync::Weak<Engine>>>,
+    audits: Mutex<Vec<ApprovalRow2>>,
+    audit_receipts: Mutex<std::collections::BTreeMap<(String, u64), ApprovalRow2>>,
     barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
 }
 #[async_trait::async_trait]
@@ -44,6 +50,14 @@ impl Ports for Fixture {
                 .collect(),
         };
         r.verify_response(&response).map_err(|_| Error::Invalid)?;
+        if self
+            .pause_load
+            .compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            self.loaded.notify_one();
+            self.release_load.notified().await;
+        }
         Ok(response)
     }
     async fn cas(&self, r: ApprovalCasRequest2) -> Result<ApprovalCasResponse2> {
@@ -96,6 +110,14 @@ impl Ports for Fixture {
         if self.fail.load(Ordering::SeqCst) == 3 {
             return Err(Error::Unavailable);
         }
+        let owner = self
+            .reentrant
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .clone();
+        if let Some(owner) = owner.and_then(|owner| owner.upgrade()) {
+            owner.decide(decision(&r.row)).await?;
+        }
         Ok(ApprovalDeliveryResponse2 {
             request_id: r.row.request_id,
             nonce: r.row.nonce,
@@ -123,11 +145,32 @@ impl Ports for Fixture {
             .lock()
             .map_err(|_| Error::Unavailable)?
             .push("audit");
+        self.audits
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .push(_r.clone());
+        let key = (_r.request_id.clone(), _r.version);
+        let mut receipts = self.audit_receipts.lock().map_err(|_| Error::Unavailable)?;
+        if let Some(prior) = receipts.get(&key) {
+            return if prior == &_r {
+                Ok(())
+            } else {
+                Err(Error::Conflict)
+            };
+        }
+        if self.fail.load(Ordering::SeqCst) == 6 && _r.decision_ticket_sha256.is_some() {
+            receipts.insert(key, _r);
+            return Err(Error::Unavailable);
+        }
+        if self.fail.load(Ordering::SeqCst) == 5 && _r.decision_ticket_sha256.is_some() {
+            return Err(Error::Unavailable);
+        }
         if self.fail.load(Ordering::SeqCst) == 2
             || (self.fail.load(Ordering::SeqCst) == 4 && _r.state == ApprovalLifecycle2::Approved)
         {
             Err(Error::Unavailable)
         } else {
+            receipts.insert(key, _r);
             Ok(())
         }
     }
@@ -690,5 +733,193 @@ async fn simultaneous_decisions_and_conflicting_terminal_results_have_one_cas_wi
     };
     let (a, b) = tokio::join!(owner.record_execution(left), owner.record_execution(right));
     assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn reusable_tool_and_flow_grants_reconcile_the_source_decision_audit_first() -> Result<()> {
+    for choice in [1, 2] {
+        let f = Arc::new(Fixture::default());
+        f.choice.store(choice, Ordering::SeqCst);
+        let owner = engine(f.clone(), Arc::new(TestClock::default()))?;
+        let mut input = request();
+        input.request.caller.flow = Some("reviewed-flow".into());
+        let pending = owner.begin(input.clone()).await?;
+        f.fail.store(5, Ordering::SeqCst);
+        assert!(owner.decide(decision(&pending)).await.is_err());
+        input.request.caller.call_id = "new-execution".into();
+        input.audit = audit(3);
+        assert!(
+            owner.begin(input.clone()).await.is_err(),
+            "derived permission cannot skip the source decision audit"
+        );
+        assert_eq!(f.rows.lock().map_err(|_| Error::Unavailable)?.len(), 1);
+        f.fail.store(0, Ordering::SeqCst);
+        let derived = owner.begin(input).await?;
+        assert_eq!(derived.state, ApprovalLifecycle2::Approved);
+        let audits = f.audits.lock().map_err(|_| Error::Unavailable)?;
+        let source = &audits[audits.len() - 2];
+        assert_eq!(source.request_id, pending.request_id);
+        assert_eq!(source.audit, audit(2));
+        assert_eq!(source.state, ApprovalLifecycle2::Approved);
+        assert_eq!(
+            audits.last().ok_or(Error::Invalid)?.request_id,
+            derived.request_id
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn completed_executions_do_not_exhaust_the_creation_retry_window() -> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let mut config = config();
+    config.scopes[0].auto_approve_all = true;
+    let owner = Engine::new(
+        config,
+        f.clone(),
+        Arc::new(TestClock::default()),
+        Redactor::new(&RedactorConfig::default()).map_err(|_| Error::Invalid)?,
+    )?;
+    for index in 0..1026 {
+        let mut input = request();
+        input.request.caller.call_id = format!("completed-{index}");
+        let row = owner.begin(input.clone()).await?;
+        let mut consume = action(&row, 3);
+        consume.request = input.request;
+        owner.consume(consume.clone()).await?;
+        consume.audit = audit(4);
+        owner
+            .record_execution(RecordExecutionRequest2 {
+                action: consume,
+                outcome: ExecutionOutcome::Succeeded,
+            })
+            .await?;
+        // Trusted storage retains bounded terminal history, independently of the
+        // retry memo, preserving active rows and reusable human grants.
+        let mut rows = f.rows.lock().map_err(|_| Error::Unavailable)?;
+        if rows.len() > 8 {
+            let oldest = rows
+                .iter()
+                .find(|(_, record)| {
+                    serde_json::from_str::<ApprovalRow2>(&record.record_json).is_ok_and(|row| {
+                        row.state == ApprovalLifecycle2::Executed
+                            && row.choice == Some(ApprovalChoice2::Once)
+                    })
+                })
+                .map(|(id, _)| id.clone())
+                .ok_or(Error::Invalid)?;
+            rows.remove(&oldest);
+        }
+    }
+    assert!(owner.begin(request()).await.is_ok());
+    Ok(())
+}
+
+#[tokio::test]
+async fn replayed_prompt_returns_the_reentrant_durable_decision() -> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let owner = Arc::new(engine(f.clone(), Arc::new(TestClock::default()))?);
+    f.fail.store(3, Ordering::SeqCst);
+    assert!(owner.begin(request()).await.is_err());
+    f.fail.store(0, Ordering::SeqCst);
+    *f.reentrant.lock().map_err(|_| Error::Unavailable)? = Some(Arc::downgrade(&owner));
+    let row = owner.begin(request()).await?;
+    assert_eq!(row.state, ApprovalLifecycle2::Approved);
+    assert_eq!(row.version, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn late_source_audit_commit_is_reconciled_without_rolling_back_the_human_grant() -> Result<()>
+{
+    for choice in [1, 2] {
+        let f = Arc::new(Fixture::default());
+        f.choice.store(choice, Ordering::SeqCst);
+        let owner = engine(f.clone(), Arc::new(TestClock::default()))?;
+        let mut input = request();
+        input.request.caller.flow = Some("reviewed-flow".into());
+        let source = owner.begin(input.clone()).await?;
+        f.fail.store(6, Ordering::SeqCst);
+        assert!(owner.decide(decision(&source)).await.is_err());
+        // The sink committed the exact audit but its acknowledgement was lost.
+        // Replaying that phase succeeds even while new human audits are denied.
+        f.fail.store(5, Ordering::SeqCst);
+        input.request.caller.call_id = "after-lost-ack".into();
+        input.audit = audit(3);
+        let derived = owner.begin(input.clone()).await?;
+        assert_eq!(derived.state, ApprovalLifecycle2::Approved);
+        let mut consume = action(&derived, 4);
+        consume.request = input.request;
+        assert_eq!(
+            owner.consume(consume).await?.state,
+            ApprovalLifecycle2::Reserved
+        );
+        assert_eq!(
+            owner
+                .list(&request().scope_id)
+                .await?
+                .iter()
+                .find(|row| row.request_id == source.request_id)
+                .ok_or(Error::Invalid)?
+                .state,
+            ApprovalLifecycle2::Approved
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn indeterminate_creation_identities_survive_capacity_pressure_and_retry() -> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let owner = engine(f.clone(), Arc::new(TestClock::default()))?;
+    f.fail.store(1, Ordering::SeqCst);
+    for index in 0..1024 {
+        let mut input = request();
+        input.request.caller.call_id = format!("unacknowledged-{index}");
+        assert!(owner.begin(input).await.is_err());
+    }
+    assert!(
+        owner.begin(request()).await.is_err(),
+        "the active retry window remains bounded"
+    );
+    let mut retry = request();
+    retry.request.caller.call_id = "unacknowledged-0".into();
+    // Pin the exact pending identity before recovery; no confirmed row exists.
+    let (bound, _, _) = binding::original(&config().scopes[0], &retry.request, &owner.redactor()?)?;
+    let pending = owner
+        .creations
+        .lock()
+        .map_err(|_| Error::Unavailable)?
+        .get(&bound.call_sha256)
+        .cloned()
+        .ok_or(Error::Invalid)?;
+    f.fail.store(0, Ordering::SeqCst);
+    let row = owner.begin(retry).await?;
+    assert_eq!(row.request_id, pending.request_id);
+    assert_eq!(row.nonce, pending.nonce);
+    assert!(
+        owner.begin(request()).await.is_ok(),
+        "confirmed identity frees a retry slot"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_stale_creation_snapshot_after_memo_reclamation_uses_the_durable_winner() -> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let owner = Arc::new(engine(f.clone(), Arc::new(TestClock::default()))?);
+    f.pause_load.store(1, Ordering::SeqCst);
+    let concurrent_owner = owner.clone();
+    let waiting = tokio::spawn(async move { concurrent_owner.begin(request()).await });
+    f.loaded.notified().await;
+    let winner = owner.begin(request()).await?;
+    // This retry confirms the winning identity and retires its creation memo.
+    assert_eq!(owner.begin(request()).await?.request_id, winner.request_id);
+    f.release_load.notify_one();
+    let resumed = waiting.await.map_err(|_| Error::Unavailable)??;
+    assert_eq!(resumed.request_id, winner.request_id);
+    assert_eq!(resumed.nonce, winner.nonce);
+    assert_eq!(f.rows.lock().map_err(|_| Error::Unavailable)?.len(), 1);
     Ok(())
 }

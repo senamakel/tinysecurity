@@ -211,59 +211,59 @@ jobs:
             exit 1
           fi
 
-      # Keep the existing Linux gate; Windows reports use native drive paths
-      # and have a separate exact-root parser and required Windows sources.
+      # Preserve Linux's established per-file gate and add the same strict
+      # native JSON/LCOV inventory and changed-line gate to every platform.
       - name: Require 90% line coverage in every source file
         if: ${{ runner.os == 'Linux' }}
         run: .github/scripts/check-file-coverage.sh 90 coverage.json
 
-      - name: Collect native Windows coverage
-        if: ${{ runner.os == 'Windows' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $checkoutHead = git rev-parse HEAD
-          if ($LASTEXITCODE -ne 0) { throw 'coverage checkout metadata failed' }
-          $toolchain = rustc --version --verbose
-          if ($LASTEXITCODE -ne 0) { throw 'coverage toolchain metadata failed' }
-          [ordered]@{
-            checkout_root = (Get-Location).Path
-            head = $checkoutHead
-            rustc = $toolchain
-            runner_os = $env:RUNNER_OS
-          } | ConvertTo-Json | Set-Content -Encoding utf8 coverage-windows-metadata.json
-          cargo llvm-cov --locked --workspace --all-targets --all-features --json --output-path coverage-windows.json
-          if ($LASTEXITCODE -ne 0) { throw 'native Windows coverage tests failed' }
-          # Reuse the instrumented all-feature/all-target run above. Report is
-          # an export-only subcommand; 0.9.1 rejects test-selection flags here.
-          cargo llvm-cov report --lcov --output-path coverage-windows.info
-          if ($LASTEXITCODE -ne 0) { throw 'native Windows LCOV report failed' }
-
-      - name: Require native Windows file and changed-line coverage
-        if: ${{ runner.os == 'Windows' }}
-        shell: pwsh
+      - name: Collect native coverage
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           BASE_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $base = $env:PR_BASE
-          if (-not $base) {
-            $base = git merge-base HEAD "refs/remotes/origin/$env:BASE_BRANCH"
-            if ($LASTEXITCODE -ne 0) { throw 'canonical base resolution failed' }
+          set -euo pipefail
+          base="$PR_BASE"
+          if [ -z "$base" ]; then
+            base="$(git merge-base HEAD "refs/remotes/origin/$BASE_BRANCH")"
+          fi
+          case "$RUNNER_OS" in
+            Linux) platform=linux ;;
+            macOS) platform=macos ;;
+            Windows) platform=windows ;;
+            *) echo 'unsupported coverage platform' >&2; exit 1 ;;
+          esac
+          # Python supplies a native drive path on Windows; Bash PWD is an
+          # MSYS path and cannot match cargo-llvm-cov's native filenames.
+          checkout_root="$(python -c 'import pathlib; print(pathlib.Path.cwd())')"
+          export COVERAGE_BASE="$base" COVERAGE_PLATFORM="$platform"
+          python - <<'PYTHON'
+          import json, os, pathlib, subprocess
+          metadata = {
+              'checkout_root': str(pathlib.Path.cwd()),
+              'head': subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('utf-8').strip(),
+              'base': os.environ['COVERAGE_BASE'],
+              'rustc': subprocess.check_output(['rustc', '--version', '--verbose']).decode('utf-8'),
+              'runner_os': os.environ['RUNNER_OS'],
+              'platform': os.environ['COVERAGE_PLATFORM'],
           }
-          python .github/scripts/check-native-coverage.py --json coverage-windows.json --lcov coverage-windows.info --base $base --root (Get-Location).Path
-          if ($LASTEXITCODE -ne 0) { throw 'native Windows coverage gate failed' }
+          pathlib.Path('coverage-native-metadata.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
+          PYTHON
+          cargo llvm-cov --locked --workspace --all-targets --all-features --json --output-path coverage-native.json
+          # Report exports the instrumented all-feature/all-target run. Selection
+          # flags are invalid for cargo-llvm-cov's export-only report subcommand.
+          cargo llvm-cov report --lcov --output-path coverage-native.info
+          python .github/scripts/check-native-coverage.py --json coverage-native.json --lcov coverage-native.info --base "$base" --root "$checkout_root" --platform "$platform"
 
-      - name: Upload native Windows coverage reports
-        if: ${{ always() && runner.os == 'Windows' }}
+      - name: Upload native coverage reports
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: coverage-native-windows-${{ github.sha }}
+          name: coverage-native-${{ runner.os }}-${{ github.sha }}
           path: |
-            coverage-windows.json
-            coverage-windows.info
-            coverage-windows-metadata.json
+            coverage-native.json
+            coverage-native.info
+            coverage-native-metadata.json
           if-no-files-found: warn
 
       - name: Upload coverage report
