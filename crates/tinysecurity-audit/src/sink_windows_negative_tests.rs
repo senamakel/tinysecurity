@@ -321,7 +321,9 @@ try {
     if (($credentialSeparators -ne 1) -or ($domainSeparators -ne 0) -or ($userSeparators -ne 0) -or ($exactDomain -ne 1) -or ($exactUser -ne 1)) { throw 'credential parser must preserve the exact local identity' }
     $childScript = @'
 $ErrorActionPreference = 'Stop'
+[Console]::WriteLine('audit-account-stage=96 child-entry=1')
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+[Console]::WriteLine('audit-account-stage=96 identity-read=1')
 if ($identity.User.Value -eq $env:TINYSECURITY_TEST_OWNER) { exit 81 }
 if ($identity.User.Value -ne $env:TINYSECURITY_TEST_FOREIGN) { exit 86 }
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -350,7 +352,7 @@ exit 0
     $file = Join-Path $PSHOME 'powershell.exe'
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $file
-    $start.Arguments = '-NoProfile -NonInteractive -Command "try { & ([ScriptBlock]::Create([Console]::In.ReadToEnd())) } catch { exit 89 }"'
+    $start.Arguments = '-NoProfile -NonInteractive -Command "try { [Console]::WriteLine(''audit-account-stage=94 bootstrap=1''); $s=[Console]::In.ReadToEnd(); [Console]::WriteLine(''audit-account-stage=94 bootstrap=2 source-length=''+$s.Length); $b=[ScriptBlock]::Create($s); [Console]::WriteLine(''audit-account-stage=94 bootstrap=3''); & $b } catch { $k=0; if($_.Exception -is [System.Management.Automation.ParseException]){$k=4}; [Console]::WriteLine(''audit-account-stage=95 category=''+$k+'' hresult=''+$_.Exception.HResult); if($null -ne $_.Exception.InnerException){[Console]::WriteLine(''audit-account-stage=95 inner-hresult=''+$_.Exception.InnerException.HResult)}; exit 89 }"'
     $start.UseShellExecute = $false
     $start.UserName = $network.UserName
     $start.Domain = $network.Domain
@@ -379,15 +381,17 @@ exit 0
     $code = $process.ExitCode
     # Require every exact child phase once; raw stdout/stderr stay in memory.
     $requiredPhases = @('audit-account-stage=90 foreign-identity=1 nonadmin=1', 'audit-account-stage=91 exact-control-read=1', 'audit-account-stage=92 private-file-denials=6', 'audit-account-stage=93 namespace-denial=1')
-    $lines = @($stdout.Result.Split([char]10) | ForEach-Object { $_.TrimEnd([char]13) } | Where-Object { $_.Length -gt 0 })
-    foreach ($line in $lines) {
-        if ($requiredPhases -ccontains $line) { Write-Output $line }
+    $allLines = @($stdout.Result.Split([char]10) | ForEach-Object { $_.TrimEnd([char]13) } | Where-Object { $_.Length -gt 0 })
+    $lines = @($allLines | Where-Object { $requiredPhases -ccontains $_ })
+    $diagnostics = @($allLines | Where-Object { $_ -cmatch '^audit-account-stage=94 bootstrap=[123]( source-length=[0-9]+)?$|^audit-account-stage=95 (category=[0-9]+ hresult=-?[0-9]+|inner-hresult=-?[0-9]+)$|^audit-account-stage=96 (child-entry|identity-read)=1$' })
+    foreach ($line in $allLines) {
+        if (($requiredPhases -ccontains $line) -or ($diagnostics -ccontains $line)) { Write-Output $line }
     }
     $errorText = $stderr.Result
     Write-Output ('audit-account-stage=50 inner-exit=' + $code)
     $stage = 50
     if ($code -ne 0) { throw 'ordinary account isolation failed' }
-    if (($errorText.Length -ne 0) -or ($lines.Count -ne $requiredPhases.Count)) { throw 'unexpected helper output' }
+    if (($errorText.Length -ne 0) -or ($lines.Count -ne $requiredPhases.Count) -or ($allLines.Count -ne ($lines.Count + $diagnostics.Count))) { throw 'unexpected helper output' }
     foreach ($phase in $requiredPhases) {
         if (@($lines | Where-Object { $_ -ceq $phase }).Count -ne 1) { throw 'required child phase missing or duplicated' }
     }
