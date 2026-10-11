@@ -254,7 +254,7 @@ fn windows_second_ordinary_account_cannot_read_or_replace_the_namespace()
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            ordinary_account_script(),
+            ORDINARY_ACCOUNT_SCRIPT,
         ])
         .env("TINYSECURITY_TEST_DIRECTORY", root.path())
         .env("TINYSECURITY_TEST_OWNER", identity()?)
@@ -288,8 +288,7 @@ fn windows_second_ordinary_account_cannot_read_or_replace_the_namespace()
     Ok(())
 }
 
-fn ordinary_account_script() -> &'static str {
-    r"
+const ORDINARY_ACCOUNT_SCRIPT: &str = r"
 $ErrorActionPreference = 'Stop'
 $account = 'tsa' + [Guid]::NewGuid().ToString('N').Substring(0, 16)
 $password = ConvertTo-SecureString ('Tsa!A1' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
@@ -389,8 +388,7 @@ exit 0
         exit 1
     }
 }
-"
-}
+";
 
 #[test]
 fn windows_empty_or_null_directory_dacl_is_denied_before_candidate_commit()
