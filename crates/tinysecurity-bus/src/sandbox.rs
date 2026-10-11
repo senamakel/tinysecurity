@@ -1,0 +1,308 @@
+//! Scoped declarative sandbox planning. Only trusted native initialization supplies facts.
+use crate::{AccessTier, AuditCorrelation2, AuditResponse2, Decision, NetworkPolicy, Origin, PathGrant, PathPolicy, SandboxBackend, SourceTrust, SubjectScope};
+use serde::{Deserialize, Serialize};
+/// Actual executor support, verified by the trusted host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConstraintEnforcement2 {
+    /// The executor enforces this exact constraint.
+    Enforced,
+    /// An approximation; never sufficient for a hard requirement.
+    BestEffort,
+    /// The executor cannot enforce this constraint.
+    Unsupported,
+}
+/// Verified isolation level; a backend name is not evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IsolationLevel2 {
+    /// No process boundary.
+    None,
+    /// Process-level restriction only.
+    Process,
+    /// Kernel namespace or equivalent verified isolation.
+    Kernel,
+    /// A separate verified guest kernel.
+    MicroVm,
+}
+/// Hard execution requirements carried in the artifact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxConstraint2 {
+    /// Filesystem grants and floor.
+    Filesystem,
+    /// The exact network policy.
+    Network,
+    /// CPU throughput in thousandths of one core.
+    CpuMillicores,
+    /// Consumed CPU time in milliseconds.
+    CpuTime,
+    /// Memory ceiling in bytes.
+    Memory,
+    /// Maximum process count.
+    Processes,
+    /// Disk ceiling in bytes.
+    Disk,
+    /// Deny child process creation.
+    Subprocesses,
+}
+/// A verified executor declaration for one constraint.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConstraintSupport2 {
+    /// Constraint identity.
+    pub constraint: SandboxConstraint2,
+    /// Actual support.
+    pub enforcement: ConstraintEnforcement2,
+}
+/// Optional positive hard bounds; None means no bound, never zero or unlimited sentinel.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceLimits2 {
+    /// Consumed CPU time. Current TinyBox has no enforceable mapping; requests deny.
+    pub cpu_time_ms: Option<u64>,
+    /// CPU throughput: 1000 is one core. Maps only to TinyBox cpu_millis.
+    pub cpu_millicores: Option<u32>,
+    /// Memory bytes.
+    pub memory_bytes: Option<u64>,
+    /// Maximum process count.
+    pub pids_max: Option<u32>,
+    /// Disk bytes.
+    pub disk_bytes: Option<u64>,
+}
+/// Init-only capability snapshot, never accepted from planning arguments.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxExecutor2 {
+    /// Bound executor identity.
+    pub executor_id: String,
+    /// Verified capability revision or digest; execution must revalidate it.
+    pub capability_id: String,
+    /// Mechanical backend vocabulary.
+    pub backend: SandboxBackend,
+    /// Availability verified at initialization; not a spawn guarantee.
+    pub available: bool,
+    /// Verified isolation level.
+    pub isolation: IsolationLevel2,
+    /// Exact declared support. Duplicate constraints reject initialization.
+    pub constraints: Vec<ConstraintSupport2>,
+}
+impl std::fmt::Debug for SandboxExecutor2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SandboxExecutor2([REDACTED])")
+    }
+}
+/// Init-only source provenance admitted by the authenticated host.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxSource2 {
+    /// Opaque source identity.
+    pub source_id: String,
+    /// Verified immutable installation/content identity.
+    pub provenance: String,
+    /// Trust derived by the host, never a model claim.
+    pub trust: SourceTrust,
+}
+impl std::fmt::Debug for SandboxSource2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SandboxSource2([REDACTED])")
+    }
+}
+/// Init-only transport capability; a URL string cannot establish enforcement.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxProxy2 {
+    /// Verified transport identity.
+    pub proxy_id: String,
+    /// Executor whose egress is exclusively mediated.
+    pub executor_id: String,
+    /// Exact verified executor capability revision.
+    pub capability_id: String,
+    /// Transport revalidates and pins approved DNS destinations/redirects.
+    pub pinned_destinations: bool,
+    /// Executor cannot bypass the mediated egress route.
+    pub exclusive_egress: bool,
+}
+impl std::fmt::Debug for SandboxProxy2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SandboxProxy2([REDACTED])")
+    }
+}
+/// Immutable native host facts and ceilings. Narrowed policy cannot widen these.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxScope2 {
+    /// Opaque registration identity.
+    pub scope_id: String,
+    /// Verified user/workspace/agent owner.
+    pub subject: SubjectScope,
+    /// Verified execution origin.
+    pub origin: Origin,
+    /// Maximum acting authority.
+    pub tier: AccessTier,
+    /// Verified deployment mode; mandatory isolation precedes all overrides.
+    pub saas: bool,
+    /// Verified environment override, relevant only to trusted local execution.
+    pub env_off: bool,
+    /// Verified agent-mode isolation request.
+    pub agent_isolation: bool,
+    /// Verified configuration isolation request.
+    pub configured_isolation: bool,
+    /// Owner filesystem policy, including internal-state reservations.
+    pub paths: PathPolicy,
+    /// Maximum grant reach and write authority.
+    pub grant_ceiling: Vec<PathGrant>,
+    /// Maximum admitted network reach.
+    pub network_ceiling: NetworkPolicy,
+    /// Mandatory upper bounds; caller cannot remove or raise these.
+    pub limits: ResourceLimits2,
+    /// Immutable source provenance registry.
+    pub sources: Vec<SandboxSource2>,
+    /// Actual verified executor snapshots.
+    pub executors: Vec<SandboxExecutor2>,
+    /// Verified exclusive egress mediation.
+    pub proxy: Option<SandboxProxy2>,
+    /// Maximum artifact lifetime, at most five minutes.
+    pub max_ttl_ms: u32,
+}
+impl std::fmt::Debug for SandboxScope2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SandboxScope2([REDACTED])")
+    }
+}
+/// Trusted SDK initialization only; unavailable configuration never becomes a fallback.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxConfig2 {
+    /// At most 128 immutable subject registrations.
+    pub scopes: Vec<SandboxScope2>,
+}
+impl std::fmt::Debug for SandboxConfig2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SandboxConfig2([REDACTED])")
+    }
+}
+/// Requested operation only; trust, environment and executor facts derive from registration.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxPlanRequest2 {
+    /// Registered owner scope.
+    pub scope_id: String,
+    /// Host-derived requesting owner; must exactly match registration.
+    pub subject: SubjectScope,
+    /// Registered executable source.
+    pub source_id: String,
+    /// Expected immutable provenance; mismatches deny.
+    pub provenance: String,
+    /// Host-owned execution identity.
+    pub call_id: String,
+    /// Original argv/cwd/environment/input operation; canonical binding, never logged raw.
+    pub operation_json: String,
+    /// Requested filesystem roots and access.
+    pub grants: Vec<PathGrant>,
+    /// Requested reach.
+    pub network: NetworkPolicy,
+    /// Requested bounds, including every mandatory configured bound.
+    pub limits: ResourceLimits2,
+    /// Require child-process denial.
+    pub deny_subprocesses: bool,
+    /// Current policy generation.
+    pub generation: u64,
+    /// Requested artifact lifetime.
+    pub ttl_ms: u32,
+    /// Exact original plan/decision audit correlation.
+    pub audit: AuditCorrelation2,
+}
+impl std::fmt::Debug for SandboxPlanRequest2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SandboxPlanRequest2([REDACTED])")
+    }
+}
+/// Declarative plan, not a confinement attestation or reusable execution authorization.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxArtifact2 {
+    /// Module-computed canonical original request/plan binding.
+    pub fingerprint: String,
+    /// Bound immutable registration.
+    pub scope_id: String,
+    /// Bound owner.
+    pub subject: SubjectScope,
+    /// Bound executable source.
+    pub source_id: String,
+    /// Bound immutable provenance.
+    pub provenance: String,
+    /// Exact execution identity.
+    pub call_id: String,
+    /// Policy generation; stale execution denies.
+    pub generation: u64,
+    /// Bounded expiry; execution checks live time.
+    pub expires_at_ms: u64,
+    /// Actual selected executor identity.
+    pub executor_id: String,
+    /// Verified capability revision; live launch checks all constraints again.
+    pub capability_id: String,
+    /// Selected declarative backend.
+    pub backend: SandboxBackend,
+    /// Canonical approved roots.
+    pub grants: Vec<PathGrant>,
+    /// Exact admitted reach.
+    pub network: NetworkPolicy,
+    /// Bound exclusive mediation identity.
+    pub proxy_id: Option<String>,
+    /// Unit-correct hard bounds.
+    pub limits: ResourceLimits2,
+    /// Every required constraint must remain Enforced at execution.
+    pub constraints: Vec<SandboxConstraint2>,
+}
+impl std::fmt::Debug for SandboxArtifact2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SandboxArtifact2([REDACTED])")
+    }
+}
+/// Stable content-free sandbox denial category.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxDenial2 {
+    /// Missing or mismatched immutable authority.
+    InvalidContext,
+    /// Malformed, excessive or zero-bound request.
+    InvalidRequest,
+    /// Wrong generation or expired artifact.
+    Stale,
+    /// Protected root or a grant covering a protected subtree.
+    Floor,
+    /// Unresolvable path or grant outside immutable reach.
+    Path,
+    /// Attempt to widen an immutable ceiling.
+    Ceiling,
+    /// No available executor enforces every hard requirement.
+    Unsupported,
+    /// Exclusive validated egress mediation is unavailable.
+    Proxy,
+    /// Host networking requires an exact human approval; unavailable seam denies.
+    Approval,
+    /// Required canonical audit has no exact confirmed receipt.
+    Audit,
+}
+/// Computed policy verdict, optional declarative artifact and independent audit durability.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxPlanResponse2 {
+    /// Policy permission; never execution confinement evidence.
+    pub decision: Decision,
+    /// Specific stable denial category.
+    pub denial: Option<SandboxDenial2>,
+    /// Absent on denial.
+    pub artifact: Option<SandboxArtifact2>,
+    /// Exact receipt, retained even if a generation race denies permission.
+    pub audit: Option<AuditResponse2>,
+}
+impl std::fmt::Debug for SandboxPlanResponse2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SandboxPlanResponse2([REDACTED])")
+    }
+}
+#[cfg(test)]
+#[path = "sandbox_tests.rs"]
+mod tests;

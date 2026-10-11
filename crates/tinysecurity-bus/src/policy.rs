@@ -287,6 +287,9 @@ impl fmt::Debug for JudgeConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModuleConfig {
+    /// Init-only immutable verified sandbox authority; absent preserves legacy payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<crate::SandboxConfig2>,
     /// Required wire vocabulary.
     pub contract_version: (u32, u32),
     /// Effective policy requested by the host.
@@ -311,6 +314,7 @@ impl Default for ModuleConfig {
     fn default() -> Self {
         Self {
             contract_version: crate::CONTRACT_VERSION,
+            sandbox: None,
             policy: PolicyConfig::default(),
             judge: None,
             redactor: crate::RedactorConfig::default(),

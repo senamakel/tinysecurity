@@ -75,6 +75,8 @@ pub mod methods {
     pub const URL_GUARD: &str = "UrlGuard";
     /// Plan member.
     pub const PLAN: &str = "Plan";
+    /// Immutable-scoped declarative sandbox planning.
+    pub const PLAN2: &str = "Plan2";
     /// Exact durable version-two audit member.
     pub const AUDIT2: &str = "Audit2";
     /// Original operation evaluation bound to exact pre-execution audit.
@@ -118,6 +120,8 @@ pub const METHODS: &[&str] = &[
     methods::IMPORT_APPROVAL_HISTORY2,
     methods::PARSE_REPLY,
     methods::POLICY_INFO,
+    methods::PLAN,
+    methods::PLAN2,
 ];
 /// Accepted policy activation event.
 pub const POLICY_CHANGED: &str = "PolicyChanged";
