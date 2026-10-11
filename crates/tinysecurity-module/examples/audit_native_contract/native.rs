@@ -110,7 +110,9 @@ try {
     [void]$acl.AddAccessRule($rule)
     $stage = 12; Write-Output "audit-native-installer stage=$stage"
     $stage = 13; Write-Output "audit-native-installer stage=$stage"
-    Set-Acl -LiteralPath $env:TINYSECURITY_NATIVE_DIRECTORY -AclObject $acl
+    # Do not depend on PowerShell cmdlet resolution to persist this ACL.
+    # The .NET API persists the identical owner and protected access rules.
+    [System.IO.Directory]::SetAccessControl($env:TINYSECURITY_NATIVE_DIRECTORY, $acl)
     $stage = 14; Write-Output "audit-native-installer stage=$stage"
 } catch {
     # Never render the error record: messages may contain paths or identities.
@@ -150,13 +152,16 @@ try {
 
 #[cfg(windows)]
 fn provision(path: &Path) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    provision_with_script(path, NAMESPACE_INSTALL_SCRIPT)
+}
+
+#[cfg(windows)]
+fn provision_with_script(
+    path: &Path,
+    script: &str,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let output = std::process::Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            NAMESPACE_INSTALL_SCRIPT,
-        ])
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .env("TINYSECURITY_NATIVE_DIRECTORY", path)
         .output()?;
     for line in installer_diagnostics(&output.stdout)? {

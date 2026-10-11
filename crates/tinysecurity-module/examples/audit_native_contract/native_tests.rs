@@ -19,3 +19,32 @@ fn installer_diagnostics_accept_only_bounded_numeric_records() {
         assert!(installer_diagnostics(invalid).is_err());
     }
 }
+
+#[test]
+fn installer_diagnostics_reject_empty_oversized_and_legacy_streams() {
+    assert!(installer_diagnostics(b"").is_err());
+    assert!(installer_diagnostics(&vec![b'0'; 4097]).is_err());
+    let line = "audit-native-installer stage=1\n";
+    assert!(installer_diagnostics(line.repeat(15).as_bytes()).is_ok());
+    assert!(installer_diagnostics(line.repeat(16).as_bytes()).is_err());
+    assert!(
+        installer_diagnostics(
+            b"audit-native-installer stage=13 error=5 hresult=0 native=0 command=0\n"
+        )
+        .is_err()
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn namespace_installer_succeeds_when_set_acl_cmdlet_is_unavailable() {
+    let root = std::env::var_os("TINYSECURITY_AUDIT_TEST_ROOT")
+        .expect("Windows CI must provision its protected audit root");
+    let directory = tempfile::tempdir_in(root).unwrap();
+    // Model the proven command-resolution failure without depending on the
+    // runner's installed PowerShell modules. Any Set-Acl invocation must fail.
+    let script = format!(
+        "function Set-Acl {{ throw [System.Management.Automation.CommandNotFoundException]::new('fixture command unavailable') }}\n{NAMESPACE_INSTALL_SCRIPT}"
+    );
+    provision_with_script(directory.path(), &script).unwrap();
+}

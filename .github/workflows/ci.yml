@@ -79,34 +79,6 @@ jobs:
           Set-Acl -LiteralPath $auditRoot -AclObject $security
           "TINYSECURITY_AUDIT_TEST_ROOT=$auditRoot" >> $env:GITHUB_ENV
 
-      - name: Windows protected audit namespace and rotation behavior
-        if: ${{ runner.os == 'Windows' }}
-        run: cargo test --locked -p tinysecurity-audit windows_ -- --nocapture
-
-      - name: Test
-        run: cargo test --all-features
-
-      - name: Test default features
-        run: cargo test
-
-      # `cargo build --all-targets` only *compiles* an example. `AGENTS.md`
-      # promises the native loader verifier works, and a compiled
-      # example can still fail on its first line.
-      - name: Run the bundled example
-        if: ${{ runner.os != 'Windows' }}
-        shell: bash
-        run: |
-          case "$RUNNER_OS" in
-            Linux) module=target/debug/libtinysecurity_module.so ;;
-            macOS) module=target/debug/libtinysecurity_module.dylib ;;
-          esac
-          cargo run -p tinysecurity-module --example verify_module -- "$module"
-          cargo run -p tinysecurity-module --example audit_native_contract -- "$module"
-          # Installed examples must also work outside the workspace root.
-          module="$(pwd)/$module"
-          (cd target && ./debug/examples/verify_module "$module")
-          (cd target && ./debug/examples/audit_native_contract "$module")
-
       - name: Verify Windows module through the restricted native copy
         if: ${{ runner.os == 'Windows' }}
         shell: pwsh
@@ -144,8 +116,12 @@ jobs:
 
           $verifiedModule = Join-Path $verifyRoot "$libraryName.dll"
           Copy-Item -LiteralPath $module -Destination $verifiedModule
+          cargo test --locked --package tinysecurity-module --example audit_native_contract -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'native audit installer regression failed' }
           cargo run --locked --package tinysecurity-module --example verify_module -- $verifiedModule
+          if ($LASTEXITCODE -ne 0) { throw 'native verifier failed in workspace' }
           cargo run --locked --package tinysecurity-module --example audit_native_contract -- $verifiedModule
+          if ($LASTEXITCODE -ne 0) { throw 'native audit verifier failed in workspace' }
           $verifier = (Resolve-Path 'target/debug/examples/verify_module.exe').Path
           $auditVerifier = (Resolve-Path 'target/debug/examples/audit_native_contract.exe').Path
           Push-Location $env:RUNNER_TEMP
@@ -157,6 +133,34 @@ jobs:
           } finally {
             Pop-Location
           }
+
+      - name: Windows protected audit namespace and rotation behavior
+        if: ${{ runner.os == 'Windows' }}
+        run: cargo test --locked -p tinysecurity-audit windows_ -- --nocapture
+
+      - name: Test
+        run: cargo test --all-features
+
+      - name: Test default features
+        run: cargo test
+
+      # `cargo build --all-targets` only *compiles* an example. `AGENTS.md`
+      # promises the native loader verifier works, and a compiled
+      # example can still fail on its first line.
+      - name: Run the bundled example
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) module=target/debug/libtinysecurity_module.so ;;
+            macOS) module=target/debug/libtinysecurity_module.dylib ;;
+          esac
+          cargo run -p tinysecurity-module --example verify_module -- "$module"
+          cargo run -p tinysecurity-module --example audit_native_contract -- "$module"
+          # Installed examples must also work outside the workspace root.
+          module="$(pwd)/$module"
+          (cd target && ./debug/examples/verify_module "$module")
+          (cd target && ./debug/examples/audit_native_contract "$module")
 
       # `crates/tinysecurity-bus` exists so a host can name the payload types
       # without compiling the module. That promise is invisible in a diff,
