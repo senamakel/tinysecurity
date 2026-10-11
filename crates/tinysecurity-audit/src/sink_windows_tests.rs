@@ -64,12 +64,22 @@ pub(super) fn fixture()
     drop(handle);
     let path = dir.path().join("audit");
     // The authoritative namespace exists before the sink accepts receipts.
-    OpenOptions::new()
-        .read(true)
-        .write(true)
+    let mut journal = OpenOptions::new()
+        .access_mode(0xc008_0000) // GENERIC_READ | GENERIC_WRITE | WRITE_OWNER
         .create_new(true)
-        .open(dir.path().join("audit.journal"))?
-        .sync_all()?;
+        .open(dir.path().join("audit.journal"))?;
+    // Parent ownership is not inherited: an elevated token may choose Admins.
+    // Install the empty authority owner before bytes, retaining inherited DACL.
+    wrappers::SetSecurityInfo(
+        &mut journal,
+        SeObjectType::SE_FILE_OBJECT,
+        SecurityInformation::Owner,
+        sd.owner(),
+        None,
+        None,
+        None,
+    )?;
+    journal.sync_all()?;
     Ok((dir, path))
 }
 
@@ -164,5 +174,98 @@ fn windows_rename_denied_before_commit_then_same_retry_commits_once()
         10000,
     )?;
     assert_eq!(records.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn windows_new_engine_file_is_owned_by_current_user_before_any_bytes()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let (root, _path) = fixture()?;
+    let directory = Directory::open(root.path())?;
+    let result = directory.file(Path::new("new-file"));
+    println!(
+        "audit-native-init stage=3 category={}",
+        u8::from(result.is_err())
+    );
+    let file = result?;
+    let sd = wrappers::GetSecurityInfo(
+        &file,
+        SeObjectType::SE_FILE_OBJECT,
+        SecurityInformation::Owner,
+    )?;
+    let owner =
+        wrappers::ConvertSidToStringSid(sd.owner().ok_or("file owner absent")?)?.into_string()?;
+    assert_eq!(owner, identity()?);
+    assert_eq!(file.metadata()?.len(), 0);
+    Ok(())
+}
+
+#[test]
+fn windows_existing_foreign_owner_is_denied_without_owner_repair()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let (root, path) = fixture()?;
+    let journal = path.with_file_name("audit.journal");
+    let mut file = OpenOptions::new().access_mode(0x0008_0000).open(&journal)?;
+    let foreign: LocalBox<SecurityDescriptor> = "O:BA".parse()?;
+    wrappers::SetSecurityInfo(
+        &mut file,
+        SeObjectType::SE_FILE_OBJECT,
+        SecurityInformation::Owner,
+        foreign.owner(),
+        None,
+        None,
+        None,
+    )?;
+    drop(file);
+    let directory = Directory::open(root.path())?;
+    assert_eq!(
+        directory.authority(Path::new("audit.journal")).err(),
+        Some(Error::Permissions)
+    );
+    let file = OpenOptions::new().access_mode(0x0002_0000).open(journal)?;
+    let sd = wrappers::GetSecurityInfo(
+        &file,
+        SeObjectType::SE_FILE_OBJECT,
+        SecurityInformation::Owner,
+    )?;
+    let owner =
+        wrappers::ConvertSidToStringSid(sd.owner().ok_or("file owner absent")?)?.into_string()?;
+    assert_eq!(owner, "S-1-5-32-544");
+    println!("audit-native-init stage=4 category=0");
+    Ok(())
+}
+
+#[test]
+fn windows_token_default_owner_explains_ordinary_created_file_owner()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let (root, _path) = fixture()?;
+    let token =
+        winsafe::HPROCESS::GetCurrentProcess().OpenProcessToken(winsafe::co::TOKEN::QUERY)?;
+    let winsafe::TokenInfo::Owner(owner) =
+        token.GetTokenInformation(winsafe::co::TOKEN_INFORMATION_CLASS::Owner)?
+    else {
+        return Err("token default owner unavailable".into());
+    };
+    let token_owner = winsafe::ConvertSidToStringSid(owner.Owner().ok_or("token owner absent")?)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(root.path().join("token-owner-probe"))?;
+    let sd = wrappers::GetSecurityInfo(
+        &file,
+        SeObjectType::SE_FILE_OBJECT,
+        SecurityInformation::Owner,
+    )?;
+    let file_owner =
+        wrappers::ConvertSidToStringSid(sd.owner().ok_or("file owner absent")?)?.into_string()?;
+    let user = identity()?;
+    println!(
+        "audit-native-owner stage=1 token-user={} file-token={} file-user={}",
+        u8::from(token_owner == user),
+        u8::from(file_owner == token_owner),
+        u8::from(file_owner == user)
+    );
+    assert_eq!(file_owner, token_owner);
     Ok(())
 }

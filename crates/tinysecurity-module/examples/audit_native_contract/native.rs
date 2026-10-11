@@ -32,10 +32,13 @@ fn namespace() -> std::result::Result<(tempfile::TempDir, PathBuf), Box<dyn std:
     let path = directory.path().canonicalize()?.join("audit");
     #[cfg(windows)]
     let path = directory.path().join("audit");
+    #[cfg(unix)]
     let mut options = OpenOptions::new();
+    #[cfg(unix)]
     options.write(true).create_new(true);
     #[cfg(unix)]
     options.mode(0o600);
+    #[cfg(unix)]
     options
         .open(path.with_file_name("audit.journal"))?
         .sync_all()?;
@@ -118,6 +121,17 @@ try {
     # Do not depend on PowerShell cmdlet resolution to persist this ACL.
     # The .NET API persists the identical owner and protected access rules.
     [System.IO.Directory]::SetAccessControl($env:TINYSECURITY_NATIVE_DIRECTORY, $acl)
+    # An elevated token can default a new file's owner to Administrators.
+    # Install the empty authority with the actual user owner before any bytes;
+    # retain the directory's restricted inherited access rule unchanged.
+    $journalPath = [IO.Path]::Combine($env:TINYSECURITY_NATIVE_DIRECTORY, 'audit.journal')
+    $journal = [IO.File]::Open($journalPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+    try {
+        $journalAcl = $journal.GetAccessControl()
+        $journalAcl.SetOwner($identity.User)
+        $journal.SetAccessControl($journalAcl)
+        $journal.Flush($true)
+    } finally { $journal.Dispose() }
     $stage = 14; Write-Output "audit-native-installer stage=$stage"
 } catch {
     # Never render the error record: messages may contain paths or identities.

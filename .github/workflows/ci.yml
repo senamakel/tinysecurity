@@ -116,12 +116,20 @@ jobs:
 
           $verifiedModule = Join-Path $verifyRoot "$libraryName.dll"
           Copy-Item -LiteralPath $module -Destination $verifiedModule
-          # Diagnose the engine's real pinned ancestor/ACL checks before native
-          # discovery can hide an asynchronous setup failure behind a timeout.
-          cargo test --locked -p tinysecurity-audit windows_protected_preprovisioned_namespace_commits_exact_retry -- --nocapture
-          if ($LASTEXITCODE -ne 0) { throw 'native audit engine initialization diagnostic failed' }
+          # Collect independent ownership checks before aggregating failure;
+          # one failed check must not hide the exact installed namespace result.
+          $diagnosticFailure = $false
           cargo test --locked --package tinysecurity-module --example audit_native_contract -- --nocapture
-          if ($LASTEXITCODE -ne 0) { throw 'native audit installer regression failed' }
+          if ($LASTEXITCODE -ne 0) { $diagnosticFailure = $true }
+          cargo test --locked -p tinysecurity-audit windows_token_default_owner_explains_ordinary_created_file_owner -- --nocapture
+          if ($LASTEXITCODE -ne 0) { $diagnosticFailure = $true }
+          cargo test --locked -p tinysecurity-audit windows_new_engine_file_is_owned_by_current_user_before_any_bytes -- --nocapture
+          if ($LASTEXITCODE -ne 0) { $diagnosticFailure = $true }
+          cargo test --locked -p tinysecurity-audit windows_existing_foreign_owner_is_denied_without_owner_repair -- --nocapture
+          if ($LASTEXITCODE -ne 0) { $diagnosticFailure = $true }
+          cargo test --locked -p tinysecurity-audit windows_protected_preprovisioned_namespace_commits_exact_retry -- --nocapture
+          if ($LASTEXITCODE -ne 0) { $diagnosticFailure = $true }
+          if ($diagnosticFailure) { throw 'native audit ownership regressions failed' }
           cargo run --locked --package tinysecurity-module --example verify_module -- $verifiedModule
           if ($LASTEXITCODE -ne 0) { throw 'native verifier failed in workspace' }
           cargo run --locked --package tinysecurity-module --example audit_native_contract -- $verifiedModule
