@@ -294,6 +294,7 @@ $account = 'tsa' + [Guid]::NewGuid().ToString('N').Substring(0, 16)
 $password = ConvertTo-SecureString ('Tsa!A1' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
 $created = $false
 $process = $null
+$started = $false
 $stage = 10
 try {
     New-LocalUser -Name $account -Password $password | Out-Null
@@ -325,10 +326,12 @@ if ($identity.User.Value -eq $env:TINYSECURITY_TEST_OWNER) { exit 81 }
 if ($identity.User.Value -ne $env:TINYSECURITY_TEST_FOREIGN) { exit 86 }
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 82 }
+Write-Output 'audit-account-stage=90 foreign-identity=1 nonadmin=1'
 try {
     $control = [IO.File]::ReadAllBytes((Join-Path $env:TINYSECURITY_TEST_DIRECTORY 'read-control'))
     if ([Convert]::ToBase64String($control) -cne 'dGlueXNlY3VyaXR5LXJlYWQtY29udHJvbC12MQ==') { exit 85 }
 } catch { exit 85 }
+Write-Output 'audit-account-stage=91 exact-control-read=1'
 foreach ($name in @('audit', 'audit.1', 'audit.2', 'audit.3', 'audit.lock', 'audit.journal')) {
     try { [void][IO.File]::ReadAllBytes((Join-Path $env:TINYSECURITY_TEST_DIRECTORY $name)); exit 83 }
     catch [UnauthorizedAccessException] { }
@@ -337,20 +340,49 @@ foreach ($name in @('audit', 'audit.1', 'audit.2', 'audit.3', 'audit.lock', 'aud
     try { [IO.File]::Move((Join-Path $env:TINYSECURITY_TEST_DIRECTORY $name), (Join-Path $env:TINYSECURITY_TEST_DIRECTORY ($name + '.outsider'))); exit 88 }
     catch [UnauthorizedAccessException] { }
 }
+Write-Output 'audit-account-stage=92 private-file-denials=6'
 try { [IO.Directory]::Move($env:TINYSECURITY_TEST_DIRECTORY, ($env:TINYSECURITY_TEST_DIRECTORY + '.outsider')); exit 84 }
 catch [UnauthorizedAccessException] { }
+Write-Output 'audit-account-stage=93 namespace-denial=1'
 exit 0
 '@
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
+    $stage = 29
     $file = Join-Path $PSHOME 'powershell.exe'
-    $arguments = @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded)
-    $commandLength = ('"' + $file + '" ' + ($arguments -join ' ')).Length
-    Write-Output ('audit-account-stage=29 encoded-length=' + $encoded.Length + ' command-length=' + $commandLength)
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $file
+    $start.Arguments = '-NoProfile -NonInteractive -Command "try { & ([ScriptBlock]::Create([Console]::In.ReadToEnd())) } catch { exit 89 }"'
+    $start.UseShellExecute = $false
+    $start.UserName = $network.UserName
+    $start.Domain = $network.Domain
+    $start.Password = $password
+    $start.LoadUserProfile = $true
+    $start.WorkingDirectory = (Get-Location).ProviderPath
+    $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    $start.CreateNoWindow = $false
+    $start.RedirectStandardInput = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $commandLength = ('"' + $file + '" ' + $start.Arguments).Length
+    Write-Output ('audit-account-stage=29 script-length=' + $childScript.Length + ' command-length=' + $commandLength)
+    if (($commandLength -ge 1024) -or ($childScript.Length -le 1024)) { throw 'bounded command must carry the full long-script regression over stdin' }
     $stage = 30
-    $process = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -Credential $credential -PassThru -WindowStyle Hidden
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    if (-not $process.Start()) { throw 'ordinary helper did not start' }
+    $started = $true
+    $stdout = $process.StandardOutput.ReadToEndAsync()
+    $stderr = $process.StandardError.ReadToEndAsync()
+    $process.StandardInput.WriteLine($childScript)
+    $process.StandardInput.Close()
     $stage = 40
     if (-not $process.WaitForExit(30000)) { throw 'ordinary account helper timeout' }
     $code = $process.ExitCode
+    # Forward only fixed numeric child phases; all raw stderr stays in memory.
+    foreach ($line in $stdout.Result.Split([char]10)) {
+        $safeLine = $line.TrimEnd([char]13)
+        if ($safeLine -cmatch '^audit-account-stage=[0-9]+( [a-z-]+=[0-9]+)*$') { Write-Output $safeLine }
+    }
+    [void]$stderr.Result
     Write-Output ('audit-account-stage=50 inner-exit=' + $code)
     $stage = 50
     if ($code -ne 0) { throw 'ordinary account isolation failed' }
@@ -386,32 +418,18 @@ exit 0
         Write-Output ('audit-account-stage=' + $stage + ' depth=' + $depth + ' category=' + $kind + ' hresult=' + $exception.HResult + ' native=' + $native)
         $exception = $exception.InnerException
     }
-    if ($stage -eq 30) {
-        # A short launch is diagnostic only: retain the original failure even
-        # if it succeeds. Credentials and all other startup parameters match.
-        try {
-            $shortEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('exit 0'))
-            $shortArguments = @('-NoProfile', '-NonInteractive', '-EncodedCommand', $shortEncoded)
-            $shortLength = ('"' + $file + '" ' + ($shortArguments -join ' ')).Length
-            Write-Output ('audit-account-stage=37 short-command-length=' + $shortLength)
-            $process = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $shortArguments -Credential $credential -PassThru -WindowStyle Hidden
-            [void]$process.Handle
-            if (-not $process.WaitForExit(30000)) { throw 'short diagnostic helper timeout' }
-            Write-Output ('audit-account-stage=37 short-exit=' + $process.ExitCode)
-        } catch {
-            Write-Output ('audit-account-stage=37 hresult=' + $_.Exception.HResult)
-        }
-    }
     exit 1
 } finally {
     try {
-        $terminated = $null -eq $process
+        $terminated = -not $started
         try {
             if ($null -ne $process) {
                 try {
-                    if (-not $process.HasExited) { $process.Kill() }
-                    $process.WaitForExit()
-                    $terminated = $true
+                    if ($started) {
+                        if (-not $process.HasExited) { $process.Kill() }
+                        $process.WaitForExit()
+                        $terminated = $true
+                    }
                 } finally {
                     try {
                         if (-not $terminated) {
