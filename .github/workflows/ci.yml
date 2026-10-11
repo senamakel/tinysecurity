@@ -83,6 +83,13 @@ jobs:
           Set-Acl -LiteralPath $auditRoot -AclObject $security
           "TINYSECURITY_AUDIT_TEST_ROOT=$auditRoot" >> $env:GITHUB_ENV
 
+      - name: Windows approval namespace preserves restricted native drive paths
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          cargo test --locked --package tinysecurity-module --example approval_native_contract windows_approval_namespace_preserves_drive_path_and_opens_restricted_sink -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'native approval namespace regression failed' }
+
       - name: Verify Windows module through the restricted native copy
         if: ${{ runner.os == 'Windows' }}
         shell: pwsh

@@ -58,3 +58,7 @@ try {
     }
     Ok(())
 }
+
+#[cfg(all(test, windows))]
+#[path = "namespace_tests.rs"]
+mod tests;
