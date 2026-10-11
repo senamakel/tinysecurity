@@ -12,10 +12,11 @@ use tinysecurity_bus::{
 struct TestClock {
     wall: AtomicU64,
     mono: AtomicU64,
+    wall_failed: AtomicU64,
 }
 impl Clock for TestClock {
     fn wall_ms(&self) -> Option<u64> {
-        Some(self.wall.load(Ordering::SeqCst))
+        (self.wall_failed.load(Ordering::SeqCst) == 0).then(|| self.wall.load(Ordering::SeqCst))
     }
     fn monotonic_ms(&self) -> u64 {
         self.mono.load(Ordering::SeqCst)
@@ -28,6 +29,10 @@ struct Fixture {
     order: Mutex<Vec<&'static str>>,
     fail: AtomicU64,
     pause_load: AtomicU64,
+    pause_nth_load: AtomicU64,
+    load_calls: AtomicU64,
+    cas_calls: AtomicU64,
+    expire_unavailable_cas: Mutex<Option<(Arc<TestClock>, u64)>>,
     loaded: tokio::sync::Notify,
     release_load: tokio::sync::Notify,
     choice: AtomicU64,
@@ -76,10 +81,12 @@ impl Ports for Fixture {
                 .collect(),
         };
         r.verify_response(&response).map_err(|_| Error::Invalid)?;
-        if self
-            .pause_load
-            .compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+        let call = self.load_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.pause_nth_load.load(Ordering::SeqCst) == call
+            || self
+                .pause_load
+                .compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
         {
             self.loaded.notify_one();
             self.release_load.notified().await;
@@ -87,6 +94,16 @@ impl Ports for Fixture {
         Ok(response)
     }
     async fn cas(&self, r: ApprovalCasRequest2) -> Result<ApprovalCasResponse2> {
+        self.cas_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some((clock, deadline)) = self
+            .expire_unavailable_cas
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .take()
+        {
+            clock.wall.store(deadline, Ordering::SeqCst);
+            return Err(Error::Unavailable);
+        }
         let barrier = self.barrier.lock().map_err(|_| Error::Unavailable)?.clone();
         if let Some(barrier) = barrier {
             barrier.wait().await;
@@ -1232,6 +1249,76 @@ async fn native_grants_require_real_once_decision_and_exact_consumption_receipt(
         );
     }
     Ok(())
+}
+#[tokio::test]
+async fn native_expired_unavailable_cas_denies_before_retrying_durable_mutation() -> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let c = Arc::new(TestClock::default());
+    c.wall.store(1000, Ordering::SeqCst);
+    let owner = engine(f.clone(), c.clone())?;
+    *f.expire_unavailable_cas
+        .lock()
+        .map_err(|_| Error::Unavailable)? = Some((c, 1100));
+    assert!(
+        owner
+            .begin_native_grant(native_request(), 1100)
+            .await
+            .is_err()
+    );
+    assert_eq!(f.cas_calls.load(Ordering::SeqCst), 1);
+    assert!(f.rows.lock().map_err(|_| Error::Unavailable)?.is_empty());
+    assert!(f.order.lock().map_err(|_| Error::Unavailable)?.is_empty());
+    Ok(())
+}
+async fn native_second_load_invalidates_without_side_effects(fault: u8) -> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let c = Arc::new(TestClock::default());
+    c.wall.store(1000, Ordering::SeqCst);
+    c.mono.store(100, Ordering::SeqCst);
+    let owner = Arc::new(engine(f.clone(), c.clone())?);
+    f.pause_nth_load.store(2, Ordering::SeqCst);
+    let task = {
+        let owner = owner.clone();
+        tokio::spawn(async move { owner.begin_native_grant(native_request(), 1100).await })
+    };
+    f.loaded.notified().await;
+    assert_eq!(f.load_calls.load(Ordering::SeqCst), 2);
+    match fault {
+        0 => c.wall.store(1100, Ordering::SeqCst),
+        1 => c.wall.store(999, Ordering::SeqCst),
+        2 => c.mono.store(99, Ordering::SeqCst),
+        3 => c.wall_failed.store(1, Ordering::SeqCst),
+        4 => c.mono.store(200, Ordering::SeqCst),
+        _ => owner.advance_generation(4)?,
+    }
+    f.release_load.notify_one();
+    assert!(task.await.map_err(|_| Error::Unavailable)?.is_err());
+    assert_eq!(f.cas_calls.load(Ordering::SeqCst), 0);
+    assert!(f.rows.lock().map_err(|_| Error::Unavailable)?.is_empty());
+    assert!(f.order.lock().map_err(|_| Error::Unavailable)?.is_empty());
+    assert!(
+        owner
+            .native_intents
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .is_empty()
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn native_second_load_exact_deadline_denies_before_any_durable_mutation() -> Result<()> {
+    native_second_load_invalidates_without_side_effects(0).await
+}
+#[tokio::test]
+async fn native_second_load_clock_faults_deny_before_any_durable_mutation() -> Result<()> {
+    for fault in 1..=4 {
+        native_second_load_invalidates_without_side_effects(fault).await?;
+    }
+    Ok(())
+}
+#[tokio::test]
+async fn native_second_load_generation_change_denies_before_any_durable_mutation() -> Result<()> {
+    native_second_load_invalidates_without_side_effects(5).await
 }
 #[tokio::test]
 async fn native_fixed_deadline_survives_load_delay_and_retry_without_extension() -> Result<()> {

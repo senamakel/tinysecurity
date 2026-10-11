@@ -561,12 +561,14 @@ impl Engine {
         // A concurrent begin may have committed while this call loaded an older
         // snapshot and its memo was reclaimed. Use the durable winner rather
         // than creating a second request with a fresh random identity.
-        if let Some(current) = self
-            .rows(reg)
-            .await?
-            .iter()
-            .find(|current| current.binding == row.binding)
-        {
+        let rows = self.rows(reg).await?;
+        if row.tool_name == "native_secret_grant" {
+            // The load may outlive the private intent. Validate the prepared
+            // original again before resuming or creating any durable row.
+            self.native_row(row)?;
+            self.live(row)?;
+        }
+        if let Some(current) = rows.iter().find(|current| current.binding == row.binding) {
             return self.resume(reg, current, now).await;
         }
         self.persist(None, row).await?;
@@ -864,6 +866,10 @@ impl Engine {
         if row.binding.generation != self.generation.load(Ordering::SeqCst) {
             return Err(Error::Denied);
         }
+        if row.tool_name == "native_secret_grant" {
+            self.native_identity(row)?;
+            self.live(row)?;
+        }
         let record = binding::envelope(row)?;
         let mutation_id = binding::digest(
             b"tinysecurity/approval-mutation/v1\0",
@@ -881,7 +887,13 @@ impl Engine {
         // after newer row versions, not synthesize one from its latest snapshot.
         let receipt = match self.ports.cas(request.clone()).await {
             Ok(receipt) => receipt,
-            Err(Error::Unavailable) => self.ports.cas(request.clone()).await?,
+            Err(Error::Unavailable) => {
+                if row.tool_name == "native_secret_grant" {
+                    self.native_identity(row)?;
+                    self.live(row)?;
+                }
+                self.ports.cas(request.clone()).await?
+            }
             Err(error) => return Err(error),
         };
         request
