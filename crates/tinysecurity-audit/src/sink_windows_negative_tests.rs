@@ -356,14 +356,14 @@ exit 0
     # localized Win32-message suffix against this bounded numeric vocabulary.
     # Raw exception text stays in memory and ambiguous matches report zero.
     $message = $_.Exception.Message.TrimEnd([char[]]@('.', ' ', [char]13, [char]10))
-    $matches = @()
+    $nativeMatches = @()
     foreach ($candidate in @(2, 3, 5, 8, 14, 87, 193, 233, 267, 740, 1058, 1060, 1314, 1326, 1330, 1385, 1450, 1783)) {
         $suffix = [ComponentModel.Win32Exception]::new($candidate).Message.TrimEnd([char[]]@('.', ' ', [char]13, [char]10))
-        if ($message.EndsWith($suffix, [StringComparison]::Ordinal)) { $matches += $candidate }
+        if ($message.EndsWith($suffix, [StringComparison]::Ordinal)) { $nativeMatches += $candidate }
     }
     $derived = 0
-    if ($matches.Count -eq 1) { $derived = $matches[0] }
-    Write-Output ('audit-account-stage=' + $stage + ' message-derived-code=' + $derived + ' candidates=' + $matches.Count)
+    if ($nativeMatches.Count -eq 1) { $derived = $nativeMatches[0] }
+    Write-Output ('audit-account-stage=' + $stage + ' message-derived-code=' + $derived + ' candidates=' + $nativeMatches.Count)
     $exception = $_.Exception
     for ($depth = 0; ($null -ne $exception) -and ($depth -lt 8); $depth++) {
         $native = 0

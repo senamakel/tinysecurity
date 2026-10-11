@@ -22,6 +22,15 @@ pub(crate) fn protected(mut flags: &str) -> bool {
     }
     seen & 1 != 0
 }
+// A present NULL DACL permits everyone, but the safe dependency's native
+// dacl() accessor panics for it. Check the canonical native SDDL first. This
+// does not validate ACE rights: the existing handle checks still do that.
+pub(crate) fn has_dacl_entries(sddl: &str) -> bool {
+    sddl.split("D:")
+        .nth(1)
+        .and_then(|dacl| dacl.split("S:").next())
+        .is_some_and(|dacl| dacl.contains('('))
+}
 #[cfg(test)]
 #[path = "windows_acl_tests.rs"]
 mod tests;

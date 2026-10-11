@@ -213,12 +213,21 @@ fn valid_name(path: &Path) -> Result<()> {
     Ok(())
 }
 fn descriptor(file: &File) -> Result<LocalBox<SecurityDescriptor>> {
-    wrappers::GetSecurityInfo(
+    let sd = wrappers::GetSecurityInfo(
         file,
         SeObjectType::SE_FILE_OBJECT,
         SecurityInformation::Owner | SecurityInformation::Dacl,
     )
-    .map_err(|_| Error::Permissions)
+    .map_err(|_| Error::Permissions)?;
+    let sddl = sd
+        .as_sddl()
+        .map_err(|_| Error::Permissions)?
+        .into_string()
+        .map_err(|_| Error::Permissions)?;
+    if !crate::windows_acl::has_dacl_entries(&sddl) {
+        return Err(Error::Permissions);
+    }
+    Ok(sd)
 }
 fn sid_text(sid: &Sid) -> Result<String> {
     wrappers::ConvertSidToStringSid(sid)
