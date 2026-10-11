@@ -49,6 +49,10 @@ jobs:
       - name: Test native coverage gate
         run: python .github/scripts/check-native-coverage_tests.py
 
+      # The offline dependency feature test resolves the full locked platform graph.
+      - name: Fetch the complete locked dependency graph
+        run: cargo fetch --locked
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
