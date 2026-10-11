@@ -13,11 +13,18 @@ does not establish durability, conditional create, or cross-provider CAS.
 Therefore readback never authorizes deletion. File import receipts and native
 keyring selection are separate future integration work.
 
-A reservation rejects simultaneous resolutions on this resolver and is released
-on cancellation. There are no awaits under state locks. Construction must have
-one boot owner per target: separate resolvers and other processes are not
-serialized by this library. Driver native key-creation locks do not establish
-cross-provider migration atomicity.
+A reservation rejects simultaneous resolutions on this resolver. Cancellation
+before a set attempt releases it. Once a set is attempted, cancellation, panic,
+set failure or failed readback permanently latches this resolver unavailable.
+Only a successful set followed by exact target readback releases the reservation.
+Before restarting resolution, the owner must independently establish that all
+old backend mutations are quiescent; constructing a new resolver does not
+establish this. This library provides no recovery or automatic retry mechanism.
+
+There are no awaits under state locks. Construction must have one boot owner per
+target: separate resolvers and other processes are not serialized by this
+library. Driver native key-creation locks do not establish cross-provider
+migration atomicity.
 
 The app:master_key, {user}:secretstore.master_key, and .secret_key slots remain
 distinct. This checkpoint binds target and all registered sources to one slot.
