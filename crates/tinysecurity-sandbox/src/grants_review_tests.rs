@@ -119,7 +119,9 @@ fn windows_root_relative_installation_grants_deny_in_actual_planner()
         let (_dir, mut scope, request) = fixture()?;
         scope.paths.enabled = enabled;
         assert_eq!(verdict(scope.clone(), request.grants)?, None);
-        for root in ["/bin", "/sbin", "/lib", "/lib64", "/usr", "/library", "/dev"] {
+        for root in [
+            "/bin", "/sbin", "/lib", "/lib64", "/usr", "/library", "/dev",
+        ] {
             for path in [root.to_owned(), root.replace('/', "\\")] {
                 let raw = Path::new(&path);
                 assert!(raw.has_root(), "{path}");
