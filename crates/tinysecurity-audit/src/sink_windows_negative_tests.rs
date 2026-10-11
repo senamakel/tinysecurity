@@ -219,3 +219,67 @@ fn windows_reparse_directory_is_denied_without_outside_mutation()
     std::fs::remove_dir(link)?;
     Ok(())
 }
+
+#[test]
+fn windows_second_ordinary_account_cannot_read_or_replace_the_namespace()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let (root, path) = fixture()?;
+    let sink = JsonlSink::open(&path, 700, 3)?;
+    sink.append(&batch(0))?;
+    let journal = root.path().join("audit.journal");
+    let before = std::fs::read(&journal)?;
+    // The privileged test installer creates a temporary ordinary local account.
+    // Its generated password stays inside PowerShell memory, never in arguments,
+    // environment, stdout, diagnostics or a persisted test file.
+    let script = r"
+$ErrorActionPreference = 'Stop'
+$account = 'tsa' + [Guid]::NewGuid().ToString('N').Substring(0, 16)
+$password = ConvertTo-SecureString ('Tsa!A1' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
+$created = $false
+try {
+    New-LocalUser -Name $account -Password $password | Out-Null
+    $created = $true
+    Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $account
+    $credential = [PSCredential]::new(($env:COMPUTERNAME + '\' + $account), $password)
+    $childScript = @'
+$ErrorActionPreference = 'Stop'
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+if ($identity.User.Value -eq $env:TINYSECURITY_TEST_OWNER) { exit 81 }
+$principal = [Security.Principal.WindowsPrincipal]::new($identity)
+if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 82 }
+foreach ($name in @('audit', 'audit.1', 'audit.2', 'audit.3', 'audit.lock', 'audit.journal')) {
+    try { [void][IO.File]::ReadAllBytes((Join-Path $env:TINYSECURITY_TEST_DIRECTORY $name)); exit 83 }
+    catch [UnauthorizedAccessException] { }
+}
+try { [IO.Directory]::Move($env:TINYSECURITY_TEST_DIRECTORY, ($env:TINYSECURITY_TEST_DIRECTORY + '.outsider')); exit 84 }
+catch [UnauthorizedAccessException] { }
+exit 0
+'@
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
+    $process = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -Credential $credential -PassThru -WindowStyle Hidden
+    if (-not $process.WaitForExit(30000)) { $process.Kill(); throw 'ordinary account helper timeout' }
+    $code = $process.ExitCode
+    $process.Dispose()
+    if ($code -ne 0) { throw 'ordinary account isolation failed' }
+} finally {
+    if ($created) { Remove-LocalUser -Name $account }
+}
+";
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("TINYSECURITY_TEST_DIRECTORY", root.path())
+        .env("TINYSECURITY_TEST_OWNER", identity()?)
+        .output()?;
+    eprintln!(
+        "audit-stage=ordinary-account exit={:?}",
+        output.status.code()
+    );
+    assert!(
+        output.status.success(),
+        "ordinary account must be unable to read or replace the namespace"
+    );
+    assert_eq!(std::fs::read(journal)?, before);
+    assert!(root.path().exists());
+    assert!(!root.path().with_extension("outsider").exists());
+    Ok(())
+}

@@ -1,4 +1,6 @@
 //! Loaded native audit contract with separately served, sender-bound callbacks.
+#[path = "audit_native_contract/native.rs"]
+mod native;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::{
@@ -174,8 +176,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .ok_or("module directory")?
         .join("modules.toml");
     let digest = tinybus::module::sha256_file(&path)?;
-    if std::env::args().nth(2).as_deref() == Some("optional") {
-        return verify_optional_callback_loss(&path).await;
+    match std::env::args().nth(2).as_deref() {
+        Some("optional") => return verify_optional_callback_loss(&path).await,
+        Some("native") => return native::verify(&path).await,
+        _ => {}
     }
     let bus = MemoryBus::new();
     let broker = Broker::new();
@@ -248,7 +252,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     );
     host.shutdown(Duration::from_secs(1)).await;
     task.abort();
-    verify_optional_process(&path)?;
+    verify_process(&path, "optional")?;
+    verify_process(&path, "native")?;
     println!(
         "native audit authority, reentrancy, redaction, timeout, replay and permission phases verified"
     );
@@ -315,16 +320,17 @@ async fn verify_policy_generation_race(
     Ok(())
 }
 
-fn verify_optional_process(
+fn verify_process(
     path: &std::path::Path,
+    mode: &str,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     assert!(
         std::process::Command::new(std::env::current_exe()?)
             .arg(path)
-            .arg("optional")
+            .arg(mode)
             .status()?
             .success(),
-        "separate loaded optional module must preserve degraded permission semantics"
+        "separate loaded audit phase must verify its native permission semantics"
     );
     Ok(())
 }
