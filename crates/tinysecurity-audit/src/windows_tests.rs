@@ -23,7 +23,7 @@ pub(crate) fn diagnose(path: &Path) {
             eprintln!("audit-stage=volume result={:?}", verify_volume(root));
         }
         let handle = match OpenOptions::new()
-            .access_mode(READ_CONTROL_ATTRIBUTES)
+            .access_mode(PIN_ACCESS)
             .share_mode(3)
             .custom_flags(PIN_DIRECTORY)
             .open(&current)
@@ -56,7 +56,7 @@ pub(crate) fn diagnose(path: &Path) {
         ("existing-journal", "audit.journal"),
     ] {
         match OpenOptions::new()
-            .access_mode(READ_CONTROL_ATTRIBUTES)
+            .access_mode(PIN_ACCESS)
             .share_mode(3)
             .custom_flags(OPEN_REPARSE)
             .open(path.join(name))

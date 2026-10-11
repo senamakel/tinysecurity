@@ -16,7 +16,9 @@ use windows_permissions::{
     wrappers,
 };
 
-const READ_CONTROL_ATTRIBUTES: u32 = 0x0002_0080;
+// Metadata-only opens do not participate in NTFS share-access accounting.
+// FILE_LIST_DIRECTORY makes the no-delete share mode an actual rename pin.
+const PIN_ACCESS: u32 = 0x0002_0081;
 const PIN_DIRECTORY: u32 = 0x0220_0000;
 const OPEN_REPARSE: u32 = 0x0020_0000;
 const REPARSE: u32 = 0x400;
@@ -164,7 +166,7 @@ fn verify_volume(root: &str) -> Result<()> {
 }
 fn pin(path: &Path) -> Result<File> {
     let file = OpenOptions::new()
-        .access_mode(READ_CONTROL_ATTRIBUTES)
+        .access_mode(PIN_ACCESS)
         .share_mode(3)
         .custom_flags(PIN_DIRECTORY)
         .open(path)
