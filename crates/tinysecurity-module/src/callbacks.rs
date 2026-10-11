@@ -252,9 +252,21 @@ async fn await_native_worker(
         worker,
     )
     .await
-    .map_err(|_| tinybus::Error::failed("audit worker deadline exceeded"))?
-    .map_err(|_| tinybus::Error::failed("audit worker unavailable"))?
-    .map_err(|_| tinybus::Error::failed("audit storage unavailable"))
+    .map_err(|_| {
+        #[cfg(test)]
+        eprintln!("audit-worker-stage=1 deadline=1");
+        tinybus::Error::failed("audit worker deadline exceeded")
+    })?
+    .map_err(|_| {
+        #[cfg(test)]
+        eprintln!("audit-worker-stage=2 unavailable=1");
+        tinybus::Error::failed("audit worker unavailable")
+    })?
+    .map_err(|_| {
+        #[cfg(test)]
+        eprintln!("audit-worker-stage=3 storage=1");
+        tinybus::Error::failed("audit storage unavailable")
+    })
 }
 #[cfg(test)]
 #[path = "callbacks_tests.rs"]

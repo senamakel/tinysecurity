@@ -352,7 +352,7 @@ exit 0
     $file = Join-Path $PSHOME 'powershell.exe'
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $file
-    $start.Arguments = '-NoProfile -NonInteractive -Command "try { [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); $s=[Console]::In.ReadToEnd(); if(-not $s.StartsWith(''$ErrorActionPreference'')){exit 89}; [Console]::WriteLine(''audit-account-stage=94 utf8-prefix=1''); & ([ScriptBlock]::Create($s)) } catch { exit 89 }"'
+    $start.Arguments = '-NoProfile -NonInteractive -Command "try { [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); $s=[Console]::In.ReadToEnd(); if(-not $s.StartsWith(''$ErrorActionPreference'')){exit 89}; [Console]::WriteLine(''audit-account-stage=94 utf8-prefix=1''); $b=[ScriptBlock]::Create($s); [Console]::WriteLine(''audit-account-stage=94 parsed=1''); & $b } catch { $n=$_.Exception.GetType().Name; $k=0; switch($n){ParseException{$k=1} CommandNotFoundException{$k=2} MethodInvocationException{$k=3} RuntimeException{$k=4} UnauthorizedAccessException{$k=5}}; [Console]::WriteLine((''audit-account-stage=95 kind={0} category={1} hresult={2}'' -f $k,[int]$_.CategoryInfo.Category,$_.Exception.HResult)); exit 89 }"'
     $start.UseShellExecute = $false
     $start.UserName = $network.UserName
     $start.Domain = $network.Domain
@@ -386,7 +386,7 @@ exit 0
     $requiredPhases = @('audit-account-stage=90 foreign-identity=1 nonadmin=1', 'audit-account-stage=91 exact-control-read=1', 'audit-account-stage=92 private-file-denials=6', 'audit-account-stage=93 namespace-denial=1')
     $allLines = @($stdout.Result.Split([char]10) | ForEach-Object { $_.TrimEnd([char]13) } | Where-Object { $_.Length -gt 0 })
     $lines = @($allLines | Where-Object { $requiredPhases -ccontains $_ })
-    $diagnostics = @($allLines | Where-Object { $_ -cmatch '^audit-account-stage=94 utf8-prefix=1$|^audit-account-stage=96 (child-entry|identity-read)=1$' })
+    $diagnostics = @($allLines | Where-Object { $_ -cmatch '^audit-account-stage=94 (utf8-prefix|parsed)=1$|^audit-account-stage=95 kind=[0-5] category=[0-9]+ hresult=-?[0-9]+$|^audit-account-stage=96 (child-entry|identity-read)=1$' })
     foreach ($line in $allLines) {
         if (($requiredPhases -ccontains $line) -or ($diagnostics -ccontains $line)) { Write-Output $line }
     }
