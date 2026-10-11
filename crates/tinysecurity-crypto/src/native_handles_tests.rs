@@ -396,7 +396,7 @@ fn malformed_registration_and_purpose_operation_pairs_deny() -> TestResult {
     Ok(())
 }
 
-fn human_receipt(binding: &Binding) -> Result<HumanGrantReceipt> {
+pub(super) fn human_receipt(binding: &Binding) -> Result<HumanGrantReceipt> {
     use tinysecurity_bus::{
         AccessTier, ApprovalBinding2, AuditCorrelation2, AuditEventReceipt2, CallerContext, Origin,
     };
@@ -426,7 +426,7 @@ fn human_receipt(binding: &Binding) -> Result<HumanGrantReceipt> {
         args_redacted: binding.safe_arguments(),
         summary: "native key authority".into(),
         created_at_ms: 1000,
-        expires_at_ms: 1100,
+        expires_at_ms: binding.expires_at_ms(),
         state: ApprovalLifecycle2::Reserved,
         choice: Some(ApprovalChoice2::Once),
         attribution: Some("human".into()),

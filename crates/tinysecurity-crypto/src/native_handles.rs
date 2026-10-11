@@ -39,6 +39,8 @@ pub enum OperationKind {
     RetainPassword,
     /// Retain exact caller-owned plaintext without returning it.
     RetainPlaintext,
+    /// Exact owner-created config cipher work, never external routine receipt authority.
+    ConfigCipher,
 }
 /// Immutable trusted owner registration. No field grants live authority.
 pub struct Registration {
@@ -201,6 +203,7 @@ pub struct Binding {
     input: ConfidentialBytes,
     challenge: ConfidentialBytes,
     commitment: [u8; 32],
+    cipher: Option<cipher::CipherBinding>,
 }
 impl Binding {
     /// Owner-sampled absolute wall deadline, for exact durable native approval.
@@ -251,6 +254,7 @@ impl Binding {
 pub struct Reservation {
     registry: Registry,
     binding: Binding,
+    extra_bytes: usize,
 }
 impl Reservation {
     /// Check the original reservation before returning a cached pending review.
@@ -272,7 +276,7 @@ impl Drop for Reservation {
             state.budget.release();
             state.pending_bytes = state
                 .pending_bytes
-                .saturating_sub(self.binding.input.capacity() + 32);
+                .saturating_sub(self.binding.input.capacity() + 32 + self.extra_bytes);
         }
     }
 }
@@ -397,7 +401,12 @@ impl RoutineReceipt {
     /// # Errors
     /// Rejects native-grant operations and malformed owner correlations.
     pub fn from_consumed_pending(binding: &Binding, pending: &str, consumer: &str) -> Result<Self> {
-        if binding.kind == OperationKind::NativeMasterGrant || !text(pending) || !text(consumer) {
+        if matches!(
+            binding.kind,
+            OperationKind::NativeMasterGrant | OperationKind::ConfigCipher
+        ) || !text(pending)
+            || !text(consumer)
+        {
             return Err(Error::NativeDenied);
         }
         Ok(Self {
@@ -407,8 +416,10 @@ impl RoutineReceipt {
         })
     }
     fn verify(&self, binding: &Binding) -> Result<()> {
-        if binding.kind == OperationKind::NativeMasterGrant
-            || !text(&self.pending)
+        if matches!(
+            binding.kind,
+            OperationKind::NativeMasterGrant | OperationKind::ConfigCipher
+        ) || !text(&self.pending)
             || !text(&self.consumer)
         {
             return Err(Error::NativeDenied);
@@ -476,6 +487,9 @@ impl<T> std::fmt::Debug for OpaqueHandle<T> {
         f.write_str("OpaqueHandle([REDACTED])")
     }
 }
+/// Bounded internal config-master cipher consumers.
+pub mod cipher;
+
 impl Registry {
     /// Capture trusted immutable registrations and actual SDK peer; no live grant is issued.
     /// # Errors
@@ -561,6 +575,13 @@ impl Registry {
     /// # Errors
     /// Denies substituted peer/purpose, stale generation, rollback, invalid lifetime or exhausted bounds.
     pub fn reserve(&self, request: Request<'_>) -> Result<Reservation> {
+        self.reserve_internal(request, None)
+    }
+    fn reserve_internal(
+        &self,
+        request: Request<'_>,
+        cipher: Option<cipher::CipherBinding>,
+    ) -> Result<Reservation> {
         let input = ConfidentialBytes(request.input);
         let now = self.now()?;
         let mut state = self.lock()?;
@@ -570,7 +591,13 @@ impl Registry {
             || !text(request.call_id)
             || request.ttl_ms == 0
             || request.ttl_ms > state.limits.max_ttl_ms
-            || input.len() > state.limits.max_input_bytes
+            || input.len()
+                > cipher
+                    .as_ref()
+                    .map_or(state.limits.max_input_bytes, |binding| {
+                        binding.input_limit(state.limits.max_input_bytes, &input)
+                    })
+            || (request.kind == OperationKind::ConfigCipher) != cipher.is_some()
             || (request.kind == OperationKind::NativeMasterGrant
                 && request.purpose == Purpose::PasswordEncryption)
             || (request.kind == OperationKind::RetainPassword
@@ -578,7 +605,7 @@ impl Registry {
         {
             return Err(Error::NativeDenied);
         }
-        let expires = Time {
+        let mut expires = Time {
             wall: now
                 .wall
                 .checked_add(u64::from(request.ttl_ms))
@@ -588,6 +615,9 @@ impl Registry {
                 .checked_add(u64::from(request.ttl_ms))
                 .ok_or(Error::NativeDenied)?,
         };
+        if let Some(cipher) = &cipher {
+            cipher.cap_deadline(&mut expires, now)?;
+        }
         let pending = state
             .pending_bytes
             .checked_add(input.capacity())
@@ -626,6 +656,7 @@ impl Registry {
             input,
             challenge: random_bytes()?,
             commitment: [0; 32],
+            cipher,
         };
         binding.commitment = commitment(&state.authorization_key, &binding);
         let limits = state.limits;
@@ -648,6 +679,7 @@ impl Registry {
         Ok(Reservation {
             registry: self.clone(),
             binding,
+            extra_bytes: 0,
         })
     }
     fn validate(&self, work: &Reservation) -> Result<()> {
@@ -682,7 +714,10 @@ impl Registry {
         verifier: &dyn NativeRoutineVerifier,
     ) -> Result<AuthorizedRoutine> {
         self.validate(&work)?;
-        if work.binding.kind == OperationKind::NativeMasterGrant {
+        if matches!(
+            work.binding.kind,
+            OperationKind::NativeMasterGrant | OperationKind::ConfigCipher
+        ) {
             return Err(Error::NativeDenied);
         }
         let receipt = verifier.consume(&work.binding).await?;
@@ -984,6 +1019,10 @@ fn commitment(key: &[u8], binding: &Binding) -> [u8; 32] {
         binding.expires.monotonic,
     ] {
         context.update(&number.to_be_bytes());
+    }
+    if let Some(cipher) = &binding.cipher {
+        context.update(b"tinysecurity/config-cipher/v1\0");
+        cipher.commit(&mut context);
     }
     let tag = context.sign();
     let mut result = [0; 32];

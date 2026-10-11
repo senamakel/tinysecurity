@@ -102,6 +102,30 @@ impl SecretCipher {
         tinystoragedrivers::secrets::crypto::encrypt_enc2(&self.key, value.as_bytes())
             .map_err(|e| project_error(&e))
     }
+    // Native consumers keep passthrough and migration replacements guarded too.
+    // This is not a second format implementation: enabled encryption delegates
+    // to the same accepted driver as the existing public primitive.
+    pub(crate) fn encrypt_confidential(&self, value: &str) -> Result<Zeroizing<String>> {
+        check_length(value.len(), MAX_PLAINTEXT_BYTES)?;
+        if !self.enabled || value.is_empty() {
+            return Ok(Zeroizing::new(value.into()));
+        }
+        tinystoragedrivers::secrets::crypto::encrypt_enc2(&self.key, value.as_bytes())
+            .map(Zeroizing::new)
+            .map_err(|error| project_error(&error))
+    }
+    pub(crate) fn migrate_confidential(
+        &self,
+        value: &str,
+    ) -> Result<(Zeroizing<String>, Option<Zeroizing<String>>)> {
+        let plaintext = self.decrypt(value)?;
+        let replacement = if value.starts_with("enc:") {
+            Some(self.encrypt_confidential(&plaintext)?)
+        } else {
+            None
+        };
+        Ok((plaintext, replacement))
+    }
     /// Read enc2, legacy enc or plaintext without changing stored bytes.
     /// # Errors
     /// Malformed, unauthenticated or oversized ciphertext fails closed.

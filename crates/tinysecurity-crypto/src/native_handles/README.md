@@ -4,7 +4,9 @@ This owner library retains loaded masters, already-derived password keys and
 exact plaintext behind typed process-local opaque handles. It composes the
 existing material owners and shared WorkBudget admission accounting. It starts
 no derivation workers, accesses no credential backend and exports no key or
-plaintext read member. Hosts link the minimal TinySecurity bus contract; they
+registry plaintext read member. Its typed config cipher owner runs bounded
+SecretCipher primitives synchronously and offers confidential output only to
+a fixed trusted native delivery port. Hosts link the minimal TinySecurity bus contract; they
 must not link this implementation library.
 
 Registry initialization captures trusted subject registrations, purposes,
@@ -37,8 +39,9 @@ actual authenticated handler, exact original operation/input, registered
 purpose, fresh private challenge, output class and consumer. Pending identity
 strings and constructing a receipt do not create provenance. The pending owner
 must bind the reserved deadline or shorten the reservation before admission.
-This port grants neither native master loading/minting nor renewal. Real
-PendingRegistry/NativeConsumer transport and one-time delivery are later scopes.
+This port grants neither native master loading/minting nor renewal. The typed config cipher consumer below has its own real private pending owner;
+these external retention receipts cannot authorize config cipher work. Actual
+authenticated bus consumer transport remains a later scope.
 
 Both verifier futures run outside the registry mutex. Live registry identity,
 generation, epoch, clocks, commitment and expiry are checked before and after
@@ -74,10 +77,11 @@ master/password owners retain their existing cleanup contracts. No claim is
 made about perfect stack/register cleanup, external caller copies, serde/SDK
 frames or process-wide memory erasure. The API has no serde authority types.
 
-This checkpoint is internal retention and trust-boundary validation only.
-It proves neither real native consent/backend access nor confidential bus
-dispatch, Argon worker accounting, host RPC adoption, provider selection,
-released artifacts or native three-platform operation.
+This checkpoint provides internal retention, typed config cipher execution and
+trusted native-port delivery validation. It proves neither real native
+consent/backend access nor confidential bus dispatch, Argon worker accounting,
+host RPC adoption, provider selection, released artifacts or native
+three-platform operation.
 
 The approval owner exposes trusted native begin/consume prerequisites with a fixed
 owner-sampled deadline and the exact keyed native call correlation. Its reserved
@@ -97,3 +101,78 @@ exercise this composition; they do not establish real OS consent or storage.
 `Reservation::validate` rechecks the original admitted work before a module returns
 a cached pending review. It preserves the same challenge and deadline and fences
 rollback, expiry, scope revocation and generation changes through the owner registry.
+
+
+## Typed config cipher consumer
+
+`cipher::CipherOwner::new` captures the existing registry, immutable trusted
+`CipherConfig` (encryption setting and fixed consumer registration), and one
+`NativeCipherConsumer`. These values must come from trusted native
+initialization, never from an invocation's claims or arbitrary callback. Only
+`ConfigUserMaster` is supported here; App encrypted-map/document and password
+consumers remain distinct capabilities.
+
+`prepare(CipherRequest)` validates the actual captured peer and selected
+`MasterHandle`, then reserves the original input and creates a move-only
+`CipherPending`. The original private HMAC includes `CipherKind` (encrypt,
+decrypt, migrate), master identity/epoch/expiry, fixed destination, trusted
+encryption setting and private owner identity, in addition to the existing
+subject/registration/policy/call/generation/challenge fields. Its deadline
+cannot exceed either clock's master deadline. The bounded private pending
+table consumes the exact operation once; dropping pending cancels it.
+External `NativeRoutineVerifier` receipt constructors and public retention
+reservations cannot manufacture this cipher authority.
+
+`execute` consumes that private pending entry and runs `SecretCipher` under
+the registry lock with no await, spawned worker or second queue. The registry
+never returns or lends master bytes to an external callback. It validates live
+master and reservation state before native work, before delivery, after the
+consumer future and immediately before the final result. Revocation,
+generation changes, expiry and permanent clock faults deny publication.
+
+True nonempty enabled encryption returns an enc2 ciphertext. Decrypt,
+plaintext, disabled encryption and empty passthrough instead reach only the
+fixed `NativeCipherConsumer::deliver` future as a borrowed `CipherDelivery`.
+Legacy migration binds plaintext and the exact replacement together. Enabled
+migration can return its true encrypted replacement after acknowledgement;
+disabled migration keeps the plaintext replacement inside confidential
+delivery. `CipherDelivery::acknowledge` returns a move-only private receipt
+binding original operation and exact keyed output. Calling it acknowledges
+actual delivery at the trusted port; its shape alone cannot prove transport
+provenance. Debug, errors and safe arguments never contain plaintext or keys.
+
+The consumer must perform all delivery inside its future without detached
+work and acknowledge only completion at its fixed authenticated destination.
+The original reservation, input and zeroizing outputs remain owned through
+that future's completion or actual cancellation/drop. Tests prove this
+in-process contract; dropping a future is not evidence that a bus receiver,
+OS call or detached worker stopped. A future native transport needs a physical
+slot/completion owner or bounded uncertainty fence, plus staging and final
+commit/abort acknowledgement, before releasing product-controller plaintext
+or claiming real transport quiescence. This library does not implement that
+transport or product publication handshake. Delivery exposes the immutable
+registration and original subject to this trusted port plus `safe_call_id`,
+the private keyed original-operation correlation, which distinguishes repeated
+original call IDs without exposing raw input or an unkeyed input hash. The
+adapter must compare this scope against its independently captured native
+destination, rather than using caller identity strings.
+
+Plaintext remains bounded to one MiB. Encoded cipher inputs have separate
+bounds including historical prefix, nonce and tag: at most 2,097,213 bytes for
+enc2 and 2,097,156 for legacy enc. Smaller configured plaintext limits produce
+correspondingly smaller envelopes. No global retention/input ceiling grows.
+Original input backing capacity is charged unchanged; preparation additionally
+charges conservative simultaneous primitive scratch, master-copy and output
+capacity before native work. Output capacity is checked against that charge;
+confidential buffers are never shrunk to hide their allocation. Consequently
+valid large inputs can require larger configured pending/resident budgets.
+Invalidating a generation does not release the original owner's charge before
+actual Drop. No cancellation refunds the per-registration rate.
+
+Owned plaintext and replacement strings use zeroizing allocations and wipe
+live slices before release; tests inspect this boundary on delivery failure,
+cancellation and late acknowledgements. Existing driver primitive cleanup,
+caller/native-consumer copies, stack/register temporaries and process abort
+retain their documented limits. The complete format fixtures, tampering,
+nonce freshness, private binding substitutions, exact once consumption and
+full envelope boundary are covered in `cipher_tests.rs`.
