@@ -246,6 +246,70 @@ impl SecretState {
             clock,
         })
     }
+    pub(super) fn cipher_registry(&self) -> handles::Registry {
+        self.registry.clone()
+    }
+    pub(super) fn cipher_scope(&self, registration: &str) -> tinybus::Result<&ApprovalScope2> {
+        let reg = self.registered.get(registration).ok_or_else(denied)?;
+        if reg.descriptor.purpose != MasterPurpose2::ConfigUserMaster {
+            return Err(denied());
+        }
+        Ok(&reg.scope)
+    }
+    pub(super) fn prepare_cipher(
+        &self,
+        owner: &handles::cipher::CipherOwner,
+        request: &mut tinysecurity_bus::SecretCipherRequest2,
+        generation: u64,
+    ) -> tinybus::Result<handles::cipher::CipherPending> {
+        self.prune()?;
+        let aliases = self.aliases.lock().map_err(|_| denied())?;
+        let alias = aliases.get(&request.master_handle).ok_or_else(denied)?;
+        if alias.registration != request.registration_id
+            || alias.generation != generation
+            || alias.purpose != handles::Purpose::ConfigUserMaster
+        {
+            return Err(denied());
+        }
+        owner
+            .prepare(handles::cipher::CipherRequest {
+                registration: &request.registration_id,
+                authenticated_peer: &self.peer,
+                generation,
+                call_id: &request.call_id,
+                master: &alias.handle,
+                kind: super::cipher::kind(request.operation),
+                input: Zeroizing::new(std::mem::take(&mut request.input)),
+                ttl_ms: request.ttl_ms,
+            })
+            .map_err(|_| denied())
+    }
+    pub(super) fn validate_cipher_master(
+        &self,
+        registration: &str,
+        alias: &str,
+        generation: u64,
+        deadline: u64,
+    ) -> tinybus::Result<()> {
+        let now = self.clock.now().map_err(|_| {
+            self.close();
+            denied()
+        })?;
+        if now.wall >= deadline {
+            return Err(denied());
+        }
+        let aliases = self.aliases.lock().map_err(|_| denied())?;
+        let alias = aliases.get(alias).ok_or_else(denied)?;
+        self.registry
+            .validate_handle(
+                &alias.handle,
+                registration,
+                handles::Purpose::ConfigUserMaster,
+                &self.peer,
+                generation,
+            )
+            .map_err(|_| denied())
+    }
     fn registration(&self, request: &SecretRequest2) -> tinybus::Result<&Registered> {
         let reg = self
             .registered
@@ -306,6 +370,7 @@ impl SecretState {
         if let Ok(mut aliases) = self.aliases.lock() {
             aliases.clear();
         }
+        super::cipher::close_pending();
     }
 }
 fn call(reg: &Registered, binding: &handles::Binding) -> EvaluateRequest {

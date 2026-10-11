@@ -134,6 +134,12 @@ impl CipherDelivery {
     pub fn expires_at_ms(&self) -> u64 {
         self.expires_at_ms
     }
+    /// Keyed exact-output correlation for the fixed trusted native callback.
+    /// It exposes no plaintext, raw input hash or master material.
+    #[must_use]
+    pub fn safe_output_id(&self) -> String {
+        format!("output-{}", super::hex(&self.output))
+    }
     /// Acknowledge actual completed delivery inside the fixed trusted native port.
     /// Receipt construction alone is not independent transport provenance.
     #[must_use]
@@ -218,6 +224,55 @@ pub struct CipherPending {
     owner: Arc<PendingState>,
     work: Option<Reservation>,
     identity: [u8; 32],
+}
+impl CipherPending {
+    /// Borrow immutable safe binding metadata for the fixed module audit port.
+    /// # Errors
+    /// Rejects already consumed authority.
+    pub fn binding(&self) -> Result<&Binding> {
+        Ok(&self.work.as_ref().ok_or(Error::NativeDenied)?.binding)
+    }
+    /// Compare confidential execution input with the originally admitted bytes.
+    /// No bytes or authorization receipt are exported.
+    #[must_use]
+    pub fn matches_input(&self, input: &[u8]) -> bool {
+        self.work.as_ref().is_some_and(|work| {
+            constant_time::verify_slices_are_equal(&work.binding.input, input).is_ok()
+        })
+    }
+}
+/// Completed cipher work retains bounded admission through final required audit.
+/// Only explicit publication releases the safe result after another live check.
+pub struct CipherCompletion<'a> {
+    owner: &'a CipherOwner,
+    work: Reservation,
+    result: CipherResult,
+    output_id: String,
+}
+impl CipherCompletion<'_> {
+    /// Original private binding's safe metadata for the fixed final audit port.
+    #[must_use]
+    pub fn binding(&self) -> &Binding {
+        &self.work.binding
+    }
+    /// Keyed exact-output identity for sanitized final audit.
+    #[must_use]
+    pub fn safe_output_id(&self) -> &str {
+        &self.output_id
+    }
+    /// Validate original selected-master authority around every final await.
+    /// # Errors
+    /// Denies expiry, revocation, generation changes and permanent clock faults.
+    pub fn validate(&self) -> Result<()> {
+        self.owner.validate(&self.work)
+    }
+    /// Publish only the classified safe result after the final live check.
+    /// # Errors
+    /// Denies stale authority and drops unpublished output and retained admission.
+    pub fn publish(self) -> Result<CipherResult> {
+        self.validate()?;
+        Ok(self.result)
+    }
 }
 impl Drop for CipherPending {
     fn drop(&mut self) {
@@ -433,11 +488,26 @@ impl CipherOwner {
         }
         pending.work.take().ok_or(Error::NativeDenied)
     }
+    /// Check admitted pending authority without consuming or renewing it.
+    /// # Errors
+    /// Denies cross-owner, canceled, expired, revoked or substituted authority.
+    pub fn validate_pending(&self, pending: &CipherPending) -> Result<()> {
+        if !Arc::ptr_eq(&self.pending, &pending.owner) {
+            return Err(Error::NativeDenied);
+        }
+        self.validate(pending.work.as_ref().ok_or(Error::NativeDenied)?)
+    }
     /// Consume pending authority once and synchronously execute before delivery.
     /// No lock spans delivery; the original reservation remains owned throughout.
     /// # Errors
     /// Denies stale pending, invalid ciphertext, capacity and unacknowledged delivery.
     pub async fn execute(&self, pending: CipherPending) -> Result<CipherResult> {
+        self.execute_guarded(pending).await?.publish()
+    }
+    /// Execute while retaining original admission through the module's final audit.
+    /// # Errors
+    /// Denies stale pending, invalid ciphertext, capacity and unacknowledged delivery.
+    pub async fn execute_guarded(&self, pending: CipherPending) -> Result<CipherCompletion<'_>> {
         let work = self.consume(pending)?;
         let binding = work.binding.cipher.as_ref().ok_or(Error::NativeDenied)?;
         let (plain, replacement) = {
@@ -466,12 +536,6 @@ impl CipherOwner {
             return Err(Error::NativeCapacity);
         }
         self.validate(&work)?;
-        if binding.kind == CipherKind::Encrypt && binding.enabled && !work.binding.input.is_empty()
-        {
-            let ciphertext = plaintext.as_str().to_owned();
-            self.validate(&work)?;
-            return Ok(CipherResult::Ciphertext(ciphertext));
-        }
         let output = {
             let now = self.registry.now()?;
             let mut state = self.registry.lock()?;
@@ -484,6 +548,18 @@ impl CipherOwner {
                 replacement.as_ref(),
             )
         };
+        let output_id = format!("output-{}", super::hex(&output));
+        if binding.kind == CipherKind::Encrypt && binding.enabled && !work.binding.input.is_empty()
+        {
+            let ciphertext = plaintext.as_str().to_owned();
+            self.validate(&work)?;
+            return Ok(CipherCompletion {
+                owner: self,
+                work,
+                output_id,
+                result: CipherResult::Ciphertext(ciphertext),
+            });
+        }
         let delivery = CipherDelivery {
             plaintext,
             replacement,
@@ -521,9 +597,14 @@ impl CipherOwner {
             None
         };
         self.validate(&work)?;
-        Ok(CipherResult::Delivered {
-            migrated: delivery.replacement.is_some(),
-            replacement_ciphertext,
+        Ok(CipherCompletion {
+            owner: self,
+            work,
+            output_id,
+            result: CipherResult::Delivered {
+                migrated: delivery.replacement.is_some(),
+                replacement_ciphertext,
+            },
         })
     }
 }
@@ -566,7 +647,8 @@ redacted!(
     DeliveryAcknowledgement,
     CipherResult,
     CipherPending,
-    CipherOwner
+    CipherOwner,
+    CipherCompletion<'_>
 );
 
 #[cfg(test)]

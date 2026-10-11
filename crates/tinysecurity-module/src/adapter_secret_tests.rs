@@ -80,6 +80,8 @@ struct Backend {
     registry: Mutex<Option<handles::Registry>>,
     mutation_pending: std::sync::atomic::AtomicBool,
     release: tokio::sync::Notify,
+    cipher_slots: Mutex<BTreeMap<u16, cipher_tests::Slot>>,
+    cipher_clock: Mutex<Option<Arc<FixedClock>>>,
 }
 impl Backend {
     fn new(mode: u32) -> Self {
@@ -90,11 +92,14 @@ impl Backend {
             rows: Mutex::new(BTreeMap::new()),
             batches: Mutex::new(Vec::new()),
             target: Mutex::new(
-                (matches!(mode, 0 | 17)).then(|| Zeroizing::new("AA".repeat(32).into_bytes())),
+                (mode >= 20 || matches!(mode, 0 | 17))
+                    .then(|| Zeroizing::new("AA".repeat(32).into_bytes())),
             ),
             registry: Mutex::new(None),
             mutation_pending: std::sync::atomic::AtomicBool::new(false),
             release: tokio::sync::Notify::new(),
+            cipher_slots: Mutex::new(BTreeMap::new()),
+            cipher_clock: Mutex::new(None),
         }
     }
 }
@@ -154,6 +159,7 @@ impl Sink {
                 batches.push(request.clone());
             }
         }
+        cipher_tests::audit_boundary(&self.0, &request)?;
         std::future::ready(Ok(AuditSinkResponse2 {
             scope: request.scope,
             stream_id: request.stream_id,
@@ -670,6 +676,10 @@ impl Control {
         let result = proxy
             .call_confidential::<SecretResponse2>(names::methods::EXECUTE_SECRET2, (&execute,))
             .await;
+        if self.state.mode >= 20 {
+            let response = result?;
+            return self.exercise_cipher(&proxy, response).await;
+        }
         if self.state.mode <= 2 || self.state.mode == 17 {
             let response = result?;
             let encoded = serde_json::to_string(&response)?;
@@ -773,8 +783,17 @@ async fn serve_callbacks(
         .await?;
     connection
         .serve_at(
-            path,
+            path.clone(),
             crate::callbacks::Authenticated::new(Secrets(state.clone()), binding.clone()),
+        )
+        .await?;
+    connection
+        .serve_at(
+            path,
+            crate::callbacks::Authenticated::new(
+                cipher_tests::Consumer(state.clone()),
+                binding.clone(),
+            ),
         )
         .await?;
     Ok(())
@@ -842,6 +861,15 @@ mod linked_fixture {
             clock.clone(),
         )?);
         *state.registry.lock().map_err(|_| denied())? = Some(secret.registry.clone());
+        let (cipher, audit_client) = cipher_tests::configured_fixture(
+            &connection,
+            &binding,
+            &audit,
+            &clock,
+            &state,
+            &secret,
+            &engine,
+        )?;
         let mut service = super::super::super::service_for(
             Arc::new(std::sync::RwLock::new(
                 tinysecurity::Policy::new(ModuleConfig::default()).map_err(|_| denied())?,
@@ -849,6 +877,8 @@ mod linked_fixture {
             None,
         );
         service.secret = Some(secret);
+        service.secret_cipher = cipher;
+        service.audit = Some(audit_client);
         service.approvals = Some(engine);
         connection
             .serve_at(
@@ -919,3 +949,6 @@ async fn actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_
     }
     Ok(())
 }
+
+#[path = "adapter_secret_cipher_fixture_tests.rs"]
+mod cipher_tests;

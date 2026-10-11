@@ -154,6 +154,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'native approval verifier failed in workspace' }
           cargo run --locked --package tinysecurity-module --example judge_native_contract -- $verifiedModule
           if ($LASTEXITCODE -ne 0) { throw 'native judge verifier failed in workspace' }
+          cargo run --locked --package tinysecurity-module --example secret_cipher_native_contract -- $verifiedModule
+          if ($LASTEXITCODE -ne 0) { throw 'native master/cipher verifier failed in workspace' }
+          $cipherVerifier = (Resolve-Path 'target/debug/examples/secret_cipher_native_contract.exe').Path
           cargo run --locked --package tinysecurity-module --example sandbox_native_contract -- $verifiedModule
           if ($LASTEXITCODE -ne 0) { throw 'native sandbox verifier failed in workspace' }
           $sandboxVerifier = (Resolve-Path 'target/debug/examples/sandbox_native_contract.exe').Path
@@ -162,6 +165,8 @@ jobs:
           $auditVerifier = (Resolve-Path 'target/debug/examples/audit_native_contract.exe').Path
           Push-Location $env:RUNNER_TEMP
           try {
+            & $cipherVerifier $verifiedModule
+            if ($LASTEXITCODE -ne 0) { throw 'native master/cipher verifier failed outside workspace' }
             & $verifier $verifiedModule
             if ($LASTEXITCODE -ne 0) { throw 'native verifier failed outside workspace' }
             & $sandboxVerifier $verifiedModule
@@ -202,6 +207,14 @@ jobs:
           cargo run -p tinysecurity-module --example approval_native_contract -- "$module"
           cargo run -p tinysecurity-module --example judge_native_contract -- "$module"
           cargo run -p tinysecurity-module --example sandbox_native_contract -- "$module"
+          cargo run -p tinysecurity-module --example secret_cipher_native_contract -- "$module"
+          # The new actual native master/cipher fixture also runs from an
+          # independent data-only cwd; no build output is sent there.
+          cipherModule="$(pwd)/$module"
+          cipherVerifier="$(pwd)/target/debug/examples/secret_cipher_native_contract"
+          externalCipherCwd="$(mktemp -d)"
+          (cd -- "$externalCipherCwd" && "$cipherVerifier" "$cipherModule")
+          rmdir "$externalCipherCwd"
           # Installed examples must also work outside the workspace root.
           module="$(pwd)/$module"
           (cd target && ./debug/examples/verify_module "$module")
@@ -274,7 +287,9 @@ jobs:
           }
           pathlib.Path('coverage-native-metadata.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
           PYTHON
-          cargo llvm-cov --locked --workspace --all-targets --all-features --json --output-path coverage-native.json
+          cargo llvm-cov --locked --workspace --all-targets --all-features --no-report
+          .github/scripts/run-native-master-cipher-coverage.sh
+          cargo llvm-cov report --json --output-path coverage-native.json
           # Report exports the instrumented all-feature/all-target run. Selection
           # flags are invalid for cargo-llvm-cov's export-only report subcommand.
           cargo llvm-cov report --lcov --output-path coverage-native.info

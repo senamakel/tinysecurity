@@ -198,3 +198,44 @@ close authority permanently. Device replay capacity and every scope epoch are
 checked before publication; bootstrap evidence survives accepted reinit. Native OS providers, physical files, passwords, encryption,
 plaintext delivery, routine native consumers, pairing and production host
 migration remain outside this subset.
+
+## Confidential native config cipher (contract 1.11)
+
+`EvaluateSecretCipher2` and `ExecuteSecretCipher2` are confidential routine
+operations over an actual `ExecuteSecret2` ConfigUserMaster acquisition. They
+never prompt for routine fields or create master authority from a receipt.
+`secret_cipher` SDK metadata fixes one existing registration, consumer identity,
+enabled setting, callback timeout and physical slot count. It cannot change on
+reinit. Older 1.10 initialization omits it and retains its original behavior.
+An older decoder does not know the additive `native_routine` audit kind; hosts
+using this capability must negotiate the new contract vocabulary.
+
+Evaluate owns the real private crypto pending reservation, then commits required
+sanitized NativeRoutine intent through the existing AuditClient. Execute removes
+it once, requires unchanged metadata and confidential input, and checks actual
+execution, output-stage and publication audit acknowledgements. Audit arguments
+contain keyed operation/output correlations, Engine-derived durable scope/policy
+and fixed classifications. Caller-supplied audit event identities reserve stream
+order; they never construct a private routine acknowledgement or cipher grant.
+
+Plaintext, disabled/empty passthrough and disabled migration replacements go only
+to the fixed confidential `SecretCipherConsumer2.Deliver` port. A real trusted
+receiver authenticates the pinned loaded module and stages zeroizing output in
+an exclusive bounded physical slot. It refuses overwrite and releases locally
+only after the matching successful owner response. A staged callback reply is
+not product plaintext publication. The owner retains its original reservation
+through final required audit and live validation; only true ciphertext appears
+in ordinary result fields. A failed/canceled/late/invalid stage leaves its sender
+slot permanently occupied across generation changes and reinit. Operation-ID
+or status echoes cannot clear uncertainty. A successful response permits the
+receiver to consume/wipe its exact slot before accepting another stage there.
+
+The broker currently requires every confidential destination to be an admitted
+native module. Ordinary unattested host callbacks are denied, including master
+HumanOnly prompt and secret backend delivery. The tracked native fixture loads
+the real hashed TinySecurity cdylib and a separately admitted host-trusted native
+callback fixture. This proves module-to-admitted-native-consumer composition;
+it does not prove ordinary OpenHuman host callback admission. That TinyBus
+integration gap remains open. SDK serde/frame/partial-decode copies and process
+abort are outside the owned-buffer wiping guarantee. Host migration, passwords,
+pairing and app document storage remain separate unfinished capabilities.

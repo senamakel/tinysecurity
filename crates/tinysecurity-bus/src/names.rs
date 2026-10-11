@@ -5,6 +5,10 @@ pub const INTERFACE: &str = "ai.tinyhumans.tinysecurity.Policy";
 pub const OBJECT_PATH: &str = "/ai/tinyhumans/tinysecurity/Policy";
 /// Method names; availability is reported by `PolicyInfo`.
 pub mod methods {
+    /// Admit a bounded routine operation against a real acquired config master.
+    pub const EVALUATE_SECRET_CIPHER2: &str = "EvaluateSecretCipher2";
+    /// Consume exact private pending cipher authority once.
+    pub const EXECUTE_SECRET_CIPHER2: &str = "ExecuteSecretCipher2";
     /// Begin `HumanOnly` confidential master review.
     pub const EVALUATE_SECRET2: &str = "EvaluateSecret2";
     /// Resolve a master after exact Human Once and required audit.
@@ -100,6 +104,8 @@ pub mod methods {
 }
 /// Bootstrap implemented methods only.
 pub const METHODS: &[&str] = &[
+    methods::EVALUATE_SECRET_CIPHER2,
+    methods::EXECUTE_SECRET_CIPHER2,
     methods::EVALUATE_SECRET2,
     methods::EXECUTE_SECRET2,
     methods::EVALUATE_DEVICE2,

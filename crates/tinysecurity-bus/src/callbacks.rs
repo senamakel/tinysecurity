@@ -137,6 +137,10 @@ impl ApprovalCasRequest2 {
 }
 /// Fixed new callback identities; incompatible semantics never reuse legacy interfaces.
 pub mod callback_names2 {
+    /// Fixed init-bound response-controlled confidential native output slots.
+    pub const SECRET_CIPHER_CONSUMER: &str = "ai.tinyhumans.tinysecurity.SecretCipherConsumer2";
+    /// Stage exact bound output privately until successful owner response.
+    pub const DELIVER: &str = "Deliver";
     /// Confidential injected secret backend; only exact Load and Set.
     pub const SECRET_BACKEND: &str = "ai.tinyhumans.tinysecurity.SecretBackend2";
     /// Exact confidential target mutation.

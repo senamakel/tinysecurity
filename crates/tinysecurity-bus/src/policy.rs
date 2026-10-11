@@ -287,6 +287,9 @@ impl fmt::Debug for JudgeConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModuleConfig {
+    /// Immutable fixed confidential native config cipher consumer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_cipher: Option<crate::SecretCipherConfig2>,
     /// Init-only metadata for confidential native master resolution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<crate::SecretConfig2>,
@@ -322,6 +325,7 @@ impl Default for ModuleConfig {
             contract_version: crate::CONTRACT_VERSION,
             device: None,
             secret: None,
+            secret_cipher: None,
             sandbox: None,
             policy: PolicyConfig::default(),
             judge: None,

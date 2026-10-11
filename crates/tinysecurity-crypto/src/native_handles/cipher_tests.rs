@@ -999,3 +999,88 @@ pub(super) fn observe_wiped(bytes: &[u8]) {
     assert!(bytes.iter().all(|byte| *byte == 0));
     WIPED.with(|count| count.set(count.get() + 1));
 }
+
+#[tokio::test]
+async fn completed_cipher_keeps_capacity_until_final_audit_and_live_publication() -> TestResult {
+    let f = Fixture::new(true, Limits::default()).await?;
+    let completed = f
+        .owner
+        .execute_guarded(f.pending(CipherKind::Encrypt, b"private")?)
+        .await?;
+    assert!(f.reg.lock()?.pending_bytes > 0);
+    drop(completed);
+    assert_eq!(f.reg.lock()?.pending_bytes, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn final_audit_barrier_cannot_publish_revoked_expired_or_clock_faulted_completion()
+-> TestResult {
+    for mode in 0..4 {
+        let f = Fixture::new(true, Limits::default()).await?;
+        let completed = f
+            .owner
+            .execute_guarded(f.pending(CipherKind::Encrypt, b"private")?)
+            .await?;
+        let entered = tokio::sync::Notify::new();
+        let release = tokio::sync::Notify::new();
+        let mut finalization = Box::pin(async {
+            completed.validate()?;
+            entered.notify_one();
+            release.notified().await;
+            completed.validate()?;
+            completed.publish()
+        });
+        tokio::select! {
+            biased;
+            _ = &mut finalization => return Err("final audit barrier released unexpectedly".into()),
+            () = entered.notified() => {}
+        }
+        assert!(f.reg.lock()?.pending_bytes > 0);
+        match mode {
+            0 => f.reg.revoke_scope("a")?,
+            1 => f.reg.advance_generation(2)?,
+            2 => f.clock.elapsed.store(30000, Ordering::SeqCst),
+            _ => f.clock.failed.store(true, Ordering::SeqCst),
+        }
+        release.notify_one();
+        assert!(finalization.await.is_err());
+        assert_eq!(f.reg.lock()?.pending_bytes, 0);
+    }
+    Ok(())
+}
+#[tokio::test]
+async fn cancellation_during_final_audit_drops_retained_admission_without_refunding_rate()
+-> TestResult {
+    let f = Fixture::new(
+        true,
+        Limits {
+            operations_per_minute: 2,
+            ..Limits::default()
+        },
+    )
+    .await?;
+    let pending = f.pending(CipherKind::Decrypt, b"private")?;
+    assert!(pending.matches_input(b"private"));
+    assert!(!pending.matches_input(b"changed"));
+    assert!(f.owner.validate_pending(&pending).is_ok());
+    let completed = f.owner.execute_guarded(pending).await?;
+    assert!(completed.safe_output_id().starts_with("output-"));
+    let entered = tokio::sync::Notify::new();
+    let mut finalization = Box::pin(async {
+        completed.validate()?;
+        entered.notify_one();
+        std::future::pending::<()>().await;
+        completed.publish()
+    });
+    tokio::select! {
+        biased;
+        _ = &mut finalization => return Err("pending final audit completed unexpectedly".into()),
+        () = entered.notified() => {}
+    }
+    assert!(f.reg.lock()?.pending_bytes > 0);
+    drop(finalization);
+    assert!(f.pending(CipherKind::Decrypt, b"private").is_err());
+    assert_eq!(f.reg.lock()?.pending_bytes, 0);
+    Ok(())
+}

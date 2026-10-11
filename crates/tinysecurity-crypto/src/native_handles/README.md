@@ -176,3 +176,15 @@ caller/native-consumer copies, stack/register temporaries and process abort
 retain their documented limits. The complete format fixtures, tampering,
 nonce freshness, private binding substitutions, exact once consumption and
 full envelope boundary are covered in `cipher_tests.rs`.
+
+The 1.11 module adapter uses `CipherPending::binding`/`matches_input` and
+`CipherOwner::validate_pending` for exact read-only audit/input checks.
+`execute_guarded` produces a move-only `CipherCompletion` retaining the original
+Reservation and classified output through the caller's final required audit.
+Its `validate` brackets final awaits and `publish` performs the final selected
+master/epoch/generation/deadline check before returning a safe result. Dropping
+or canceling this guard releases admission without refunding rate. No new
+receipt constructor or raw master accessor is added. `CipherDelivery` exposes
+only keyed exact-output correlation in addition to its existing trusted port
+metadata. This supersedes the earlier immediate-completion API's narrower
+final-audit lifetime; `execute` remains a immediate-publication convenience.

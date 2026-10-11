@@ -29,6 +29,7 @@ struct PolicyService {
     sandbox_clock: Arc<dyn tinysecurity::approval::Clock>,
     device: Option<Arc<tinysecurity::crypto::device_handles::Registry>>,
     secret: Option<Arc<secret::SecretState>>,
+    secret_cipher: Option<Arc<cipher::CipherState>>,
     sandbox: Option<Arc<tinysecurity::sandbox::Engine>>,
     approvals: Option<Arc<tinysecurity::approval::Engine>>,
     policy: Arc<RwLock<Policy>>,
@@ -179,6 +180,20 @@ impl PolicyService {
 }
 #[tinybus::interface(name = "ai.tinyhumans.tinysecurity.Policy")]
 impl PolicyService {
+    #[tinybus(confidential)]
+    async fn evaluate_secret_cipher2(
+        &self,
+        request: tinysecurity_bus::EvaluateSecretCipherRequest2,
+    ) -> BusResult<tinysecurity_bus::SecretCipherPending2> {
+        self.cipher_evaluate(request).await
+    }
+    #[tinybus(confidential)]
+    async fn execute_secret_cipher2(
+        &self,
+        request: tinysecurity_bus::ExecuteSecretCipherRequest2,
+    ) -> BusResult<tinysecurity_bus::SecretCipherResponse2> {
+        self.cipher_execute(request).await
+    }
     #[tinybus(confidential)]
     async fn evaluate_secret2(
         &self,
@@ -772,6 +787,7 @@ fn service_for(
         sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
         device: None,
         secret: None,
+        secret_cipher: None,
         sandbox: None,
         approvals: None,
         policy,
@@ -946,10 +962,14 @@ fn activate_authorities(
     generation: u64,
     publish: impl FnOnce() -> BusResult<()>,
 ) -> BusResult<()> {
+    let cipher_prepared = cipher::prepare_generation()?;
     let secret_prepared = secret::prepare_generation(secret, generation)?;
     device::transition(device, device_limits, generation, publish)?;
     if let Some(prepared) = secret_prepared {
         prepared.commit();
+    }
+    if let Some(mut pending) = cipher_prepared {
+        pending.clear();
     }
     Ok(())
 }
@@ -990,6 +1010,7 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
         tinysecurity::crypto::device_handles::ConfidentialConfig::new(config.device.take());
     let device_clock = default_clock();
     let secret_config = config.secret.take();
+    let cipher_config = config.secret_cipher.take();
     let judge_config = config.judge.clone();
     let audit_config = config.audit.clone();
     let approval_config = config.approvals.clone();
@@ -1033,6 +1054,14 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
             clock: device_clock.clone(),
         },
     )?;
+    let secret_cipher = cipher::configured(
+        cipher_config,
+        &connection,
+        requested_host.as_deref(),
+        secret.as_ref(),
+        approvals.as_ref().map(|(_, engine)| engine),
+        audit.as_ref(),
+    )?;
     let judge = configured_automatic(judge_config, approvals.as_ref().map(|(_, e)| e))?;
     if let Some(active) = ACTIVE.get() {
         let mut guard = active
@@ -1061,24 +1090,34 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
     }
     let policy = Arc::new(RwLock::new(candidate));
     let mut service = service_for(Arc::clone(&policy), audit.clone());
-    service.device = device.clone();
-    service.secret = secret.clone();
+    service.device.clone_from(&device);
+    service.secret.clone_from(&secret);
+    service.secret_cipher.clone_from(&secret_cipher);
     service.sandbox_clock = device_clock;
     service.sandbox = sandbox.as_ref().map(|(_, engine)| Arc::clone(engine));
     service.approvals = approvals.as_ref().map(|(_, engine)| Arc::clone(engine));
     if let Some(engine) = &service.approvals {
         engine.replace_automatic(judge).map_err(approval_failure)?;
     }
+    serve_policy(&connection, service, binding.clone()).await?;
+    device::activate(device.as_ref())?;
+    secret::activate(secret)?;
+    cipher::activate(secret_cipher)?;
+    activate_policy(policy, audit, binding, sandbox, approvals)
+}
+async fn serve_policy(
+    connection: &Connection,
+    service: PolicyService,
+    binding: crate::callbacks::PeerBinding,
+) -> BusResult<()> {
     connection
         .serve_at(
             names::OBJECT_PATH.try_into()?,
-            crate::callbacks::Authenticated::new(service, binding.clone()),
+            crate::callbacks::Authenticated::new(service, binding),
         )
         .await?;
     connection.request_name(names::INTERFACE).await?;
-    device::activate(device.as_ref())?;
-    secret::activate(secret)?;
-    activate_policy(policy, audit, binding, sandbox, approvals)
+    Ok(())
 }
 fn activate_policy(
     policy: Arc<RwLock<Policy>>,
@@ -1115,10 +1154,10 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["EvaluateSecret2", "ExecuteSecret2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
+    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
-    optional = ["ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],
+    optional = ["ai.tinyhumans.tinysecurity.SecretCipherConsumer2", "ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],
     lazy = false,
 }
 #[cfg(test)]
@@ -1134,3 +1173,6 @@ mod device;
 
 #[path = "adapter_secret.rs"]
 pub(crate) mod secret;
+
+#[path = "adapter_secret_cipher.rs"]
+mod cipher;
