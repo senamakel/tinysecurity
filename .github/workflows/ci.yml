@@ -215,6 +215,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $checkoutHead = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'coverage checkout metadata failed' }
+          $toolchain = rustc --version --verbose
+          if ($LASTEXITCODE -ne 0) { throw 'coverage toolchain metadata failed' }
+          [ordered]@{
+            checkout_root = (Get-Location).Path
+            head = $checkoutHead
+            rustc = $toolchain
+            runner_os = $env:RUNNER_OS
+          } | ConvertTo-Json | Set-Content -Encoding utf8 coverage-windows-metadata.json
           cargo llvm-cov --locked --workspace --all-targets --all-features --json --output-path coverage-windows.json
           if ($LASTEXITCODE -ne 0) { throw 'native Windows coverage tests failed' }
           cargo llvm-cov report --all-features --lcov --output-path coverage-windows.info
@@ -244,6 +254,7 @@ jobs:
           path: |
             coverage-windows.json
             coverage-windows.info
+            coverage-windows-metadata.json
           if-no-files-found: warn
 
       - name: Upload coverage report

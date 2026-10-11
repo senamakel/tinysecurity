@@ -33,10 +33,12 @@ def relative_source(filename, root):
     if windows:
         relative = relative.casefold()
     parts = relative.split('/')
-    if any(part in ('', '.', '..') for part in parts):
+    if '\x00' in relative or any(part in ('', '.', '..') for part in parts):
+        raise ValueError(f'invalid checkout source path: {filename}')
+    if relative.startswith('vendor/'):
         return None
     if not relative.startswith('crates/') or not relative.endswith('.rs'):
-        return None
+        raise ValueError(f'unknown checkout source path: {filename}')
     return relative
 
 
@@ -79,6 +81,8 @@ def parse_lcov(report, root):
                 files.setdefault(current, {})
         elif record.startswith('DA:') and current is not None:
             fields = record[3:].split(',')
+            if len(fields) not in (2, 3):
+                raise ValueError(f'invalid LCOV line record: {current}')
             line, count = int(fields[0]), int(fields[1])
             if line <= 0 or count < 0:
                 raise ValueError(f'invalid LCOV line: {current}')
@@ -119,11 +123,23 @@ def changed_lines(diff):
     return files
 
 
-def check_changed(lines, changed, minimum):
-    """Require measured Windows changes and a nonzero changed-line denominator."""
+def check_changed(lines, changed, minimum, compiled):
+    """Cross-check compiled production admission before measuring changed lines.
+
+    JSON is the native compilation inventory: platform-disabled sources are
+    absent, and declaration-only sources have zero executable lines. Neither
+    requires LCOV. Every admitted executable production source does, even when
+    unchanged, so missing instrumentation cannot silently shrink the gate.
+    """
     for name in REQUIRED:
         if not lines.get(name):
             raise ValueError(f'no measured changed or executable LCOV lines: {name}')
+    for name, (_, count) in compiled.items():
+        if production_source(name) and count and not lines.get(name):
+            raise ValueError(f'missing executable LCOV source: {name}')
+    for name, executable in lines.items():
+        if production_source(name) and executable and (name not in compiled or not compiled[name][1]):
+            raise ValueError(f'LCOV source absent from executable JSON inventory: {name}')
     if not changed:
         return None
     for name in REQUIRED:
@@ -163,7 +179,7 @@ def main():
     ).stdout
     changed = changed_lines(diff)
     lcov = parse_lcov(Path(args.lcov).read_text(encoding='utf-8'), args.root)
-    result = check_changed(lcov, changed, 80)
+    result = check_changed(lcov, changed, 80, files)
     if result is None:
         print('No changed production Rust lines relative to canonical base; file gate passed.')
         return

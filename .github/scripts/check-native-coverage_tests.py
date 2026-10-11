@@ -12,6 +12,8 @@ spec.loader.exec_module(gate)
 
 WINDOWS = 'crates/tinysecurity-audit/src/windows.rs'
 ACL = 'crates/tinysecurity-audit/src/windows_acl.rs'
+ADAPTER = 'crates/tinysecurity-module/src/adapter.rs'
+COMPILED = {WINDOWS: (1, 1), ACL: (1, 1)}
 ROOT = 'D:/a/tinysecurity/tinysecurity'
 
 
@@ -43,7 +45,8 @@ class NativeCoverageAdmission(unittest.TestCase):
 
     def test_checkout_substring_and_path_escape_do_not_admit_sources(self):
         self.assertIsNone(gate.relative_source('X:/other/' + ROOT + '/' + WINDOWS, ROOT))
-        self.assertIsNone(gate.relative_source(ROOT + '/../outside/' + WINDOWS, ROOT))
+        with self.assertRaisesRegex(ValueError, 'invalid checkout source path'):
+            gate.relative_source(ROOT + '/../outside/' + WINDOWS, ROOT)
         self.assertIsNone(gate.relative_source(ROOT + '-other/' + WINDOWS, ROOT))
 
     def test_conflicting_duplicate_source_is_rejected(self):
@@ -53,31 +56,97 @@ class NativeCoverageAdmission(unittest.TestCase):
     def test_lcov_normalizes_windows_paths_and_admits_changed_lines(self):
         lcov = 'SF:' + (ROOT + '/' + WINDOWS).replace('/', '\\') + '\nDA:3,1\nend_of_record\nSF:' + ROOT + '/' + ACL + '\nDA:4,1\nend_of_record\n'
         lines = gate.parse_lcov(lcov, ROOT)
-        self.assertEqual(gate.check_changed(lines, {WINDOWS: {3}, ACL: {4}}, 80), (2, 2))
+        self.assertEqual(gate.check_changed(lines, {WINDOWS: {3}, ACL: {4}}, 80, COMPILED), (2, 2))
 
     def test_zero_windows_changed_denominator_is_rejected(self):
         with self.assertRaisesRegex(ValueError, 'no measured changed.*windows.rs'):
-            gate.check_changed({ACL: {4: 1}}, {WINDOWS: {3}, ACL: {4}}, 80)
+            gate.check_changed({ACL: {4: 1}}, {WINDOWS: {3}, ACL: {4}}, 80, COMPILED)
 
     def test_uninstrumented_changed_windows_source_is_rejected(self):
         with self.assertRaisesRegex(ValueError, 'no measured changed.*windows_acl.rs'):
-            gate.check_changed({WINDOWS: {3: 1}}, {WINDOWS: {3}, ACL: {4}}, 80)
+            gate.check_changed({WINDOWS: {3: 1}}, {WINDOWS: {3}, ACL: {4}}, 80, COMPILED)
 
     def test_low_changed_line_coverage_is_rejected(self):
         with self.assertRaisesRegex(ValueError, 'below 80'):
-            gate.check_changed({WINDOWS: {3: 0}, ACL: {4: 1}}, {WINDOWS: {3}, ACL: {4}}, 80)
+            gate.check_changed({WINDOWS: {3: 0}, ACL: {4: 1}}, {WINDOWS: {3}, ACL: {4}}, 80, COMPILED)
 
     def test_no_production_changes_skip_only_changed_line_gate(self):
-        self.assertIsNone(gate.check_changed({WINDOWS: {3: 1}, ACL: {4: 1}}, {}, 80))
+        self.assertIsNone(gate.check_changed({WINDOWS: {3: 1}, ACL: {4: 1}}, {}, 80, COMPILED))
         self.assertEqual(gate.changed_lines('+++ b/crates/a/src/sink_tests.rs\n@@ -0,0 +1 @@\n+x\n'), {})
 
     def test_missing_lcov_source_fails_even_without_production_changes(self):
         with self.assertRaisesRegex(ValueError, 'executable LCOV lines'):
-            gate.check_changed({}, {}, 80)
+            gate.check_changed({}, {}, 80, COMPILED)
 
     def test_unknown_diff_path_is_not_silently_no_changes(self):
         with self.assertRaisesRegex(ValueError, 'unrecognized git diff source path'):
             gate.changed_lines('+++ "b/crates/a/src/unknown.rs"\n@@ -0,0 +1 @@\n+x\n')
+
+    def test_omitted_compiled_adapter_changes_are_rejected(self):
+        compiled = {**COMPILED, ADAPTER: (4, 4)}
+        with self.assertRaisesRegex(ValueError, 'missing.*LCOV.*adapter.rs'):
+            gate.check_changed({WINDOWS: {3: 1}, ACL: {4: 1}},
+                               {WINDOWS: {3}, ADAPTER: {100, 101, 102, 103}},
+                               80, compiled)
+
+    def test_missing_compiled_lcov_is_rejected_without_changes(self):
+        with self.assertRaisesRegex(ValueError, 'missing.*LCOV.*adapter.rs'):
+            gate.check_changed({WINDOWS: {3: 1}, ACL: {4: 1}}, {},
+                               80, {**COMPILED, ADAPTER: (4, 4)})
+
+    def test_empty_compiled_lcov_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'missing.*LCOV.*adapter.rs'):
+            gate.check_changed({WINDOWS: {3: 1}, ACL: {4: 1}, ADAPTER: {}},
+                               {ADAPTER: {100}}, 80, {**COMPILED, ADAPTER: (1, 1)})
+
+    def test_uninstrumented_unix_and_declaration_changes_do_not_require_lcov(self):
+        unix = 'crates/tinysecurity-audit/src/unix.rs'
+        declarations = 'crates/tinysecurity-module/src/lib.rs'
+        self.assertEqual(gate.check_changed(
+            {WINDOWS: {3: 1}, ACL: {4: 1}},
+            {WINDOWS: {3}, unix: {100}, declarations: {1}}, 80,
+            {**COMPILED, declarations: (0, 0)}), (1, 1))
+
+    def test_compiled_adapter_uncovered_changes_join_denominator(self):
+        with self.assertRaisesRegex(ValueError, 'changed lines: 1/5 below 80'):
+            gate.check_changed(
+                {WINDOWS: {3: 1}, ACL: {4: 1}, ADAPTER: dict.fromkeys(range(100, 104), 0)},
+                {WINDOWS: {3}, ADAPTER: set(range(100, 104))}, 80,
+                {**COMPILED, ADAPTER: (90, 100)})
+
+    def test_malformed_checkout_lcov_path_cannot_hide_invalid_data(self):
+        with self.assertRaisesRegex(ValueError, 'invalid checkout source path'):
+            gate.parse_lcov('SF:' + ROOT + '/crates/a/../src/b.rs\nDA:invalid\n', ROOT)
+
+    def test_malformed_checkout_json_path_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'invalid checkout source path'):
+            gate.check_files(report((WINDOWS, 1, 1), (ACL, 1, 1),
+                                    ('crates/a/../src/b.rs', 1, 1)), ROOT, 90)
+
+    def test_unknown_checkout_source_path_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'unknown checkout source path'):
+            gate.parse_lcov('SF:' + ROOT + '/src/unknown.rs\nDA:1,1\n', ROOT)
+
+    def test_valid_external_and_vendored_dependencies_are_ignored(self):
+        lcov = ('SF:C:/cargo/registry/src/lib.rs\nDA:1,1\nend_of_record\n'
+                'SF:' + ROOT + '/vendor/dependency/src/lib.rs\nDA:1,1\nend_of_record\n')
+        self.assertEqual(gate.parse_lcov(lcov, ROOT), {})
+
+    def test_malformed_checkout_lcov_line_record_is_rejected(self):
+        for record in ('DA:1', 'DA:0,1', 'DA:1,-1', 'DA:bad,1'):
+            with self.subTest(record=record), self.assertRaises(ValueError):
+                gate.parse_lcov('SF:' + ROOT + '/' + WINDOWS + '\n' + record + '\n', ROOT)
+
+    def test_lcov_executable_source_missing_from_json_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'absent from executable JSON.*adapter.rs'):
+            gate.check_changed({WINDOWS: {3: 1}, ACL: {4: 1}, ADAPTER: {100: 1}},
+                               {ADAPTER: {100}}, 80, COMPILED)
+
+    def test_invalid_checkout_path_components_reject_in_both_reports(self):
+        for path in ('crates//a/src/b.rs', 'crates/./a/src/b.rs',
+                     'crates/a/src/b\x00.rs'):
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, 'invalid checkout source path'):
+                gate.relative_source(ROOT + '/' + path, ROOT)
 
     def test_added_and_modified_line_ranges_come_from_zero_context_diff(self):
         diff = '+++ b/' + WINDOWS + '\n@@ -1,2 +3,2 @@\n+x\n+y\n+++ b/' + ACL + '\n@@ -0,0 +4 @@\n+z\n'
