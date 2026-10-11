@@ -95,8 +95,8 @@ fn parent_grants_never_cover_existing_or_prospective_reserved_prefix_children()
 fn windows_different_drive_root_grants_cannot_cover_system_subtrees()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (_dir, mut scope, _) = fixture()?;
-    scope.paths.home_dir = Some(PathBuf::from(r"C:\Users\operator"));
-    scope.paths.workspace_dir = PathBuf::from(r"C:\openhuman-state");
+    scope.paths.home_dir = Some(std::path::PathBuf::from(r"C:\Users\operator"));
+    scope.paths.workspace_dir = std::path::PathBuf::from(r"C:\openhuman-state");
     scope.paths.enabled = false;
     let root = Path::new(r"D:\");
     assert!(root.is_absolute());

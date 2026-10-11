@@ -33,6 +33,9 @@ async fn human_once_for_symlink_target_cannot_authorize_retargeted_grant()
     request.host_approval = None;
     request.audit = audit(8);
     request.host_approval = Some(approve_resolved_target(&h, &store, &request, 5).await?);
+    // Replanning at a later clock value must retain the durable authority
+    // binding while separate Once/expiry fences still govern permission.
+    h.sink.clock.0.store(1100, Ordering::SeqCst);
     let admitted = h.service.plan2(request.clone()).await?;
     assert_eq!(admitted.decision.verdict, tinysecurity_bus::Verdict::Allow);
     let artifact = admitted.artifact.required()?;

@@ -158,3 +158,6 @@ impl<T> Required for Option<T> {
 
 #[path = "grants_review_tests.rs"]
 mod review_tests;
+
+#[path = "grants_rights_tests.rs"]
+mod rights_tests;

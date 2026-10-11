@@ -1,49 +1,9 @@
 //! Canonical grant admission reuses the native owner filesystem policy.
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tinysecurity_bus::{PathGrant, PathValidationResult, SandboxDenial2, SandboxScope2};
 use tinysecurity_policy::{PathScope, protected_path, resolve_ancestor};
-fn overlaps(root: &Path, protected: &Path) -> bool {
-    root.starts_with(protected) || protected.starts_with(root)
-}
 fn floor(root: &Path, scope: &SandboxScope2) -> bool {
-    if protected_path(root) {
-        return true;
-    }
-    let mut protected = vec![scope.paths.workspace_dir.clone()];
-    for path in [
-        "/etc",
-        "/root",
-        "/boot",
-        "/proc",
-        "/sys",
-        "/system",
-        "/private/etc",
-        "/private/var/root",
-        "/usr",
-        "/bin",
-        "/sbin",
-        "/lib",
-        "/lib64",
-        "/dev",
-    ] {
-        let path = PathBuf::from(path);
-        if path.is_absolute() {
-            protected.push(path);
-        }
-    }
-    if let Some(home) = &scope.paths.home_dir {
-        for name in [".ssh", ".gnupg", ".aws"] {
-            protected.push(home.join(name));
-        }
-    }
-    scope
-        .paths
-        .reserved_paths
-        .iter()
-        .for_each(|p| protected.push(p.path.clone()));
-    protected
-        .iter()
-        .any(|p| overlaps(root, p) || resolve_ancestor(p).is_ok_and(|p| overlaps(root, &p)))
+    tinysecurity_policy::protected_subtree(root, scope.paths.home_dir.as_deref())
 }
 pub(crate) fn admit(
     scope: &SandboxScope2,
@@ -53,16 +13,14 @@ pub(crate) fn admit(
     let mut result = Vec::new();
     for grant in grants {
         let raw = Path::new(&grant.path);
-        if !raw.is_absolute() || protected_path(raw) {
+        if !raw.is_absolute() || protected_path(raw) || floor(raw, scope) {
             return Err(SandboxDenial2::Floor);
         }
-        let PathValidationResult::Allowed { resolved } = paths.validate(&grant.path, grant.write)
+        let PathValidationResult::Allowed { resolved } =
+            paths.validate_grant(&grant.path, grant.write)
         else {
             return Err(SandboxDenial2::Path);
         };
-        if floor(&resolved, scope) {
-            return Err(SandboxDenial2::Floor);
-        }
         if !scope.grant_ceiling.iter().any(|ceiling| {
             (!grant.write || ceiling.write)
                 && resolve_ancestor(Path::new(&ceiling.path))

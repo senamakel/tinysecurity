@@ -360,7 +360,24 @@ impl Engine {
         original["operation_json"] =
             serde_json::from_str(&request.operation_json).map_err(|_| Error::InvalidOperation)?;
         original.sort_all_objects();
-        let arguments_json = serde_json::to_string(&serde_json::json!({"operation": original, "executor_id": artifact.executor_id, "capability_id": artifact.capability_id})).map_err(|_| Error::InvalidOperation)?;
+        let mut authority = serde_json::to_value(&artifact).map_err(|_| Error::InvalidOperation)?;
+        let fields = authority.as_object_mut().ok_or(Error::InvalidOperation)?;
+        // The durable human decision binds every effective authority field.
+        // Registry identity and reservation exist only after approval. Expiry
+        // is separately bounded by the approval engine and plan clock fences;
+        // the public correlation hash also incorporates that temporal value.
+        for phase_field in [
+            "plan_id",
+            "approval_reservation_id",
+            "expires_at_ms",
+            "fingerprint",
+        ] {
+            fields.remove(phase_field);
+        }
+        let mut binding = serde_json::json!({"operation": original, "effective_plan": authority});
+        binding.sort_all_objects();
+        let arguments_json =
+            serde_json::to_string(&binding).map_err(|_| Error::InvalidOperation)?;
         let original = EvaluateRequest {
             caller: CallerContext {
                 agent: facts.subject.agent.clone(),

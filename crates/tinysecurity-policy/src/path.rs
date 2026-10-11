@@ -1,6 +1,46 @@
 //! Native ancestor resolution and unconditional floor ported from `OpenHuman`.
 use crate::{DenialReason, PolicyConfig};
 use std::path::{Path, PathBuf};
+pub(super) const CRITICAL_ROOTS: &[&str] = &[
+    "/etc",
+    "/root",
+    "/boot",
+    "/proc",
+    "/sys",
+    "/system",
+    "/private/etc",
+    "/private/var/root",
+];
+pub(super) const INSTALLATION_ROOTS: &[&str] = &[
+    "/bin", "/sbin", "/lib", "/lib64", "/usr", "/library", "/dev",
+];
+pub(super) const CREDENTIAL_COMPONENTS: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".azure",
+    ".kube",
+    "keychains",
+    ".netrc",
+    ".git-credentials",
+    ".pgpass",
+    ".npmrc",
+];
+pub(super) const CREDENTIAL_PAIRS: &[(&str, &str)] = &[
+    ("microsoft", "protect"),
+    ("microsoft", "credentials"),
+    ("microsoft", "crypto"),
+    ("microsoft", "vault"),
+    (".docker", "config.json"),
+    (".cargo", "credentials.toml"),
+];
+pub(super) fn denial_segment(segment: &str) -> &str {
+    segment
+        .split(':')
+        .next()
+        .unwrap_or(segment)
+        .trim_end_matches([' ', '.'])
+}
 pub(super) fn floor(path: &str) -> bool {
     let normalized = path.to_ascii_lowercase().replace('\\', "/");
     // Windows canonicalize emits an extended-length prefix. It must not hide
@@ -12,25 +52,10 @@ pub(super) fn floor(path: &str) -> bool {
     if path.contains('\0') || segments.contains(&"..") || credential_store(&segments) {
         return true;
     }
-    [
-        "/bin",
-        "/sbin",
-        "/lib",
-        "/lib64",
-        "/usr",
-        "/library",
-        "/dev",
-        "/etc",
-        "/root",
-        "/boot",
-        "/proc",
-        "/sys",
-        "/system",
-        "/private/etc",
-        "/private/var/root",
-    ]
-    .iter()
-    .any(|prefix| normalized == *prefix || normalized.starts_with(&format!("{prefix}/")))
+    CRITICAL_ROOTS
+        .iter()
+        .chain(INSTALLATION_ROOTS)
+        .any(|prefix| normalized == *prefix || normalized.starts_with(&format!("{prefix}/")))
         || windows_system_root(normalized)
 }
 pub(super) fn strip_native_namespace(path: &str) -> &str {
@@ -42,34 +67,16 @@ pub(super) fn strip_native_namespace(path: &str) -> &str {
 pub(super) fn credential_store(segments: &[&str]) -> bool {
     let normalized: Vec<_> = segments
         .iter()
-        .map(|segment| {
-            segment
-                .split(':')
-                .next()
-                .unwrap_or(segment)
-                .trim_end_matches([' ', '.'])
-        })
+        .map(|segment| denial_segment(segment))
         .collect();
-    normalized.iter().any(|component| {
-        [
-            ".ssh",
-            ".gnupg",
-            ".aws",
-            ".azure",
-            ".kube",
-            "keychains",
-            ".netrc",
-            ".git-credentials",
-            ".pgpass",
-            ".npmrc",
-        ]
-        .contains(component)
-    }) || normalized.windows(2).any(|pair| {
-        (pair[0] == "microsoft"
-            && matches!(pair[1], "protect" | "credentials" | "crypto" | "vault"))
-            || pair == [".docker", "config.json"]
-            || pair == [".cargo", "credentials.toml"]
-    })
+    normalized
+        .iter()
+        .any(|component| CREDENTIAL_COMPONENTS.contains(component))
+        || normalized.windows(2).any(|pair| {
+            CREDENTIAL_PAIRS
+                .iter()
+                .any(|&(parent, child)| pair == [parent, child])
+        })
 }
 
 // Match Windows system roots on every drive, including native/extended aliases.

@@ -4,7 +4,7 @@ use tinysecurity_bus::{
     PathAccess, PathCheckKind, PathErrorCategory as Rejection, PathPolicy, PathValidationResult,
 };
 
-fn expand(scope: &PathPolicy, path: &str) -> PathBuf {
+pub(crate) fn expand(scope: &PathPolicy, path: &str) -> PathBuf {
     path.strip_prefix("~/")
         .and_then(|tail| {
             scope.home_dir.as_ref().map(|home| {
@@ -40,18 +40,9 @@ pub fn protected_path(path: &Path) -> bool {
     {
         return true;
     }
-    [
-        "/etc",
-        "/root",
-        "/boot",
-        "/proc",
-        "/sys",
-        "/system",
-        "/private/etc",
-        "/private/var/root",
-    ]
-    .iter()
-    .any(|prefix| normalized == *prefix || normalized.starts_with(&format!("{prefix}/")))
+    crate::path::CRITICAL_ROOTS
+        .iter()
+        .any(|prefix| normalized == *prefix || normalized.starts_with(&format!("{prefix}/")))
         || crate::path::windows_system_root(normalized)
 }
 /// Resolve prospective paths through their deepest existing ancestor.
@@ -100,7 +91,7 @@ pub(crate) fn reservation_exception_root(root: &Path, exception: &Path) -> Optio
     let exception = resolve_ancestor(exception).ok()?;
     (exception != root && exception.starts_with(&root)).then_some(exception)
 }
-fn canonical_or_original(path: &Path) -> PathBuf {
+pub(crate) fn canonical_or_original(path: &Path) -> PathBuf {
     resolve_ancestor(path).unwrap_or_else(|_| path.to_path_buf())
 }
 fn within(path: &Path, root: &Path) -> bool {
@@ -160,7 +151,7 @@ fn deny_component_eq(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> bool {
         left == right
     }
 }
-fn deny_starts_with(path: &Path, root: &Path) -> bool {
+pub(crate) fn deny_starts_with(path: &Path, root: &Path) -> bool {
     let mut candidate = path.components();
     root.components().all(|part| {
         candidate
@@ -168,7 +159,7 @@ fn deny_starts_with(path: &Path, root: &Path) -> bool {
             .is_some_and(|next| deny_component_eq(next.as_os_str(), part.as_os_str()))
     })
 }
-fn within_denied(path: &Path, root: &Path) -> bool {
+pub(crate) fn within_denied(path: &Path, root: &Path) -> bool {
     deny_starts_with(path, root) || deny_starts_with(path, &canonical_or_original(root))
 }
 fn candidate(path: &Path) -> Option<PathBuf> {
@@ -193,7 +184,7 @@ fn metadata_present(result: std::io::Result<()>) -> std::result::Result<bool, Re
 /// fn bypass_registration(policy: PathPolicy) -> PathScope { PathScope(policy) }
 /// ```
 #[derive(Clone, Debug)]
-pub struct PathScope(PathPolicy);
+pub struct PathScope(pub(crate) PathPolicy);
 impl std::ops::Deref for PathScope {
     type Target = PathPolicy;
     fn deref(&self) -> &Self::Target {
@@ -255,7 +246,7 @@ impl PathScope {
         };
         self.trusted_canonical(&resolved, write)
     }
-    fn trusted_canonical(&self, path: &Path, write: bool) -> bool {
+    pub(crate) fn trusted_canonical(&self, path: &Path, write: bool) -> bool {
         self.trusted_roots.iter().any(|root| {
             (!write || root.access == PathAccess::ReadWrite) && within(path, &root.path)
         })

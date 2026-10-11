@@ -219,10 +219,24 @@ means CPU time, while `cpu_millicores` means thousandths of a core. The legacy
 `ResourceLimits.cpu_millis` remains CPU time; it must never be translated into
 TinyBox 0.1.17's same-named millicore setting.
 
+Recursive filesystem grants use the owner's subtree admission port. The complete
+credential vocabulary for anchored home stores and credential containers, native
+system ancestors and canonical aliases, host state reservations (including prospective prefix children), and readonly write rights
+are checked before admission. Trusted roots cannot waive the credential or
+internal-state floor; individual noncredential cache children remain available.
+Configurable forbidden paths retain their existing explicit-trust precedence.
+Individual tool path checks retain their arbitrary-depth credential-name floor.
+An additive directory grant does not promise exclusions for every possible future
+credential-named child; a launcher requiring that broader recursive-name contract
+must supply verified enforcement or deny it.
+
 Host networking requires permission under the immutable network ceiling plus
 an authenticated human Once ticket bound durably to the exact canonical
-operation, source, scope, generation and executor capability. Automatic judge
-approval, generic reusable grants and caller approval flags do not qualify.
+operation, resolved grants, resources, constraints, network, source, scope,
+generation and executor capability. Registry IDs, reservation metadata and the
+independently checked temporal expiry do not enter the durable human binding.
+Retargeting a symlink requires a fresh human decision for the new resolved plan.
+Automatic judge approval, generic reusable grants and caller approval flags do not qualify.
 Exact sanitized Sandbox audit commits before an opaque artifact becomes active.
 A fingerprint is correlation only. Consume validates the full registered
 artifact and owner, audits the exact phase, then rechecks expiry and generation
@@ -232,6 +246,9 @@ bounded; callbacks execute without policy or registry locks.
 Planning and admission do not spawn processes or prove native confinement.
 TinyBox owns actual enforcement and must recheck live backend availability,
 capability identity and every hard constraint immediately before spawning.
+The Task 14 launcher must revalidate grant root objects, protected-location and
+alias snapshots, and the exact checked consume envelope before launch; refusal
+must never fall back to an unvalidated raw spawn.
 The native sandbox fixture proves loaded-module policy, authenticated human
 approval, audit and artifact admission only. The current Landlock filesystem
 floor, Seatbelt BestEffort and AppContainer unsupported subprocess isolation
