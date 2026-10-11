@@ -253,6 +253,13 @@ pub struct Reservation {
     binding: Binding,
 }
 impl Reservation {
+    /// Check the original reservation before returning a cached pending review.
+    /// No new challenge, deadline or authority is created.
+    /// # Errors
+    /// Denies expiry, revocation, generation changes, closed state and clock faults.
+    pub fn validate(&self) -> Result<()> {
+        self.registry.validate(self)
+    }
     /// Borrow the exact original private binding; no new challenge or deadline is minted.
     #[must_use]
     pub fn binding(&self) -> &Binding {

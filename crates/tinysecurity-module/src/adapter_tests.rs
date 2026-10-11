@@ -421,6 +421,7 @@ fn only_implemented_members_are_advertised() -> std::result::Result<(), Box<dyn 
 {
     let service = PolicyService {
         device: None,
+        secret: None,
         sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
         sandbox: None,
         approvals: None,
@@ -452,6 +453,7 @@ async fn native_dispatch_rejects_malformed_args_and_serves_ordered_checks()
             names::OBJECT_PATH.try_into()?,
             PolicyService {
                 device: None,
+                secret: None,
                 sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
                 sandbox: None,
                 approvals: None,
@@ -785,6 +787,7 @@ async fn blocked_filesystem_query_does_not_block_policy_info_or_another_scope()
     let root = tempfile::tempdir()?;
     let service = PolicyService {
         device: None,
+        secret: None,
         sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
         sandbox: None,
         approvals: None,
@@ -857,6 +860,7 @@ async fn blocked_registration_does_not_block_policy_info_or_another_scope()
     let root = tempfile::tempdir()?;
     let service = PolicyService {
         device: None,
+        secret: None,
         sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
         sandbox: None,
         approvals: None,
@@ -1259,6 +1263,7 @@ async fn native_egress_dispatch_binds_scope_and_denies_legacy_or_generic_local_c
             names::OBJECT_PATH.try_into()?,
             PolicyService {
                 device: None,
+                secret: None,
                 sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
                 sandbox: None,
                 approvals: None,
@@ -1397,6 +1402,7 @@ async fn consumption_work_runs_off_the_sole_sdk_worker_without_registry_locks()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let service = PolicyService {
         device: None,
+        secret: None,
         sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
         sandbox: None,
         approvals: None,

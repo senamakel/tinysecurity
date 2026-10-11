@@ -287,6 +287,9 @@ impl fmt::Debug for JudgeConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModuleConfig {
+    /// Init-only metadata for confidential native master resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<crate::SecretConfig2>,
     /// Init-only bounded native device registration; absent preserves older payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<crate::DeviceConfig2>,
@@ -318,6 +321,7 @@ impl Default for ModuleConfig {
         Self {
             contract_version: crate::CONTRACT_VERSION,
             device: None,
+            secret: None,
             sandbox: None,
             policy: PolicyConfig::default(),
             judge: None,

@@ -343,7 +343,7 @@ fn redactor_init_is_additive_and_secrets_never_enter_public_info()
         serde_json::to_value(&config)?["redactor"]["secrets"][0],
         "literal-private"
     );
-    assert_eq!(CONTRACT_VERSION, (1, 9));
+    assert_eq!(CONTRACT_VERSION, (1, 10));
     for (mode, wire) in [
         (RedactMode::Text, "text"),
         (RedactMode::StructuredArguments, "structured_arguments"),
@@ -362,4 +362,13 @@ fn redactor_init_is_additive_and_secrets_never_enter_public_info()
         assert_eq!(serde_json::to_value(mode)?, wire);
     }
     Ok(())
+}
+
+#[test]
+fn confidential_master_facade_is_additive_and_has_no_generic_secret_members() {
+    assert!(tinysecurity_bus::names::METHODS.contains(&"EvaluateSecret2"));
+    assert!(tinysecurity_bus::names::METHODS.contains(&"ExecuteSecret2"));
+    for absent in ["GetSecret", "PutSecret", "DeleteSecret", "ReadMaster"] {
+        assert!(!tinysecurity_bus::names::METHODS.contains(&absent));
+    }
 }

@@ -93,3 +93,7 @@ shape and binding, while the captured adapter remains responsible for provenance
 Borrowed reservation bindings retain their original deadline, and live grant
 validation must bracket every subsequent backend await. Injected linked SDK tests
 exercise this composition; they do not establish real OS consent or storage.
+
+`Reservation::validate` rechecks the original admitted work before a module returns
+a cached pending review. It preserves the same challenge and deadline and fences
+rollback, expiry, scope revocation and generation changes through the owner registry.

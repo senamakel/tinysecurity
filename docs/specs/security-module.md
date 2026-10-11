@@ -294,3 +294,11 @@ argv, environment, cwd and input belong in its bounded original operation.
 The owner validates its canonical binding before audit and again after the
 callback; changed operations cannot consume a copied artifact. This does not
 replace TinyBox's live isolation and capability checks.
+
+The [contract 1.10 master subset](../../MODULE.md#confidential-injected-master-resolution)
+implements only confidential config/app master resolution through immutable injected
+callbacks, exact Human Once consumption and opaque native aliases. Per-binding
+resolver uncertainty persists for the supplied broker lifetime. Configured-secret
+reinit is rejected before publication until a coherent multi-registry transaction
+exists. It provides no native OS/file access, password/plaintext operations or
+production host adoption.

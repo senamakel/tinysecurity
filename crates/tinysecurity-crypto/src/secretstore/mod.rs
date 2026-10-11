@@ -1,7 +1,9 @@
 //! Injected secret storage; native I/O belongs to the driver.
 use crate::{Error, Result};
-use tinystoragedrivers::secrets::{SecretStore, Zeroizing};
-use tinystoragedrivers::{ErrorKind, StorageError};
+/// Existing owner storage port, re-exported for internal callback adapters.
+pub use tinystoragedrivers::secrets::{SecretStore, Zeroizing};
+/// Existing owner error vocabulary; adapters project only static diagnostics.
+pub use tinystoragedrivers::{ErrorKind, StorageError};
 
 /// Backend identity supplied by trusted construction, never inferred from availability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -137,6 +137,10 @@ impl ApprovalCasRequest2 {
 }
 /// Fixed new callback identities; incompatible semantics never reuse legacy interfaces.
 pub mod callback_names2 {
+    /// Confidential injected secret backend; only exact Load and Set.
+    pub const SECRET_BACKEND: &str = "ai.tinyhumans.tinysecurity.SecretBackend2";
+    /// Exact confidential target mutation.
+    pub const SET: &str = "Set";
     /// Versioned durable audit callback.
     pub const AUDIT_SINK: &str = "ai.tinyhumans.tinysecurity.AuditSink2";
     /// Versioned scoped storage callback seam.

@@ -146,3 +146,52 @@ replay/revoke, valid generation-two receipts, old-handle denial and SDK shutdown
 Run the retained runner with the absolute library path from both owner and
 non-owner working directories. Linux proves Linux behavior; macOS and Windows
 require their native runners. This does not release artifacts or migrate a host.
+
+## Confidential injected master resolution
+
+Contract 1.10 implements optional `ModuleConfig.secret` and confidential
+`EvaluateSecret2` / `ExecuteSecret2`. The only operations are
+`ResolveConfigMaster` and `ResolveAppMaster`. Init registers metadata: an exact
+existing approval scope, purpose, opaque backend descriptor, target named slot
+and at most three compatible historical readers. App authority is separately
+registered; calls cannot override subjects, origins, backends, slots or paths.
+
+Evaluation retains the same bounded native reservation, private challenge and
+keyed safe correlation through execution. Registered auto approval, reusable
+choices and judges cannot issue this grant. Actual confidential `VerifyHuman`,
+Human Once decision and reservation CAS, and the exact required audit sink
+receipt finish before backend load or mint. A canceled begin holds its admitted
+reservation until expiry; retry requires a fresh original call id. There is no
+second wait queue.
+
+The fixed `SecretBackend2` callback has confidential `Load` and `Set` only.
+Every reply echoes backend, registration, generation, operation id, phase and
+slot before status interpretation. Denial is not absence. Encodings are bounded
+to 4096 bytes. A valid target skips all historical readers; compatible sources
+must parse and agree before mutation. Their original uppercase/whitespace
+encoding is copied unchanged and verified by exact target readback. No source
+is deleted. File is only a named injected store entry, not physical file access.
+
+One resolver and exclusive callback context persist for each immutable binding.
+Live native authority is checked before and after each await and before mint
+and publication. Cancellation after Set begins, timeout, wrong readback and
+indeterminate mutation permanently fence that resolver. The host callback broker
+must independently serialize each actual target slot, retain detached provider
+workers and block fresh reads/mint/Set until trusted quiescence and exact readback.
+Operation ids and Stored acknowledgements do not provide generic CAS or durability.
+Recreating a resolver, restarting a process or dropping a service tree is not
+recovery authority. This checkpoint provides no recovery member.
+
+Results contain a bounded random alias, purpose and generation only. The master
+and underlying native handle remain internal, with no alias-use/read/export
+member. Aliases are pruned on expiry or revocation and cleared at close. Owned
+successfully decoded callback values and unpublished output are wiped; SDK
+serialization, frame copies and partially decoded serde values are outside that
+cleanup guarantee.
+
+Configured-secret SDK reinit currently rejects **before** events or authority
+changes, preserving the existing aliases and resolver uncertainty. A coherent
+owner transaction spanning every registry is required before successful reinit
+can be enabled. Native OS providers, physical files, passwords, encryption,
+plaintext delivery, routine native consumers, pairing and production host
+migration remain outside this subset.

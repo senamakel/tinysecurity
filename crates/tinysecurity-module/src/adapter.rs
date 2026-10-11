@@ -28,6 +28,7 @@ static ACTIVE: OnceLock<Arc<RwLock<Policy>>> = OnceLock::new();
 struct PolicyService {
     sandbox_clock: Arc<dyn tinysecurity::approval::Clock>,
     device: Option<Arc<tinysecurity::crypto::device_handles::Registry>>,
+    secret: Option<Arc<secret::SecretState>>,
     sandbox: Option<Arc<tinysecurity::sandbox::Engine>>,
     approvals: Option<Arc<tinysecurity::approval::Engine>>,
     policy: Arc<RwLock<Policy>>,
@@ -178,6 +179,20 @@ impl PolicyService {
 }
 #[tinybus::interface(name = "ai.tinyhumans.tinysecurity.Policy")]
 impl PolicyService {
+    #[tinybus(confidential)]
+    async fn evaluate_secret2(
+        &self,
+        request: tinysecurity_bus::EvaluateSecretRequest2,
+    ) -> BusResult<tinysecurity_bus::ApprovalRow2> {
+        self.secret_approval(request).await
+    }
+    #[tinybus(confidential)]
+    async fn execute_secret2(
+        &self,
+        request: tinysecurity_bus::ExecuteSecretRequest2,
+    ) -> BusResult<tinysecurity_bus::SecretResponse2> {
+        self.secret_execute(request).await
+    }
     #[tinybus(confidential)]
     async fn evaluate_device2(
         &self,
@@ -746,6 +761,9 @@ fn deny_allow(decision: &mut Decision) {
         decision.cacheable = false;
     }
 }
+fn default_clock() -> Arc<dyn tinysecurity::approval::Clock> {
+    Arc::new(tinysecurity::approval::SystemClock::default())
+}
 fn service_for(
     policy: Arc<RwLock<Policy>>,
     audit: Option<Arc<crate::callbacks::AuditClient>>,
@@ -753,6 +771,7 @@ fn service_for(
     PolicyService {
         sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
         device: None,
+        secret: None,
         sandbox: None,
         approvals: None,
         policy,
@@ -921,12 +940,15 @@ fn queue_policy_changed(connection: &Connection, generation: u64) -> BusResult<(
     connection.try_send(signal)
 }
 async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()> {
+    // Native master owner transitions require one transaction with all registries.
+    // Reject configured-secret reinit before queuing an event or changing authority.
+    secret::deny_reinit()?;
     // Validate before activation. The SDK serializes reinitializations and
     // preserves a fault latch; this adapter never provides retry RPCs.
     let mut device_config =
         tinysecurity::crypto::device_handles::ConfidentialConfig::new(config.device.take());
-    let device_clock: Arc<dyn tinysecurity::approval::Clock> =
-        Arc::new(tinysecurity::approval::SystemClock::default());
+    let device_clock = default_clock();
+    let secret_config = config.secret.take();
     let judge_config = config.judge.clone();
     let audit_config = config.audit.clone();
     let approval_config = config.approvals.clone();
@@ -953,10 +975,22 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
     let approvals = configured_approvals(
         &connection,
         requested_host.as_deref(),
-        approval_config,
+        approval_config.clone(),
         audit_config.as_ref(),
         &candidate,
         APPROVALS.get(),
+    )?;
+    let secret = secret::configured(
+        secret_config,
+        secret::Initialization {
+            connection: &connection,
+            peer: requested_host.as_deref(),
+            approvals: approval_config.as_ref(),
+            engine: approvals.as_ref().map(|(_, engine)| engine),
+            audit: audit_config.as_ref(),
+            generation: candidate.info().generation,
+            clock: device_clock.clone(),
+        },
     )?;
     let judge = configured_automatic(judge_config, approvals.as_ref().map(|(_, e)| e))?;
     if let Some(active) = ACTIVE.get() {
@@ -994,6 +1028,7 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
     let policy = Arc::new(RwLock::new(candidate));
     let mut service = service_for(Arc::clone(&policy), audit.clone());
     service.device = device.clone();
+    service.secret = secret.clone();
     service.sandbox_clock = device_clock;
     service.sandbox = sandbox.as_ref().map(|(_, engine)| Arc::clone(engine));
     service.approvals = approvals.as_ref().map(|(_, engine)| Arc::clone(engine));
@@ -1008,6 +1043,22 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
         .await?;
     connection.request_name(names::INTERFACE).await?;
     device::activate(device.as_ref())?;
+    secret::activate(secret)?;
+    activate_policy(policy, audit, binding, sandbox, approvals)
+}
+fn activate_policy(
+    policy: Arc<RwLock<Policy>>,
+    audit: Option<Arc<crate::callbacks::AuditClient>>,
+    binding: crate::callbacks::PeerBinding,
+    sandbox: Option<(
+        tinysecurity_bus::SandboxConfig2,
+        Arc<tinysecurity::sandbox::Engine>,
+    )>,
+    approvals: Option<(
+        tinysecurity_bus::ApprovalConfig2,
+        Arc<tinysecurity::approval::Engine>,
+    )>,
+) -> BusResult<()> {
     SANDBOX
         .set(sandbox)
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
@@ -1030,10 +1081,10 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
+    methods = ["EvaluateSecret2", "ExecuteSecret2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
-    optional = ["ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],
+    optional = ["ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],
     lazy = false,
 }
 #[cfg(test)]
@@ -1046,3 +1097,6 @@ use sandbox::sandbox_configured;
 
 #[path = "adapter_device.rs"]
 mod device;
+
+#[path = "adapter_secret.rs"]
+pub(crate) mod secret;

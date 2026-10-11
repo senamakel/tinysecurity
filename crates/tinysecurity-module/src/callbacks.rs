@@ -67,10 +67,24 @@ impl<T: Interface> Interface for Authenticated<T> {
         let result = self.inner.call(member, args).await;
         if matches!(
             member.as_str(),
-            tinysecurity_bus::names::methods::EVALUATE_DEVICE2
+            tinysecurity_bus::names::methods::EVALUATE_SECRET2
+                | tinysecurity_bus::names::methods::EXECUTE_SECRET2
+                | tinysecurity_bus::names::methods::EVALUATE_DEVICE2
                 | tinysecurity_bus::names::methods::EXECUTE_DEVICE2
         ) {
-            result.map_err(|_| tinybus::Error::failed("device authority denied"))
+            result.map_err(|_| {
+                tinybus::Error::failed(
+                    if matches!(
+                        member.as_str(),
+                        tinysecurity_bus::names::methods::EVALUATE_SECRET2
+                            | tinysecurity_bus::names::methods::EXECUTE_SECRET2
+                    ) {
+                        "secret authority denied"
+                    } else {
+                        "device authority denied"
+                    },
+                )
+            })
         } else {
             result
         }

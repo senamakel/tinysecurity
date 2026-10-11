@@ -1665,6 +1665,7 @@ name = "tinysecurity-module"
 version = "0.2.3"
 dependencies = [
  "async-trait",
+ "getrandom 0.3.4",
  "serde_json",
  "sha2",
  "tempfile",
