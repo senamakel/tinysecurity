@@ -350,7 +350,14 @@ async fn native_storage_returns_exact_receipts_and_capacity_denies_without_phant
         registry.clone(),
     )?;
     let first = client.append(batch()).await;
-    assert!(first.committed && first.permitted);
+    assert!(
+        first.committed && first.permitted,
+        "native receipt committed={} permitted={} health={:?} receipt-present={}",
+        first.committed,
+        first.permitted,
+        first.health,
+        first.receipt.is_some()
+    );
     assert_eq!(first.health, AuditHealth2::Healthy);
     assert_eq!(client.append(batch()).await, first);
     let stored = std::fs::read(&path)?;
