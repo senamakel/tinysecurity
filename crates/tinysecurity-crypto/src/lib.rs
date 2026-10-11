@@ -18,6 +18,7 @@ pub mod device;
 pub mod device_handles;
 mod error;
 pub mod keyring;
+pub mod native_handles;
 pub mod password;
 pub mod secretstore;
 pub use error::{Error, Result};

@@ -21,6 +21,18 @@ pub enum Error {
     /// A registered subject exhausted its bounded request rate.
     #[error("device rate exhausted")]
     DeviceRate,
+    /// Native secret authority is absent, substituted or no longer live.
+    #[error("native authority denied")]
+    NativeDenied,
+    /// A native clock failed or rolled back.
+    #[error("native clock unavailable")]
+    NativeClock,
+    /// Native retention or admission capacity is exhausted.
+    #[error("native capacity exhausted")]
+    NativeCapacity,
+    /// A registered native subject exhausted its request rate.
+    #[error("native rate exhausted")]
+    NativeRate,
     /// An input exceeds the operation's immutable work bound.
     #[error("input exceeds limit")]
     Limit,
