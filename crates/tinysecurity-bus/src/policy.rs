@@ -216,11 +216,6 @@ pub enum JudgeProvider {
     /// `OpenJev` endpoint.
     OpenJev,
 }
-impl JudgeProvider {
-    fn is_default(&self) -> bool {
-        *self == Self::TypeSafe
-    }
-}
 fn zero<T: Default + PartialEq>(value: &T) -> bool {
     *value == T::default()
 }
@@ -256,7 +251,7 @@ pub struct JudgeConfig {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub endpoint: String,
     /// Typed response-validation dialect.
-    #[serde(default, skip_serializing_if = "JudgeProvider::is_default")]
+    #[serde(default, skip_serializing_if = "zero")]
     pub provider: JudgeProvider,
     /// Default minimum intent/reversibility confidence in thousandths.
     pub threshold_millis: u16,
