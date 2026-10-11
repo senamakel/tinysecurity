@@ -33,10 +33,31 @@ pub(super) fn namespace() -> std::result::Result<tempfile::TempDir, Box<dyn std:
         None,
     )?;
     drop(handle);
-    OpenOptions::new()
+    let mut journal = OpenOptions::new()
         .write(true)
+        .access_mode(0xc008_0000) // GENERIC_READ | GENERIC_WRITE | WRITE_OWNER
         .create_new(true)
-        .open(directory.path().join("audit.journal"))?
-        .sync_all()?;
+        .open(directory.path().join("audit.journal"))?;
+    // Directory ownership is not inherited from the trusted namespace. Bind
+    // this newly created empty authority to TokenUser, preserving its DACL.
+    wrappers::SetSecurityInfo(
+        &mut journal,
+        SeObjectType::SE_FILE_OBJECT,
+        SecurityInformation::Owner,
+        sd.owner(),
+        None,
+        None,
+        None,
+    )?;
+    let installed = wrappers::GetSecurityInfo(
+        &journal,
+        SeObjectType::SE_FILE_OBJECT,
+        SecurityInformation::Owner,
+    )?;
+    assert!(
+        installed.owner() == sd.owner(),
+        "process journal owner must match the bound current user"
+    );
+    journal.sync_all()?;
     Ok(directory)
 }

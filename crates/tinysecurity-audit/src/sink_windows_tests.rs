@@ -64,11 +64,19 @@ pub(super) fn fixture()
     drop(handle);
     let path = dir.path().join("audit");
     // The authoritative namespace exists before the sink accepts receipts.
+    create_owned_journal(&dir.path().join("audit.journal"))?;
+    Ok((dir, path))
+}
+
+pub(super) fn create_owned_journal(
+    path: &Path,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let sd: LocalBox<SecurityDescriptor> = format!("O:{}", identity()?).parse()?;
     let mut journal = OpenOptions::new()
         .write(true) // Rust validates create_new independently of the custom access mask.
         .access_mode(0xc008_0000) // GENERIC_READ | GENERIC_WRITE | WRITE_OWNER
         .create_new(true)
-        .open(dir.path().join("audit.journal"))?;
+        .open(path)?;
     // Parent ownership is not inherited: an elevated token may choose Admins.
     // Install the empty authority owner before bytes, retaining inherited DACL.
     wrappers::SetSecurityInfo(
@@ -81,7 +89,7 @@ pub(super) fn fixture()
         None,
     )?;
     journal.sync_all()?;
-    Ok((dir, path))
+    Ok(())
 }
 
 fn stage<T>(name: &'static str, result: Result<T>) -> Result<T> {

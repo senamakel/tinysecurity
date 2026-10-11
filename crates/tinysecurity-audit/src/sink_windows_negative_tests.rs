@@ -1,6 +1,6 @@
 use super::*;
 
-use super::windows_tests::{batch, fixture, identity};
+use super::windows_tests::{batch, create_owned_journal, fixture, identity};
 use std::{fs::OpenOptions, io::Write, os::windows::fs::OpenOptionsExt};
 use windows_permissions::{
     LocalBox, SecurityDescriptor,
@@ -96,11 +96,7 @@ fn windows_unprotected_leaf_or_effective_foreign_ancestor_mutation_is_denied()
     let child = root.path().join("child");
     std::fs::create_dir(&child)?;
     set_acl(&child, "P", &format!("(A;OICI;FA;;;{})", identity()?))?;
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(child.join("audit.journal"))?
-        .sync_all()?;
+    create_owned_journal(&child.join("audit.journal"))?;
     // Establish that this valid child can commit before changing its ancestor;
     // otherwise an unrelated journal defect could mask a broken ancestor check.
     let child_path = child.join("audit");
@@ -118,10 +114,7 @@ fn windows_unprotected_leaf_or_effective_foreign_ancestor_mutation_is_denied()
         JsonlSink::open(&child_path, 700, 3),
         Err(Error::Permissions)
     ));
-    assert_eq!(
-        std::fs::read(child.join("audit.journal"))?,
-        before
-    );
+    assert_eq!(std::fs::read(child.join("audit.journal"))?, before);
     Ok(())
 }
 
