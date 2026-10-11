@@ -99,6 +99,9 @@ pub(super) async fn verify(library: &Path) -> std::result::Result<(), Box<dyn st
     let host = ModuleHost::new(broker);
     let client = Connection::connect(bus.connect().await?).await?;
     let mut audit = audit_config(true);
+    // This fixture verifies real durable receipts and OS access controls, not
+    // a synthetic short deadline. Dedicated worker tests cover timeout behavior.
+    audit.timeout_ms = 30_000;
     audit.native_path = Some(path.to_str().ok_or("native fixture path encoding")?.into());
     audit.max_bytes = 2048;
     host.load_file_with_config(
@@ -115,6 +118,22 @@ pub(super) async fn verify(library: &Path) -> std::result::Result<(), Box<dyn st
     let first: CheckAuditedResponse2 = proxy
         .call_confidential(names::methods::CHECK_AUDITED2, (request(0),))
         .await?;
+    let health = match first.audit.health {
+        tinysecurity_bus::AuditHealth2::Healthy => 1,
+        tinysecurity_bus::AuditHealth2::Degraded => 2,
+        tinysecurity_bus::AuditHealth2::Denied => 3,
+    };
+    let verdict = match first.decision.decisions[0].verdict {
+        Verdict::Allow => 1,
+        Verdict::RequireApproval { .. } => 2,
+        Verdict::Deny { .. } => 3,
+    };
+    eprintln!(
+        "audit-native-stage=first permitted={} committed={} health={health} receipt={} verdict={verdict}",
+        u8::from(first.audit.permitted),
+        u8::from(first.audit.committed),
+        u8::from(first.audit.receipt.is_some()),
+    );
     assert!(
         first.audit.permitted
             && first.audit.committed
