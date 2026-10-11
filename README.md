@@ -6,21 +6,47 @@ compile the transport-free `tinysecurity-bus` contract and load the isolated
 `Check`, `PolicyInfo`, validated SDK configuration and policy generations.
 Contract 1.1 also supplies immutable native [filesystem scopes](docs/specs/immutable-path-scopes.md)
 through `RegisterPathPolicy`, `ValidatePath`, `ValidateParent` and `CheckPath`.
+Contract 1.3 adds native `Redact`, `ScanPrompt` and `ScanToolDefinition`, with a
+validated initialization-only literal registry and [bounded surface modes](crates/tinysecurity-redact/README.md).
+Blocked original content denies; suspicious content denies with
+approval-unavailable in unbound policy methods. Scan verdicts
+never grant permission, and redaction never clears an existing scan finding.
+
+Contract 1.6 supplies `Audit2`, `EvaluateAudited2` and `CheckAudited2` with
+authenticated exact audit callbacks and a bounded [native journal](crates/tinysecurity-audit/README.md).
+The audited permission methods derive events from the actual original request,
+computed decision and current generation. Required audit disables unbound
+`Evaluate`/`Check` permission and other unbound path/command/egress authorization;
+exact durable evidence precedes an audited allow. Scope registration and
+descriptive classification remain available.
+Windows local journals require an externally preprovisioned, protected NTFS
+namespace and preexisting restricted authority; see the native journal contract.
 
 The engine denies unknown tools and unsupported effects. Argument-free `pwd`,
 `date`, `uname`, and `whoami` are its supported shell diagnostics. Paths pass
 an unconditional credential/system/traversal floor and native ancestor
 resolution; enabled policy adds action-root, workspace and forbidden-root
-checks. Enabled writes deny until the approval engine exists. Pure local
+checks. Enabled writes require the durable approval surface. Pure local
 diagnostics work with disabled autonomy, which is the default.
 
 This is bootstrap infrastructure for [OpenHuman #7328](https://github.com/tinyhumansai/openhuman/issues/7328)
 and [TinySecurity #1](https://github.com/tinyhumansai/tinysecurity/issues/1).
-It does **not** complete the migration. Approval persistence, redaction,
-network connection pinning, sandbox planning, audit, judge and crypto engines
+It does **not** complete the migration. Network connection pinning,
+sandbox planning and crypto engines
 remain unavailable. Reserved wire types do not advertise callable handlers.
 There is no production host migration until an upstream release and checksum
 manifest exist.
+
+Contract 1.7 adds [durable exact approvals](crates/tinysecurity-approval/README.md)
+with authenticated store/CAS, delivery and human-ticket callbacks. Approval
+configuration disables older permission shortcuts. Pending rows and audits
+precede prompts; exact original-call bindings and CAS reservations govern execution.
+
+Contract 1.8 enables optional [native Jev scoring](crates/tinysecurity-auto/README.md)
+through explicit endpoint/key initialization and per-origin opt-in. Redacted
+scores meet local thresholds before durable `auto:jev` one-shot approval;
+all uncertain/error/budget paths keep the authenticated human flow. Required
+CAS/audit receipts and fresh policy floors still gate permission.
 
 ## Workspace
 
@@ -28,6 +54,10 @@ manifest exist.
 | --- | --- |
 | `tinysecurity-bus` | Wire types, errors, names and compatibility; normal dependencies only serde and thiserror |
 | `tinysecurity-policy` | Native conservative policy engine |
+| `tinysecurity-redact` | Internal immutable redaction registry and semantic intent scanner |
+| `tinysecurity-auto` | Internal optional Jev, approval rules, shared request budget and exact-score cache |
+| `tinysecurity-approval` | Internal durable exact approval, expiry and reservation engine |
+| `tinysecurity-audit` | Internal bounded authoritative journal and sanitized exact receipts |
 | `tinysecurity` | Internal implementation re-export |
 | `tinysecurity-module` | SDK initialization, bus dispatch and ABI cdylib |
 
@@ -40,6 +70,7 @@ cargo build --all-targets --all-features
 cargo test --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 cargo run -p tinysecurity-module --example verify_module -- target/debug/libtinysecurity_module.so
+cargo run -p tinysecurity-module --example judge_native_contract -- target/debug/libtinysecurity_module.so
 ```
 
 Use `.dylib` on macOS and `tinysecurity_module.dll` on Windows. The loader

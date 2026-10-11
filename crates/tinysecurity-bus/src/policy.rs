@@ -160,6 +160,8 @@ pub enum DenialReason {
     Command,
     /// Missing verified caller identity.
     InvalidContext,
+    /// Original content was blocked by the semantic scanner.
+    Content,
 }
 /// Effective policy settings. Bootstrap intentionally exposes no unimplemented budgets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,18 +204,84 @@ impl fmt::Debug for Secret {
         f.write_str("Secret([REDACTED])")
     }
 }
-/// Future optional judge configuration; bootstrap rejects configured judges.
+/// Init-only explicit endpoint/provider selection; no ambient credentials.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JudgeProvider {
+    /// `TypeSafe` Jev endpoint.
+    #[default]
+    TypeSafe,
+    /// `OpenRouter` Jev-compatible endpoint.
+    OpenRouter,
+    /// `OpenJev` endpoint.
+    OpenJev,
+}
+fn zero<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
+}
+/// Local probability thresholds, in thousandths. All comparisons are inclusive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JudgeThresholds {
+    /// Minimum explicit intent score.
+    pub intent: u16,
+    /// Minimum reversibility score.
+    pub reversible: u16,
+    /// Maximum exfiltration score.
+    pub exfiltrate: u16,
+}
+/// Per-origin and concrete-effect threshold selection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct JudgeThresholdRule {
+    /// Explicit origin selection.
+    pub origin: Origin,
+    /// Whether the verified concrete effect is external.
+    pub external_effect: bool,
+    /// Local score bounds.
+    pub thresholds: JudgeThresholds,
+}
+/// Optional native judge configuration, absent by default.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JudgeConfig {
-    /// Init-only backend credential.
+    /// Init-only resolved backend credential.
     pub credential: Secret,
-    /// Approval confidence in thousandths (0..=1000).
+    /// Exact evaluation endpoint; never exposed in diagnostic output.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub endpoint: String,
+    /// Typed response-validation dialect.
+    #[serde(default, skip_serializing_if = "zero")]
+    pub provider: JudgeProvider,
+    /// Default minimum intent/reversibility confidence in thousandths.
     pub threshold_millis: u16,
-    /// Bounded request timeout.
+    /// Default maximum exfiltration confidence in thousandths.
+    #[serde(default, skip_serializing_if = "zero")]
+    pub exfiltrate_millis: u16,
+    /// Additional class/origin thresholds; duplicates reject initialization.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thresholds: Vec<JudgeThresholdRule>,
+    /// Total request deadline, also the SDK single-attempt timeout.
     pub timeout_ms: u32,
     /// Explicit origin opt-ins.
     pub origins: Vec<Origin>,
+    /// Shared request reservations per fixed window, including failed attempts.
+    #[serde(default, skip_serializing_if = "zero")]
+    pub max_requests: u32,
+    /// Shared budget window duration.
+    #[serde(default, skip_serializing_if = "zero")]
+    pub budget_window_ms: u32,
+    /// Maximum exact-binding cached score sets; zero disables caching.
+    #[serde(default, skip_serializing_if = "zero")]
+    pub cache_entries: u16,
+    /// Score lifetime; zero disables caching.
+    #[serde(default, skip_serializing_if = "zero")]
+    pub cache_ttl_ms: u32,
+}
+impl fmt::Debug for JudgeConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("JudgeConfig([REDACTED])")
+    }
 }
 /// SDK init/reinit configuration, never a bus method argument.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,8 +291,21 @@ pub struct ModuleConfig {
     pub contract_version: (u32, u32),
     /// Effective policy requested by the host.
     pub policy: PolicyConfig,
-    /// Optional future judge capability.
+    /// Optional explicitly configured native judge.
     pub judge: Option<JudgeConfig>,
+    /// Init-only registry, omitted when empty for legacy wire compatibility.
+    #[serde(default, skip_serializing_if = "crate::RedactorConfig::is_empty")]
+    pub redactor: crate::RedactorConfig,
+    /// Exact trusted host unique connection, supplied only across SDK initialization.
+    /// Absent legacy initialization remains load-compatible but cannot invoke privileged members.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_host: Option<String>,
+    /// Init-only ordered audit configuration; absent preserves legacy wire shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit: Option<crate::AuditConfig2>,
+    /// Init-only immutable approval subjects and callbacks; omitted for older hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approvals: Option<crate::ApprovalConfig2>,
 }
 impl Default for ModuleConfig {
     fn default() -> Self {
@@ -232,6 +313,10 @@ impl Default for ModuleConfig {
             contract_version: crate::CONTRACT_VERSION,
             policy: PolicyConfig::default(),
             judge: None,
+            redactor: crate::RedactorConfig::default(),
+            trusted_host: None,
+            audit: None,
+            approvals: None,
         }
     }
 }

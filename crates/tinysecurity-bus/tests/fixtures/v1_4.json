@@ -1,0 +1,108 @@
+{
+  "EgressPolicy": {
+    "owner": {
+      "user": "user",
+      "workspace": "workspace",
+      "agent": "agent"
+    },
+    "ceiling": "full",
+    "privacy": "standard",
+    "destinations": [
+      {
+        "scheme": "https",
+        "hostname": "example.com",
+        "port": 8443,
+        "include_subdomains": false
+      }
+    ],
+    "data_categories": [
+      "user_content"
+    ],
+    "local_capabilities": [],
+    "validity_ms": 1000
+  },
+  "ScopedEgressRequest": {
+    "policy_id": "opaque",
+    "subject": {
+      "user": "user",
+      "workspace": "workspace",
+      "agent": "agent"
+    },
+    "tier": "full",
+    "url": "https://example.com:8443/path",
+    "category": "user_content",
+    "payload": "ordinary content",
+    "transport": "pinned_direct",
+    "local_capability": null,
+    "transformation": null,
+    "headers": [],
+    "method": "POST"
+  },
+  "ScopedEgressResponse": {
+    "generation": 7,
+    "denial": null,
+    "authorization": {
+      "authorization_id": "nonce",
+      "url": "https://example.com:8443/path",
+      "hostname": "example.com",
+      "port": 8443,
+      "addresses": [
+        "8.8.8.8:8443",
+        "[2606:4700:4700::1111]:8443"
+      ],
+      "subject": {
+        "user": "user",
+        "workspace": "workspace",
+        "agent": "agent"
+      },
+      "policy_id": "opaque",
+      "generation": 7,
+      "expires_at_ms": 1042,
+      "fingerprint": "fingerprint"
+    },
+    "cacheable": false
+  },
+  "ConsumeEgressAuthorizationRequest": {
+    "subject": {
+      "user": "user",
+      "workspace": "workspace",
+      "agent": "agent"
+    },
+    "authorization": {
+      "authorization_id": "nonce",
+      "url": "https://example.com:8443/path",
+      "hostname": "example.com",
+      "port": 8443,
+      "addresses": [
+        "8.8.8.8:8443",
+        "[2606:4700:4700::1111]:8443"
+      ],
+      "subject": {
+        "user": "user",
+        "workspace": "workspace",
+        "agent": "agent"
+      },
+      "policy_id": "opaque",
+      "generation": 7,
+      "expires_at_ms": 1042,
+      "fingerprint": "fingerprint"
+    },
+    "request": {
+      "policy_id": "opaque",
+      "subject": {
+        "user": "user",
+        "workspace": "workspace",
+        "agent": "agent"
+      },
+      "tier": "full",
+      "url": "https://example.com:8443/path",
+      "category": "user_content",
+      "payload": "ordinary content",
+      "transport": "pinned_direct",
+      "local_capability": null,
+      "transformation": null,
+      "headers": [],
+      "method": "POST"
+    }
+  }
+}

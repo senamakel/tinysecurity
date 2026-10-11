@@ -167,9 +167,40 @@ decisions, with configurable bounded rotation and OS-appropriate restricted
 permissions. Audit delivery failure behavior is explicit for required-audit
 operations: when a required sink cannot confirm a row within its bounded wait,
 deny the associated operation before execution. Optional audit may report a
-sanitized degraded-health event without claiming persistence. The bootstrap
-advertises no audit capability. The module never claims an audit row committed
-before storage or the configured sink confirms it.
+sanitized degraded-health event without claiming persistence. Contract 1.6 adds
+strict `EvaluateAudited2` and `CheckAudited2` requests containing the original
+permission request and stable event ID, expected tail and generation. The module
+constructs and sanitizes the event from that request and its computed result;
+an internally computed SHA-256 digest of versioned, domain-separated canonical
+original content binds retries even when redaction would collapse two inputs.
+This unkeyed digest is correlation, not authentication or anonymization:
+low-entropy originals may be guessed offline. No caller-supplied digest is trusted;
+scope and stream come from trusted initialization. The native manifest advertises both
+audited permission methods and the implemented `AuditSink2` callback as an optional
+dependency. The SDK uses the package version as its spoken version and caret
+minimum compatible range. Callback forwarding runs only when audit is configured
+without native storage; absent audit or native storage needs no callback. Required
+audit still denies permission when its configured callback is unavailable. Contract 1.7 additionally advertises implemented `ApprovalStore2` and
+`ApprovalPrompt2` callbacks and durable approval lifecycle methods; their
+[exact callback and human authority contract](../../crates/tinysecurity-approval/README.md)
+requires explicit trusted initialization. Caller verdicts, replacement
+arguments and committed booleans cannot supply permission. Required audit makes
+unbound `Evaluate`/`Check` allows unavailable and refuses other unbound path,
+command and scoped egress authorization/consumption methods before they grant or
+reserve execution. Registration, classification and descriptive members remain
+available; audited workflows for those additional scopes are later work.
+Exact retries retain all correlation
+metadata; tail overflow or a mismatched generation denies before callback. A
+generation change during callback denies every allow while retaining committed
+receipt evidence. Terminal execution audit is a separate event. The module never
+claims an audit row committed before authoritative storage confirms it. Windows
+local storage requires a preprovisioned protected current-user NTFS directory and
+restricted preexisting journal. Actual ancestor handles retain directory-list
+access without delete sharing; trusted ownership, restricted inherited ACLs and
+reparse checks precede candidate writes. Unsafe or unsupported namespaces deny.
+The stable journal supplies receipt authority; rotated files are reconstructable
+views. Process termination/recovery tests do not imply physical power-loss or
+Windows directory-creation durability guarantees.
 
 ## Sandbox and crypto
 
@@ -185,6 +216,14 @@ Crypto is last: password encryption, keyring backends, device encryption and
 pairing have one implementation with consent callbacks. Authentication,
 credential ownership, sockets and consent UX stay host-side. Existing encrypted
 data compatibility and migration are acceptance requirements.
+
+Contract 1.8 adds bounded init-only judge settings and optional typed judge
+evidence on durable approval rows. Older init payloads retain their wire shape;
+a legacy judge payload without explicit endpoint and bounded budget cannot activate.
+The native scorer shares request reservations across caller scopes and reinit,
+including disabled periods. Scores bind the original canonical call, generation,
+origin, scope and fresh question/configuration version. See the
+[native scoring contract](../../crates/tinysecurity-auto/README.md).
 
 ## Verification and completion
 

@@ -1,0 +1,30 @@
+[package]
+name = "tinysecurity-egress"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+[dependencies]
+# Transport-free vocabulary.
+tinysecurity-bus.workspace = true
+# Shared actual-payload secret and identifier inspection.
+tinysecurity-redact.workspace = true
+# Canonical HTTP authority parser shared with standard HTTP transports.
+url.workspace = true
+# Opaque process-local immutable scope identities.
+getrandom.workspace = true
+# Exact original-call binding; already shared by native redaction.
+sha2.workspace = true
+# Deterministic canonical wire hashing, not transport.
+serde_json.workspace = true
+# Inspect percent-encoded path content before approving Sensitive egress.
+percent-encoding = "2"
+[dev-dependencies]
+# Test-only real TLS pinning/SNI/certificate fixture; never a production transport.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# Versioned wire fixtures.
+serde_json.workspace = true
+[lints]
+workspace = true

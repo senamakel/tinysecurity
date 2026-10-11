@@ -11,6 +11,10 @@ categories = ["authentication"]
 publish = false
 
 [dependencies]
+# Validate explicit native judge settings before any policy activation.
+tinysecurity-auto.workspace = true
+# Native redaction/scanning shares policy activation, never host linkage.
+tinysecurity-redact.workspace = true
 tinysecurity-bus = { workspace = true }
 thiserror = { workspace = true }
 getrandom = { workspace = true }

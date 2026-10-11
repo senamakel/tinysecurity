@@ -1,0 +1,20 @@
+[package]
+name = "tinysecurity-redact"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded native redaction and semantic intent scanning"
+publish = false
+
+[dependencies]
+tinysecurity-bus.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+url.workspace = true
+unicode-normalization.workspace = true
+
+[lints]
+workspace = true

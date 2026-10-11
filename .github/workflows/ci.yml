@@ -34,16 +34,20 @@ jobs:
           # the token in git config.
           persist-credentials: false
           submodules: recursive
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
 
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Test native coverage gate
+        run: python .github/scripts/check-native-coverage_tests.py
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -54,27 +58,37 @@ jobs:
       - name: Build
         run: cargo build --all-targets --all-features
 
-      - name: Test
-        run: cargo test --all-features
-
-      - name: Test default features
-        run: cargo test
-
-      # `cargo build --all-targets` only *compiles* an example. `AGENTS.md`
-      # promises the native loader verifier works, and a compiled
-      # example can still fail on its first line.
-      - name: Run the bundled example
-        if: ${{ runner.os != 'Windows' }}
-        shell: bash
+      - name: Provision Windows audit test namespace
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
         run: |
-          case "$RUNNER_OS" in
-            Linux) module=target/debug/libtinysecurity_module.so ;;
-            macOS) module=target/debug/libtinysecurity_module.dylib ;;
-          esac
-          cargo run -p tinysecurity-module --example verify_module -- "$module"
-          # Installed examples must also work outside the workspace root.
-          module="$(pwd)/$module"
-          (cd target && ./debug/examples/verify_module "$module")
+          $ErrorActionPreference = 'Stop'
+          # The hosted D: runner-temp ancestors fail the engine's actual owner/
+          # mutation ACL checks. Provision below the current user's normal profile;
+          # native tests still inspect and pin every ancestor, including C:\.
+          $auditRoot = Join-Path $env:USERPROFILE 'tinysecurity-audit-ci'
+          New-Item -ItemType Directory -Force $auditRoot | Out-Null
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+          $security = [System.Security.AccessControl.DirectorySecurity]::new()
+          $security.SetOwner($identity.User)
+          $security.SetAccessRuleProtection($true, $false)
+          $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+            $identity.User,
+            [System.Security.AccessControl.FileSystemRights]::FullControl,
+            [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
+            [System.Security.AccessControl.PropagationFlags]::None,
+            [System.Security.AccessControl.AccessControlType]::Allow
+          )
+          [void]$security.AddAccessRule($rule)
+          Set-Acl -LiteralPath $auditRoot -AclObject $security
+          "TINYSECURITY_AUDIT_TEST_ROOT=$auditRoot" >> $env:GITHUB_ENV
+
+      - name: Windows approval namespace preserves restricted native drive paths
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          cargo test --locked --package tinysecurity-module --example approval_native_contract windows_approval_namespace_preserves_drive_path_and_opens_restricted_sink -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'native approval namespace regression failed' }
 
       - name: Verify Windows module through the restricted native copy
         if: ${{ runner.os == 'Windows' }}
@@ -113,15 +127,77 @@ jobs:
 
           $verifiedModule = Join-Path $verifyRoot "$libraryName.dll"
           Copy-Item -LiteralPath $module -Destination $verifiedModule
+          # Collect independent ownership checks before aggregating failure;
+          # one failed check must not hide the exact installed namespace result.
+          $diagnosticFailure = $false
+          cargo test --locked --package tinysecurity-module --example audit_native_contract -- --nocapture
+          if ($LASTEXITCODE -ne 0) { $diagnosticFailure = $true }
+          cargo test --locked -p tinysecurity-audit windows_token_default_owner_explains_ordinary_created_file_owner -- --nocapture
+          if ($LASTEXITCODE -ne 0) { $diagnosticFailure = $true }
+          cargo test --locked -p tinysecurity-audit windows_new_engine_file_is_owned_by_current_user_before_any_bytes -- --nocapture
+          if ($LASTEXITCODE -ne 0) { $diagnosticFailure = $true }
+          cargo test --locked -p tinysecurity-audit windows_existing_foreign_owner_is_denied_without_owner_repair -- --nocapture
+          if ($LASTEXITCODE -ne 0) { $diagnosticFailure = $true }
+          cargo test --locked -p tinysecurity-audit windows_protected_preprovisioned_namespace_commits_exact_retry -- --nocapture
+          if ($LASTEXITCODE -ne 0) { $diagnosticFailure = $true }
+          if ($diagnosticFailure) { throw 'native audit ownership regressions failed' }
           cargo run --locked --package tinysecurity-module --example verify_module -- $verifiedModule
+          if ($LASTEXITCODE -ne 0) { throw 'native verifier failed in workspace' }
+          cargo run --locked --package tinysecurity-module --example audit_native_contract -- $verifiedModule
+          if ($LASTEXITCODE -ne 0) { throw 'native audit verifier failed in workspace' }
           $verifier = (Resolve-Path 'target/debug/examples/verify_module.exe').Path
+          cargo run --locked --package tinysecurity-module --example approval_native_contract -- $verifiedModule
+          if ($LASTEXITCODE -ne 0) { throw 'native approval verifier failed in workspace' }
+          cargo run --locked --package tinysecurity-module --example judge_native_contract -- $verifiedModule
+          if ($LASTEXITCODE -ne 0) { throw 'native judge verifier failed in workspace' }
+          $judgeVerifier = (Resolve-Path 'target/debug/examples/judge_native_contract.exe').Path
+          $approvalVerifier = (Resolve-Path 'target/debug/examples/approval_native_contract.exe').Path
+          $auditVerifier = (Resolve-Path 'target/debug/examples/audit_native_contract.exe').Path
           Push-Location $env:RUNNER_TEMP
           try {
             & $verifier $verifiedModule
             if ($LASTEXITCODE -ne 0) { throw 'native verifier failed outside workspace' }
+            & $judgeVerifier $verifiedModule
+            if ($LASTEXITCODE -ne 0) { throw 'native judge verifier failed outside workspace' }
+            & $approvalVerifier $verifiedModule
+            if ($LASTEXITCODE -ne 0) { throw 'native approval verifier failed outside workspace' }
+            & $auditVerifier $verifiedModule
+            if ($LASTEXITCODE -ne 0) { throw 'native audit verifier failed outside workspace' }
           } finally {
             Pop-Location
           }
+
+      - name: Windows protected audit namespace and rotation behavior
+        if: ${{ runner.os == 'Windows' }}
+        run: cargo test --locked -p tinysecurity-audit windows_ -- --nocapture
+
+      - name: Test
+        run: cargo test --all-features
+
+      - name: Test default features
+        run: cargo test
+
+      # `cargo build --all-targets` only *compiles* an example. `AGENTS.md`
+      # promises the native loader verifier works, and a compiled
+      # example can still fail on its first line.
+      - name: Run the bundled example
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) module=target/debug/libtinysecurity_module.so ;;
+            macOS) module=target/debug/libtinysecurity_module.dylib ;;
+          esac
+          cargo run -p tinysecurity-module --example verify_module -- "$module"
+          cargo run -p tinysecurity-module --example audit_native_contract -- "$module"
+          cargo run -p tinysecurity-module --example approval_native_contract -- "$module"
+          cargo run -p tinysecurity-module --example judge_native_contract -- "$module"
+          # Installed examples must also work outside the workspace root.
+          module="$(pwd)/$module"
+          (cd target && ./debug/examples/verify_module "$module")
+          (cd target && ./debug/examples/audit_native_contract "$module")
+          (cd target && ./debug/examples/approval_native_contract "$module")
+          (cd target && ./debug/examples/judge_native_contract "$module")
 
       # `crates/tinysecurity-bus` exists so a host can name the payload types
       # without compiling the module. That promise is invisible in a diff,
@@ -149,12 +225,60 @@ jobs:
             exit 1
           fi
 
-      # LLVM paths on Windows use native drive prefixes while Git Bash pwd
-      # uses /d/... . The Linux lane owns the exact per-file coverage gate;
-      # all three native lanes still build, test and load the real module.
+      # Preserve Linux's established per-file gate and add the same strict
+      # native JSON/LCOV inventory and changed-line gate to every platform.
       - name: Require 90% line coverage in every source file
         if: ${{ runner.os == 'Linux' }}
         run: .github/scripts/check-file-coverage.sh 90 coverage.json
+
+      - name: Collect native coverage
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          base="$PR_BASE"
+          if [ -z "$base" ]; then
+            base="$(git merge-base HEAD "refs/remotes/origin/$BASE_BRANCH")"
+          fi
+          case "$RUNNER_OS" in
+            Linux) platform=linux ;;
+            macOS) platform=macos ;;
+            Windows) platform=windows ;;
+            *) echo 'unsupported coverage platform' >&2; exit 1 ;;
+          esac
+          # Python supplies a native drive path on Windows; Bash PWD is an
+          # MSYS path and cannot match cargo-llvm-cov's native filenames.
+          checkout_root="$(python -c 'import pathlib; print(pathlib.Path.cwd())')"
+          export COVERAGE_BASE="$base" COVERAGE_PLATFORM="$platform"
+          python - <<'PYTHON'
+          import json, os, pathlib, subprocess
+          metadata = {
+              'checkout_root': str(pathlib.Path.cwd()),
+              'head': subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('utf-8').strip(),
+              'base': os.environ['COVERAGE_BASE'],
+              'rustc': subprocess.check_output(['rustc', '--version', '--verbose']).decode('utf-8'),
+              'runner_os': os.environ['RUNNER_OS'],
+              'platform': os.environ['COVERAGE_PLATFORM'],
+          }
+          pathlib.Path('coverage-native-metadata.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
+          PYTHON
+          cargo llvm-cov --locked --workspace --all-targets --all-features --json --output-path coverage-native.json
+          # Report exports the instrumented all-feature/all-target run. Selection
+          # flags are invalid for cargo-llvm-cov's export-only report subcommand.
+          cargo llvm-cov report --lcov --output-path coverage-native.info
+          python .github/scripts/check-native-coverage.py --json coverage-native.json --lcov coverage-native.info --base "$base" --root "$checkout_root" --platform "$platform"
+
+      - name: Upload native coverage reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-native-${{ runner.os }}-${{ github.sha }}
+          path: |
+            coverage-native.json
+            coverage-native.info
+            coverage-native-metadata.json
+          if-no-files-found: warn
 
       - name: Upload coverage report
         if: ${{ always() && runner.os == 'Linux' }}
