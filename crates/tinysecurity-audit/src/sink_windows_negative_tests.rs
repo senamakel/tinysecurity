@@ -393,6 +393,11 @@ $auditCallsite = 4
 try {
     try { [IO.Directory]::Move($env:TINYSECURITY_TEST_DIRECTORY, ($env:TINYSECURITY_TEST_DIRECTORY + '.outsider')); exit 84 }
     catch [UnauthorizedAccessException] { }
+    catch [IO.IOException] {
+        # Framework Directory.Move maps native ACCESS_DENIED to IOException.
+        $nativeFailure = $_.Exception.GetBaseException()
+        if (($nativeFailure.GetType() -ne [IO.IOException]) -or ($nativeFailure.HResult -ne -2147024891)) { throw }
+    }
 } catch {
     Write-AuditFailureMetadata $_ $auditFileOrdinal $auditOperation $auditCallsite
     throw
