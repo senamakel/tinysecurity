@@ -402,7 +402,7 @@ impl Harness {
     ) -> tinybus::Result<ApprovalRow2> {
         let row = self
             .service
-            .device_approval(EvaluateDeviceRequest2 {
+            .evaluate_device2(EvaluateDeviceRequest2 {
                 request,
                 audit: audit(sequence),
             })
@@ -431,7 +431,7 @@ impl Harness {
         sequence: u64,
     ) -> tinybus::Result<DeviceResponse2> {
         self.service
-            .device_execute(ExecuteDeviceRequest2 {
+            .execute_device2(ExecuteDeviceRequest2 {
                 request,
                 request_id: row.request_id.clone(),
                 audit: audit(sequence),
@@ -663,7 +663,7 @@ fn device_configuration_preserves_immutable_subjects_and_weak_shutdown_lookup()
         .0
         .ok_or("retained")?;
     assert!(Arc::ptr_eq(&registry, &retained));
-    advance(Some(&registry), limits, 2)?;
+    verify_generation_handles(&registry, limits)?;
     assert!(configure(Some(device_configuration()), Some(&None), &next).is_err());
     assert!(configure(None, Some(&None), &next)?.0.is_none());
     advance(None, None, 2)?;
@@ -708,7 +708,7 @@ async fn unpublished_worker_plaintext_is_wiped_on_clock_read_failure_and_join_ab
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     use tinysecurity::crypto::device::{KeyPair, PublicKey};
     let mut outcomes = Vec::new();
-    for fault in 0..3 {
+    for fault in 0..4 {
         let mut fixture = harness().await?;
         let clock = Arc::new(ToggleClock(AtomicBool::new(false)));
         fixture.service.sandbox_clock = clock.clone();
@@ -759,6 +759,15 @@ async fn unpublished_worker_plaintext_is_wiped_on_clock_read_failure_and_join_ab
             execution.abort();
         } else if fault == 0 {
             clock.0.store(true, Ordering::SeqCst);
+        } else if fault == 3 {
+            let registry = fixture.service.device.as_ref().ok_or("registry")?;
+            advance(Some(registry), None, 2)?;
+            fixture
+                .service
+                .policy
+                .write()
+                .map_err(|_| "policy lock")?
+                .reinitialize(ModuleConfig::default())?;
         } else {
             let policy = fixture.service.policy.clone();
             assert!(
@@ -785,5 +794,51 @@ async fn unpublished_worker_plaintext_is_wiped_on_clock_read_failure_and_join_ab
         outcomes.iter().all(|(_, wiped)| *wiped),
         "unpublished cleanup outcomes: {outcomes:?}"
     );
+    Ok(())
+}
+
+fn verify_generation_handles(
+    registry: &Arc<Registry>,
+    limits: Option<DeviceConfig2>,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let now = Time {
+        wall: 1000,
+        monotonic: 0,
+    };
+    let request = device_request(
+        1,
+        DeviceOperation2::Key {
+            purpose: DeviceKeyPurpose2::Static,
+        },
+    );
+    let work = registry.reserve(&request, 1, now)?;
+    let old = registry
+        .execute(&work, &request.operation, 1, now)?
+        .handle
+        .ok_or("key handle")?;
+    advance(Some(registry), limits, 2)?;
+    assert!(registry.validate(&work, 2, now).is_err());
+    assert!(registry.reserve(&request, 1, now).is_err());
+    let fresh = registry.reserve(&request, 2, now)?;
+    assert!(
+        registry
+            .execute(
+                &fresh,
+                &DeviceOperation2::Revoke {
+                    handle: old.clone()
+                },
+                2,
+                now
+            )
+            .is_err()
+    );
+    let new = registry
+        .execute(&fresh, &request.operation, 2, now)?
+        .handle
+        .ok_or("new key handle")?;
+    assert_ne!(new, old);
+    drop(work);
+    drop(fresh);
+
     Ok(())
 }
