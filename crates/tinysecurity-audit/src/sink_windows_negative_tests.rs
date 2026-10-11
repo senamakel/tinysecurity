@@ -352,7 +352,7 @@ exit 0
     $file = Join-Path $PSHOME 'powershell.exe'
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $file
-    $start.Arguments = '-NoProfile -NonInteractive -Command "try { [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); $s=[Console]::In.ReadToEnd(); if(-not $s.StartsWith(''$ErrorActionPreference'')){exit 89}; $b=[ScriptBlock]::Create($s); $a=$b.Ast.EndBlock.Statements; [Console]::WriteLine((''audit-account-stage=94 parsed=1 prefix=1 block={0} first={1} count={2} length={3}'' -f [int]($b -is [ScriptBlock]),[int]($a[0].Extent.Text -ceq ''$ErrorActionPreference = ''''Stop''''''),$a.Count,$s.Length)); & $b } catch { $i=$_.InvocationInfo; $n=[Array]::IndexOf(@(''$ErrorActionPreference'',''Write-Output'',''Join-Path'',''&'',''$b''),$_.TargetObject)+1; [Console]::WriteLine((''audit-account-stage=95 command={0} length={1} line={2} offset={3} category={4} hresult={5}'' -f $n,([string]$_.TargetObject).Length,$i.ScriptLineNumber,$i.OffsetInLine,[int]$_.CategoryInfo.Category,$_.Exception.HResult)); exit 89 }"'
+    $start.Arguments = '-NoProfile -NonInteractive -Command "try { [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); $s=[Console]::In.ReadToEnd(); $e=''$ErrorActionPreference''; $o=[StringComparison]::Ordinal; if(-not $s.StartsWith($e)){exit 89}; $b=[ScriptBlock]::Create($s); $f=$b.Ast.EndBlock.Statements[0].Extent.Text; [Console]::WriteLine((''audit-account-stage=94 parsed=1 source-first={0} ordinal-prefix={1} ordinal-first={2}'' -f [int]$s[0],[int]$s.StartsWith($e,$o),[int]$f.Equals(($e + '' = ''''Stop''''''),$o))); & $b } catch { $t=[string]$_.TargetObject; $p=0; $c=0; if($t.Length -eq 23){if($t.EndsWith($e,$o)){$p=1;$c=[int]$t[0]}elseif($t.StartsWith($e,$o)){$p=2;$c=[int]$t[22]}}; [Console]::WriteLine((''audit-account-stage=95 preference-extra={0} codepoint={1} length={2} category={3} hresult={4}'' -f $p,$c,$t.Length,[int]$_.CategoryInfo.Category,$_.Exception.HResult)); exit 89 }"'
     $start.UseShellExecute = $false
     $start.UserName = $network.UserName
     $start.Domain = $network.Domain
@@ -386,7 +386,7 @@ exit 0
     $requiredPhases = @('audit-account-stage=90 foreign-identity=1 nonadmin=1', 'audit-account-stage=91 exact-control-read=1', 'audit-account-stage=92 private-file-denials=6', 'audit-account-stage=93 namespace-denial=1')
     $allLines = @($stdout.Result.Split([char]10) | ForEach-Object { $_.TrimEnd([char]13) } | Where-Object { $_.Length -gt 0 })
     $lines = @($allLines | Where-Object { $requiredPhases -ccontains $_ })
-    $diagnostics = @($allLines | Where-Object { $_ -cmatch '^audit-account-stage=94 parsed=1 prefix=1 block=[01] first=[01] count=[0-9]+ length=[0-9]+$|^audit-account-stage=95 command=[0-5] length=[0-9]+ line=-?[0-9]+ offset=-?[0-9]+ category=[0-9]+ hresult=-?[0-9]+$|^audit-account-stage=96 (child-entry|identity-read)=1$' })
+    $diagnostics = @($allLines | Where-Object { $_ -cmatch '^audit-account-stage=94 parsed=1 source-first=[0-9]+ ordinal-prefix=[01] ordinal-first=[01]$|^audit-account-stage=95 preference-extra=[0-2] codepoint=[0-9]+ length=[0-9]+ category=[0-9]+ hresult=-?[0-9]+$|^audit-account-stage=96 (child-entry|identity-read)=1$' })
     foreach ($line in $allLines) {
         if (($requiredPhases -ccontains $line) -or ($diagnostics -ccontains $line)) { Write-Output $line }
     }

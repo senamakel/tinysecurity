@@ -341,6 +341,9 @@ async fn native_storage_returns_exact_receipts_and_capacity_denies_without_phant
     let path = root.path().canonicalize()?.join("audit");
     let mut native_config = config(true);
     native_config.native_path = Some(path.to_str().ok_or("fixture path")?.into());
+    // Capacity and exact receipts must not race real fsync against the synthetic
+    // callback budget. The paused-clock blocked-worker test pins timeout semantics.
+    native_config.timeout_ms = 30_000;
     native_config.journal_max_events = 1;
     let registry = tinysecurity::Redactor::new(&RedactorConfig::default())?;
     let client = AuditClient::new(
