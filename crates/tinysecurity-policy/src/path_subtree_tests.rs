@@ -78,7 +78,18 @@ fn all_lexical_windows_volume_aliases_cover_prospective_system_children() {
             "{root}cache"
         );
     }
-    for root in CRITICAL_ROOTS.iter().chain(INSTALLATION_ROOTS) {
+    for root in CRITICAL_ROOTS {
+        assert!(protected_subtree(Path::new(root), None), "{root}");
+    }
+}
+
+// These installation spellings are absolute on Unix. On Windows they are
+// root-relative, so grant admission rejects them before subtree resolution.
+#[cfg(unix)]
+#[test]
+fn native_unix_installation_roots_preserve_subtree_floor() {
+    for root in INSTALLATION_ROOTS {
+        assert!(Path::new(root).is_absolute(), "{root}");
         assert!(protected_subtree(Path::new(root), None), "{root}");
     }
 }

@@ -111,6 +111,34 @@ fn windows_different_drive_root_grants_cannot_cover_system_subtrees()
     Ok(())
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_root_relative_installation_grants_deny_in_actual_planner()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    for enabled in [false, true] {
+        let (_dir, mut scope, request) = fixture()?;
+        scope.paths.enabled = enabled;
+        assert_eq!(verdict(scope.clone(), request.grants)?, None);
+        for root in ["/bin", "/sbin", "/lib", "/lib64", "/usr", "/library", "/dev"] {
+            for path in [root.to_owned(), root.replace('/', "\\")] {
+                let raw = Path::new(&path);
+                assert!(raw.has_root(), "{path}");
+                assert!(!raw.is_absolute(), "{path}");
+                assert!(
+                    !protected_path(raw),
+                    "installation roots retain configurable point policy: {path}"
+                );
+                assert_eq!(
+                    verdict(scope.clone(), vec![PathGrant { path, write: true }])?,
+                    Some(SandboxDenial2::Floor),
+                    "root-relative grant denies, enabled={enabled}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn cargo_container_grants_deny_without_blocking_registry_cache()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
