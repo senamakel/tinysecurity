@@ -34,6 +34,56 @@ fn batch() -> AuditSinkRequest2 {
         }],
     }
 }
+
+fn native_namespace()
+-> std::result::Result<(tempfile::TempDir, std::path::PathBuf), Box<dyn std::error::Error>> {
+    #[cfg(unix)]
+    {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().canonicalize()?.join("audit");
+        Ok((directory, path))
+    }
+    #[cfg(windows)]
+    {
+        let root = std::env::var_os("TINYSECURITY_AUDIT_TEST_ROOT")
+            .ok_or("audit test namespace not provisioned")?;
+        let directory = tempfile::tempdir_in(root)?;
+        // Use the native fixture's .NET installer APIs, independent of cmdlet
+        // resolution. Elevated tokens can assign Administrators as the default
+        // owner, so both the directory and empty journal need the current user.
+        let script = r#"
+$ErrorActionPreference = 'Stop'
+try {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $acl = [Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetOwner($identity.User)
+    $acl.SetAccessRuleProtection($true, $false)
+    $rule = [Security.AccessControl.FileSystemAccessRule]::new($identity.User, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit', [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+    [void]$acl.AddAccessRule($rule)
+    [IO.Directory]::SetAccessControl($env:TINYSECURITY_CALLBACK_DIRECTORY, $acl)
+    $journalPath = [IO.Path]::Combine($env:TINYSECURITY_CALLBACK_DIRECTORY, 'audit.journal')
+    $rights = [Security.AccessControl.FileSystemRights]::Read -bor [Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::TakeOwnership
+    $journal = [IO.FileStream]::new($journalPath, [IO.FileMode]::CreateNew, $rights, [IO.FileShare]::ReadWrite, 4096, [IO.FileOptions]::None)
+    try {
+        $journalAcl = $journal.GetAccessControl()
+        $journalAcl.SetOwner($identity.User)
+        $journal.SetAccessControl($journalAcl)
+        $journal.Flush($true)
+    } finally { $journal.Dispose() }
+} catch { exit 1 }
+"#;
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("TINYSECURITY_CALLBACK_DIRECTORY", directory.path())
+            .output()?;
+        // Startup/error streams may contain paths or identities. Never render them.
+        if !output.status.success() {
+            return Err("callback audit namespace installer failed".into());
+        }
+        let path = directory.path().join("audit");
+        Ok((directory, path))
+    }
+}
 #[tokio::test]
 async fn optional_storage_loss_cannot_authorize_a_scope_widening_attempt()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -202,12 +252,10 @@ async fn unrelated_success_receipt_never_confirms_a_required_batch()
     Ok(())
 }
 
-#[cfg(unix)]
 #[tokio::test(start_paused = true)]
 async fn native_worker_deadline_returns_before_a_blocked_commit_and_retry_reconciles()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let root = tempfile::tempdir()?;
-    let path = root.path().canonicalize()?.join("audit");
+    let (_root, path) = native_namespace()?;
     let sink = std::sync::Arc::new(tinysecurity::audit::JsonlSink::open(&path, 10000, 3)?);
     let (release, blocked) = std::sync::mpsc::channel();
     let (committed, observed) = tokio::sync::oneshot::channel();
@@ -328,7 +376,6 @@ async fn authenticated_callback_without_transport_context_never_dispatches()
     Ok(())
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn native_storage_returns_exact_receipts_and_capacity_denies_without_phantom_commit()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -337,8 +384,7 @@ async fn native_storage_returns_exact_receipts_and_capacity_denies_without_phant
     let host = tinybus::Connection::connect(bus.connect().await?).await?;
     let connection = tinybus::Connection::connect(bus.connect().await?).await?;
     let binding = PeerBinding::new(host.unique_name().as_ref().map(tinybus::BusName::as_str))?;
-    let root = tempfile::tempdir()?;
-    let path = root.path().canonicalize()?.join("audit");
+    let (_root, path) = native_namespace()?;
     let mut native_config = config(true);
     native_config.native_path = Some(path.to_str().ok_or("fixture path")?.into());
     // Capacity and exact receipts must not race real fsync against the synthetic

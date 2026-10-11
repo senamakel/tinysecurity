@@ -290,7 +290,10 @@ exit 0
             );
         }
     }
-    assert_eq!(std::env::var_os("PSModulePath"), parent);
+    assert!(
+        std::env::var_os("PSModulePath") == parent,
+        "child module resolution must preserve the parent environment"
+    );
     Ok(())
 }
 

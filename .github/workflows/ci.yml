@@ -227,7 +227,9 @@ jobs:
           } | ConvertTo-Json | Set-Content -Encoding utf8 coverage-windows-metadata.json
           cargo llvm-cov --locked --workspace --all-targets --all-features --json --output-path coverage-windows.json
           if ($LASTEXITCODE -ne 0) { throw 'native Windows coverage tests failed' }
-          cargo llvm-cov report --all-features --lcov --output-path coverage-windows.info
+          # Reuse the instrumented all-feature/all-target run above. Report is
+          # an export-only subcommand; 0.9.1 rejects test-selection flags here.
+          cargo llvm-cov report --lcov --output-path coverage-windows.info
           if ($LASTEXITCODE -ne 0) { throw 'native Windows LCOV report failed' }
 
       - name: Require native Windows file and changed-line coverage

@@ -2,6 +2,8 @@
 import importlib.util
 import unittest
 import sys
+import shlex
+import subprocess
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -25,6 +27,20 @@ def report(*entries):
 
 
 class NativeCoverageAdmission(unittest.TestCase):
+    def test_native_report_command_is_accepted_without_recollecting_tests(self):
+        workflow = Path(__file__).parents[1].joinpath('workflows/ci.yml').read_text()
+        commands = [shlex.split(line.strip()) for line in workflow.splitlines()
+                    if line.strip().startswith('cargo llvm-cov ')]
+        collection, export = commands
+        for option in ('--locked', '--workspace', '--all-targets', '--all-features', '--json'):
+            self.assertIn(option, collection)
+        # Validate the actual reporter's parser, rather than trusting its help
+        # table: 0.9.1 lists --all-features there but rejects it for report.
+        parsed = subprocess.run(export + ['--help'], capture_output=True, text=True)
+        self.assertEqual(parsed.returncode, 0, parsed.stderr)
+        self.assertIn('Generate coverage report', parsed.stdout)
+        self.assertEqual(export[:4], ['cargo', 'llvm-cov', 'report', '--lcov'])
+
     def test_accepts_native_drive_paths_and_backslashes(self):
         data = report((WINDOWS, 10, 9), (ACL, 10, 10))
         data['data'][0]['files'][0]['filename'] = ('d:/a/tinysecurity/tinysecurity/' + WINDOWS).replace('/', '\\')
