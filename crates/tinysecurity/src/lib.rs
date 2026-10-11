@@ -12,3 +12,6 @@ pub use tinysecurity_approval as approval;
 pub use tinysecurity_auto as auto;
 
 pub use tinysecurity_sandbox as sandbox;
+
+/// Internal native cryptographic engines, never host-linked.
+pub use tinysecurity_crypto as crypto;

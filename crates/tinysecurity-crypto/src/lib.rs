@@ -12,6 +12,7 @@
 //! # Ok::<(), tinysecurity_crypto::Error>(())
 //! ```
 pub mod device;
+pub mod device_handles;
 mod error;
 pub mod password;
 pub use error::{Error, Result};

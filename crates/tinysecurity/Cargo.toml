@@ -11,6 +11,8 @@ categories = ["authentication"]
 publish = false
 
 [dependencies]
+# Native cryptographic keys and scoped device state remain inside the module.
+tinysecurity-crypto.workspace = true
 tinysecurity-sandbox.workspace = true
 # Native judge and bounded approval rules.
 tinysecurity-auto.workspace = true

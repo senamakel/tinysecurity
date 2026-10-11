@@ -3,6 +3,18 @@
 /// Native operation failure; no input, secret or filesystem path is retained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+    /// Scoped device authority is unavailable or no longer live.
+    #[error("device authority denied")]
+    DeviceDenied,
+    /// A clock failure or rollback permanently invalidated process-local authority.
+    #[error("device clock unavailable")]
+    DeviceClock,
+    /// Bounded handle or work capacity is exhausted.
+    #[error("device capacity exhausted")]
+    DeviceCapacity,
+    /// A registered subject exhausted its bounded request rate.
+    #[error("device rate exhausted")]
+    DeviceRate,
     /// An input exceeds the operation's immutable work bound.
     #[error("input exceeds limit")]
     Limit,

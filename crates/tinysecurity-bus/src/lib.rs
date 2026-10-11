@@ -2,6 +2,8 @@
 //!
 //! Hosts link this crate; the policy engine and native module stay isolated.
 //! Implements bootstrap checks plus immutable native filesystem scope contracts.
+mod device;
+pub use device::*;
 mod sandbox;
 pub use sandbox::*;
 mod judge;

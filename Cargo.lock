@@ -1538,6 +1538,7 @@ dependencies = [
  "tinysecurity-audit",
  "tinysecurity-auto",
  "tinysecurity-bus",
+ "tinysecurity-crypto",
  "tinysecurity-egress",
  "tinysecurity-policy",
  "tinysecurity-redact",
@@ -1617,7 +1618,9 @@ dependencies = [
  "polyval",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
+ "tinysecurity-bus",
  "x25519-dalek",
  "zeroize",
 ]

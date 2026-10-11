@@ -8,6 +8,10 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+# Transport-free device operation vocabulary and exact binding digest.
+tinysecurity-bus.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
 aws-lc-rs.workspace = true
 x25519-dalek.workspace = true
 chacha20poly1305.workspace = true
