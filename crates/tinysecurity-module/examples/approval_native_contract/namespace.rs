@@ -9,7 +9,10 @@ pub(super) fn create()
         std::env::var_os("TINYSECURITY_AUDIT_TEST_ROOT")
             .ok_or("native approval namespace not provisioned")?,
     )?;
+    #[cfg(unix)]
     let root = directory.path().canonicalize()?;
+    #[cfg(windows)]
+    let root = directory.path().to_path_buf();
     provision(&root)?;
     Ok((directory, root))
 }
