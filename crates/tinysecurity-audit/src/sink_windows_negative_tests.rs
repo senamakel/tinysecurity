@@ -224,73 +224,38 @@ fn windows_reparse_directory_is_denied_without_outside_mutation()
 fn windows_second_ordinary_account_cannot_read_or_replace_the_namespace()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (root, path) = fixture()?;
-    let sink = JsonlSink::open(&path, 700, 3)?;
-    sink.append(&batch(0))?;
+    let sink = JsonlSink::open(&path, 400, 3)?;
+    for tail in 0..4 {
+        sink.append(&batch(tail))?;
+    }
+    let protected = [
+        "audit",
+        "audit.1",
+        "audit.2",
+        "audit.3",
+        "audit.lock",
+        "audit.journal",
+    ];
+    let snapshots = protected
+        .iter()
+        .map(|name| std::fs::read(root.path().join(name)))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    std::fs::write(
+        root.path().join("read-control"),
+        b"tinysecurity-read-control-v1",
+    )?;
     let journal = root.path().join("audit.journal");
     let before = std::fs::read(&journal)?;
     // The privileged test installer creates a temporary ordinary local account.
     // Its generated password stays inside PowerShell memory, never in arguments,
     // environment, stdout, diagnostics or a persisted test file.
-    let script = r"
-$ErrorActionPreference = 'Stop'
-$account = 'tsa' + [Guid]::NewGuid().ToString('N').Substring(0, 16)
-$password = ConvertTo-SecureString ('Tsa!A1' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
-$created = $false
-$process = $null
-$stage = 10
-try {
-    New-LocalUser -Name $account -Password $password | Out-Null
-    $created = $true
-    $stage = 20
-    Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $account
-    $credential = [PSCredential]::new(($env:COMPUTERNAME + '\' + $account), $password)
-    $childScript = @'
-$ErrorActionPreference = 'Stop'
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-if ($identity.User.Value -eq $env:TINYSECURITY_TEST_OWNER) { exit 81 }
-$principal = [Security.Principal.WindowsPrincipal]::new($identity)
-if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 82 }
-foreach ($name in @('audit', 'audit.1', 'audit.2', 'audit.3', 'audit.lock', 'audit.journal')) {
-    try { [void][IO.File]::ReadAllBytes((Join-Path $env:TINYSECURITY_TEST_DIRECTORY $name)); exit 83 }
-    catch [UnauthorizedAccessException] { }
-}
-try { [IO.Directory]::Move($env:TINYSECURITY_TEST_DIRECTORY, ($env:TINYSECURITY_TEST_DIRECTORY + '.outsider')); exit 84 }
-catch [UnauthorizedAccessException] { }
-exit 0
-'@
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
-    $stage = 30
-    $process = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -Credential $credential -PassThru -WindowStyle Hidden
-    $stage = 40
-    if (-not $process.WaitForExit(30000)) { throw 'ordinary account helper timeout' }
-    $code = $process.ExitCode
-    Write-Output ('audit-account-stage=50 inner-exit=' + $code)
-    $stage = 50
-    if ($code -ne 0) { throw 'ordinary account isolation failed' }
-    Write-Output 'audit-account-stage=60'
-} catch {
-    $category = 0
-    if ($_.Exception -is [UnauthorizedAccessException]) { $category = 1 }
-    elseif ($_.Exception -is [ComponentModel.Win32Exception]) { $category = 2 }
-    Write-Output ('audit-account-stage=' + $stage + ' category=' + $category + ' hresult=' + $_.Exception.HResult)
-    exit 1
-} finally {
-    try {
-        if ($null -ne $process) {
-            try {
-                if (-not $process.HasExited) { $process.Kill() }
-                $process.WaitForExit()
-            } finally { $process.Dispose() }
-        }
-        if ($created) { Remove-LocalUser -Name $account }
-    } catch {
-        Write-Output ('audit-account-stage=70 hresult=' + $_.Exception.HResult)
-        exit 1
-    }
-}
-";
     let output = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            ordinary_account_script(),
+        ])
         .env("TINYSECURITY_TEST_DIRECTORY", root.path())
         .env("TINYSECURITY_TEST_OWNER", identity()?)
         .output()?;
@@ -314,9 +279,95 @@ exit 0
         "ordinary account must be unable to read or replace the namespace"
     );
     assert_eq!(std::fs::read(journal)?, before);
+    for (name, bytes) in protected.iter().zip(snapshots) {
+        assert_eq!(std::fs::read(root.path().join(name))?, bytes);
+        assert!(!root.path().join(format!("{name}.outsider")).exists());
+    }
     assert!(root.path().exists());
     assert!(!root.path().with_extension("outsider").exists());
     Ok(())
+}
+
+fn ordinary_account_script() -> &'static str {
+    r"
+$ErrorActionPreference = 'Stop'
+$account = 'tsa' + [Guid]::NewGuid().ToString('N').Substring(0, 16)
+$password = ConvertTo-SecureString ('Tsa!A1' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
+$created = $false
+$process = $null
+$stage = 10
+try {
+    New-LocalUser -Name $account -Password $password | Out-Null
+    $created = $true
+    $stage = 20
+    Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $account
+    $stage = 25
+    $env:TINYSECURITY_TEST_FOREIGN = (Get-LocalUser -Name $account).SID.Value
+    $protected = @('', 'audit', 'audit.1', 'audit.2', 'audit.3', 'audit.lock', 'audit.journal')
+    $acls = @($protected | ForEach-Object { (Get-Acl (Join-Path $env:TINYSECURITY_TEST_DIRECTORY $_)).Sddl })
+    $marker = Join-Path $env:TINYSECURITY_TEST_DIRECTORY 'read-control'
+    $acl = Get-Acl $marker
+    $acl.SetSecurityDescriptorSddlForm(('O:' + $env:TINYSECURITY_TEST_OWNER + 'D:P(A;;FA;;;' + $env:TINYSECURITY_TEST_OWNER + ')(A;;FR;;;' + $env:TINYSECURITY_TEST_FOREIGN + ')'))
+    Set-Acl -LiteralPath $marker -AclObject $acl
+    $credential = [PSCredential]::new(($env:COMPUTERNAME + '\' + $account), $password)
+    $childScript = @'
+$ErrorActionPreference = 'Stop'
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+if ($identity.User.Value -eq $env:TINYSECURITY_TEST_OWNER) { exit 81 }
+if ($identity.User.Value -ne $env:TINYSECURITY_TEST_FOREIGN) { exit 86 }
+$principal = [Security.Principal.WindowsPrincipal]::new($identity)
+if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 82 }
+try {
+    $control = [IO.File]::ReadAllBytes((Join-Path $env:TINYSECURITY_TEST_DIRECTORY 'read-control'))
+    if ([Convert]::ToBase64String($control) -cne 'dGlueXNlY3VyaXR5LXJlYWQtY29udHJvbC12MQ==') { exit 85 }
+} catch { exit 85 }
+foreach ($name in @('audit', 'audit.1', 'audit.2', 'audit.3', 'audit.lock', 'audit.journal')) {
+    try { [void][IO.File]::ReadAllBytes((Join-Path $env:TINYSECURITY_TEST_DIRECTORY $name)); exit 83 }
+    catch [UnauthorizedAccessException] { }
+    try { [IO.File]::WriteAllBytes((Join-Path $env:TINYSECURITY_TEST_DIRECTORY $name), [byte[]]@(0)); exit 87 }
+    catch [UnauthorizedAccessException] { }
+    try { [IO.File]::Move((Join-Path $env:TINYSECURITY_TEST_DIRECTORY $name), (Join-Path $env:TINYSECURITY_TEST_DIRECTORY ($name + '.outsider'))); exit 88 }
+    catch [UnauthorizedAccessException] { }
+}
+try { [IO.Directory]::Move($env:TINYSECURITY_TEST_DIRECTORY, ($env:TINYSECURITY_TEST_DIRECTORY + '.outsider')); exit 84 }
+catch [UnauthorizedAccessException] { }
+exit 0
+'@
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
+    $stage = 30
+    $process = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -Credential $credential -PassThru -WindowStyle Hidden
+    $stage = 40
+    if (-not $process.WaitForExit(30000)) { throw 'ordinary account helper timeout' }
+    $code = $process.ExitCode
+    Write-Output ('audit-account-stage=50 inner-exit=' + $code)
+    $stage = 50
+    if ($code -ne 0) { throw 'ordinary account isolation failed' }
+    $stage = 55
+    for ($i = 0; $i -lt $protected.Count; $i++) {
+        if ((Get-Acl (Join-Path $env:TINYSECURITY_TEST_DIRECTORY $protected[$i])).Sddl -cne $acls[$i]) { throw 'protected ACL changed' }
+    }
+    Write-Output 'audit-account-stage=60'
+} catch {
+    $category = 0
+    if ($_.Exception -is [UnauthorizedAccessException]) { $category = 1 }
+    elseif ($_.Exception -is [ComponentModel.Win32Exception]) { $category = 2 }
+    Write-Output ('audit-account-stage=' + $stage + ' category=' + $category + ' hresult=' + $_.Exception.HResult)
+    exit 1
+} finally {
+    try {
+        if ($null -ne $process) {
+            try {
+                if (-not $process.HasExited) { $process.Kill() }
+                $process.WaitForExit()
+            } finally { $process.Dispose() }
+        }
+        if ($created) { Remove-LocalUser -Name $account }
+    } catch {
+        Write-Output ('audit-account-stage=70 hresult=' + $_.Exception.HResult)
+        exit 1
+    }
+}
+"
 }
 
 #[test]
@@ -339,9 +390,20 @@ fn windows_empty_or_null_directory_dacl_is_denied_before_candidate_commit()
             SecurityInformation::Dacl | SecurityInformation::ProtectedDacl,
             None,
             None,
-            invalid.dacl(),
+            if flags == "NO_ACCESS_CONTROL" {
+                // A present NULL DACL means unrestricted access. The safe
+                // dependency's dacl() accessor panics for that valid descriptor;
+                // install it directly rather than querying a NULL ACL pointer.
+                None
+            } else {
+                invalid.dacl()
+            },
             None,
         )?;
+        eprintln!(
+            "audit-stage=nullable-dacl-installed null={}",
+            flags == "NO_ACCESS_CONTROL"
+        );
         let denied = JsonlSink::open(&path, 700, 3).and_then(|sink| sink.append(&batch(0)));
         let restored: LocalBox<SecurityDescriptor> =
             format!("O:{user}D:P(A;OICI;FA;;;{user})").parse()?;
