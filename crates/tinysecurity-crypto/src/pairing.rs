@@ -267,19 +267,29 @@ pub struct PortBuffer {
     inner: Arc<Inner>,
     account: usize,
     binding: [u8; 32],
-    bytes: StagingBytes,
+    bytes: Option<StagingBytes>,
     slot: usize,
     charge: usize,
+    #[cfg(test)]
+    after_drop_unlock: Option<Box<dyn FnOnce() + Send>>,
 }
 impl Drop for PortBuffer {
     fn drop(&mut self) {
         if let Ok(mut state) = self.inner.state.lock() {
-            state.pending_bytes = state.pending_bytes.saturating_sub(self.charge);
             if let Some(pending) = state.accounts[self.account].pending.as_mut()
                 && pending.binding == self.binding
             {
                 pending.buffers[self.slot] = None;
             }
+            // No backing Arc escapes these two private owners. Destroy the final
+            // Arc, its zeroizing Vec and allocation before admission can observe
+            // a refund; implicit field Drop would happen after unlocking State.
+            drop(self.bytes.take());
+            state.pending_bytes = state.pending_bytes.saturating_sub(self.charge);
+        }
+        #[cfg(test)]
+        if let Some(observe) = self.after_drop_unlock.take() {
+            observe();
         }
     }
 }
@@ -291,7 +301,12 @@ impl PortBuffer {
     pub fn with_bytes(&mut self, f: impl FnOnce(&mut [u8]) -> Result<()>) -> Result<()> {
         let mut state = self.inner.lock()?;
         self.inner.check(&mut state, self.account, &self.binding)?;
-        let mut bytes = self.bytes.lock().map_err(|_| Error::NativeDenied)?;
+        let mut bytes = self
+            .bytes
+            .as_ref()
+            .ok_or(Error::NativeDenied)?
+            .lock()
+            .map_err(|_| Error::NativeDenied)?;
         f(&mut bytes)
     }
 }
@@ -346,7 +361,12 @@ impl StagedDelivery {
             return Err(Error::NativeDenied);
         }
         self.with_staged_secret(|secret| {
-            let mut out = buffer.bytes.lock().map_err(|_| Error::NativeDenied)?;
+            let mut out = buffer
+                .bytes
+                .as_ref()
+                .ok_or(Error::NativeDenied)?
+                .lock()
+                .map_err(|_| Error::NativeDenied)?;
             if out.len() < secret.len() {
                 return Err(Error::NativeCapacity);
             }
@@ -629,9 +649,11 @@ impl Inner {
             inner: Arc::clone(self),
             account,
             binding: *binding,
-            bytes,
+            bytes: Some(bytes),
             slot,
             charge,
+            #[cfg(test)]
+            after_drop_unlock: None,
         })
     }
     fn lock(&self) -> Result<MutexGuard<'_, State>> {

@@ -1127,7 +1127,16 @@ async fn full_backing_charge_survives_revoke_and_releases_only_with_owned_buffer
             })
             .is_err()
     );
-    assert!(buffer.bytes.lock().checked().iter().all(|b| *b == 0));
+    assert!(
+        buffer
+            .bytes
+            .as_ref()
+            .checked()
+            .lock()
+            .checked()
+            .iter()
+            .all(|b| *b == 0)
+    );
     task.abort();
     let _ = task.await;
     assert_eq!(owner.inner.state.lock().checked().pending_bytes, charge);
@@ -1397,4 +1406,94 @@ async fn unpublished_retained_token_reservation_releases_once_on_cancel() {
     assert_eq!(state.retained_bytes, baseline);
     assert_eq!(state.reserved_tokens, 0);
     assert_eq!(state.tokens, 0);
+}
+
+#[tokio::test]
+async fn refunded_port_capacity_is_reusable_only_after_backing_destruction() {
+    let (_, clock, _, verifier, entropy) = setup(true, vec![], Limits::default());
+    let mut second = registration(true, vec![]);
+    second.account = "second".into();
+    let owner = Arc::new(
+        PairingOwner::construct(
+            vec![registration(true, vec![]), second],
+            1,
+            Limits {
+                pending_bytes: 2 * OP_BYTES + 8192 + 256,
+                ..Limits::default()
+            },
+            300_000,
+            clock,
+            Arc::new(AggregateConsumer),
+            verifier.clone(),
+            entropy,
+        )
+        .checked(),
+    );
+    let first = reference(&owner).await;
+    let other = TrustedAccountRequest {
+        account: "second",
+        ..account_request()
+    };
+    let second = match owner.begin(&other).await.checked() {
+        BeginOutcome::Active(reference) => reference,
+        BeginOutcome::Inactive => unreachable!("second challenge must be active"),
+    };
+    verifier.pause.store(true, Ordering::SeqCst);
+    let mut first_work = Box::pin(owner.verify(attempt(&first, "000000")));
+    let mut second_attempt = attempt(&second, "000000");
+    second_attempt.account = other;
+    let mut second_work = Box::pin(owner.verify(second_attempt));
+    for work in [&mut first_work, &mut second_work] {
+        let polled =
+            std::future::poll_fn(|cx| std::task::Poll::Ready(work.as_mut().poll(cx))).await;
+        assert!(polled.is_pending());
+    }
+    let deliveries: Vec<_> = (0..2)
+        .map(|account| StagedDelivery {
+            inner: owner.inner.clone(),
+            account,
+            binding: owner.inner.state.lock().checked().accounts[account]
+                .pending
+                .as_ref()
+                .checked()
+                .binding,
+        })
+        .collect();
+    let mut first_buffer = deliveries[0].allocate_buffer(8192).checked();
+    first_buffer
+        .with_bytes(|bytes| {
+            bytes.fill(7);
+            Ok(())
+        })
+        .checked();
+    assert!(matches!(
+        deliveries[1].allocate_buffer(8192),
+        Err(Error::NativeCapacity)
+    ));
+    // Weak observation adds no strong backing owner. This callback is the exact
+    // preemption boundary after unlocking State and before implicit field Drop;
+    // it runs outside the lock, with both accounts' original work still pending.
+    let first_backing = Arc::downgrade(first_buffer.bytes.as_ref().checked());
+    let next_delivery = StagedDelivery {
+        inner: owner.inner.clone(),
+        account: 1,
+        binding: deliveries[1].binding,
+    };
+    let observed = Arc::new(AtomicBool::new(false));
+    let observed_drop = observed.clone();
+    first_buffer.after_drop_unlock = Some(Box::new(move || {
+        let next_buffer = next_delivery.allocate_buffer(8192).checked();
+        assert_eq!(
+            first_backing.strong_count(),
+            0,
+            "refunded capacity admitted another backing before the old backing was destroyed"
+        );
+        observed_drop.store(true, Ordering::SeqCst);
+        drop(next_buffer);
+    }));
+    drop(first_buffer);
+    assert!(observed.load(Ordering::SeqCst));
+    drop(first_work);
+    drop(second_work);
+    assert_eq!(owner.inner.state.lock().checked().pending_bytes, 0);
 }
