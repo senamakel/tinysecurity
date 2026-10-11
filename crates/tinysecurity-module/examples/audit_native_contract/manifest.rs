@@ -37,6 +37,7 @@ pub(super) async fn verify(
         callback_names2::APPROVAL_STORE,
         callback_names2::APPROVAL_PROMPT,
         callback_names2::SECRET_BACKEND,
+        callback_names2::SECRET_CIPHER_CONSUMER,
     ]
     .into_iter()
     .collect();
