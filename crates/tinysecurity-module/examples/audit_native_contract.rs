@@ -1,4 +1,6 @@
 //! Loaded native audit contract with separately served, sender-bound callbacks.
+#[path = "audit_native_contract/manifest.rs"]
+mod manifest;
 #[path = "audit_native_contract/native.rs"]
 mod native;
 use async_trait::async_trait;
@@ -207,6 +209,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         proxy.attestation().await?.is_some(),
         "hashed module must carry recipient attestation"
     );
+    manifest::verify(&info.manifest, &proxy).await?;
     let mode = Arc::new(AtomicU8::new(0));
     let calls = Arc::new(AtomicUsize::new(0));
     let rows = Arc::new(Mutex::new(BTreeMap::new()));

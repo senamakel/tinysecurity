@@ -175,7 +175,13 @@ an internally computed SHA-256 digest of versioned, domain-separated canonical
 original content binds retries even when redaction would collapse two inputs.
 This unkeyed digest is correlation, not authentication or anonymization:
 low-entropy originals may be guessed offline. No caller-supplied digest is trusted;
-scope and stream come from trusted initialization. Caller verdicts, replacement
+scope and stream come from trusted initialization. The native manifest advertises both
+audited permission methods and the implemented `AuditSink2` callback as an optional
+dependency. The SDK uses the package version as its spoken version and caret
+minimum compatible range. Callback forwarding runs only when audit is configured
+without native storage; absent audit or native storage needs no callback. Required
+audit still denies permission when its configured callback is unavailable. No
+approval storage or prompt callback engine is advertised. Caller verdicts, replacement
 arguments and committed booleans cannot supply permission. Required audit makes
 unbound `Evaluate`/`Check` allows unavailable and refuses other unbound path,
 command and scoped egress authorization/consumption methods before they grant or
