@@ -11,7 +11,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU8, AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tinybus::{
     BusName, CallContext, Connection, Interface, InterfaceName, MemberName, broker::Broker,
@@ -60,6 +60,7 @@ impl Interface for Callback {
         {
             return Err(tinybus::Error::failed("invalid callback authority"));
         }
+        let callback_started = Instant::now();
         self.calls.fetch_add(1, Ordering::SeqCst);
         let (batch,): (AuditSinkRequest2,) = serde_json::from_value(args)?;
         assert!(!serde_json::to_string(&batch)?.contains("private-secret"));
@@ -94,12 +95,25 @@ impl Interface for Callback {
             return Ok(serde_json::json!({"committed": true}));
         }
         if mode == 6 {
-            self.lifecycle
+            let reinit_started = Instant::now();
+            eprintln!(
+                "audit-generation-reinit started=1 callback_elapsed_us={}",
+                callback_started.elapsed().as_micros()
+            );
+            let reinitialized = self
+                .lifecycle
                 .reinitialize(
                     &self.module_name,
                     serde_json::to_value(self.config.clone())?,
                 )
-                .await?;
+                .await;
+            eprintln!(
+                "audit-generation-reinit completed=1 success={} elapsed_us={} callback_elapsed_us={}",
+                u8::from(reinitialized.is_ok()),
+                reinit_started.elapsed().as_micros(),
+                callback_started.elapsed().as_micros()
+            );
+            reinitialized?;
         }
         let receipt = AuditSinkResponse2 {
             scope: if mode == 5 {
@@ -125,7 +139,14 @@ impl Interface for Callback {
                 })
                 .collect(),
         };
-        Ok(serde_json::to_value(receipt)?)
+        let reply = serde_json::to_value(receipt)?;
+        if mode == 6 {
+            eprintln!(
+                "audit-generation-callback reply=1 callback_elapsed_us={}",
+                callback_started.elapsed().as_micros()
+            );
+        }
+        Ok(reply)
     }
 }
 fn audit_config(required: bool) -> AuditConfig2 {
@@ -281,6 +302,14 @@ async fn verify_policy_generation_race(
     let response: CheckAuditedResponse2 = proxy
         .call(names::methods::CHECK_AUDITED2, (request.clone(),))
         .await?;
+    eprintln!(
+        "audit-generation-response permitted={} committed={} receipt={} generation={} verified_replies={}",
+        u8::from(response.audit.permitted),
+        u8::from(response.audit.committed),
+        u8::from(response.audit.receipt.is_some()),
+        response.decision.generation,
+        u8::from(response.audit.committed && response.audit.receipt.is_some())
+    );
     assert!(
         !response.audit.permitted && response.audit.committed && response.audit.receipt.is_some(),
         "generation change must deny permission without erasing the durable receipt"
