@@ -25,6 +25,14 @@ license = "GPL-3.0-only"
 repository = "https://github.com/tinyhumansai/tinysecurity"
 
 [workspace.dependencies]
+# Private password, credential, device and pairing engines, never host-linked.
+tinysecurity-crypto = { path = "crates/tinysecurity-crypto" }
+# Preserve the password payload's AES-256-GCM wire format.
+aes-gcm = "0.10"
+# Preserve the Argon2id v0x13 password derivation parameters.
+argon2 = "0.5"
+# Clear native key material and decrypted buffers on drop.
+zeroize = "1"
 # Private declarative sandbox planner, never linked by a host.
 tinysecurity-sandbox = { path = "crates/tinysecurity-sandbox" }
 # Optional probabilistic approval engine remains native and host-inaccessible.
