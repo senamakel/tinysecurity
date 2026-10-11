@@ -230,6 +230,10 @@ fn windows_existing_foreign_owner_is_denied_without_owner_repair()
         directory.authority(Path::new("audit.journal")).err(),
         Some(Error::Permissions)
     );
+    assert_eq!(
+        directory.file(Path::new("audit.journal")).err(),
+        Some(Error::Permissions)
+    );
     let file = OpenOptions::new().access_mode(0x0002_0000).open(journal)?;
     let sd = wrappers::GetSecurityInfo(
         &file,

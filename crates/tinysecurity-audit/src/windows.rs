@@ -75,8 +75,17 @@ impl Directory {
         self.verify()?;
         valid_name(name)?;
         let path = self.path.join(name);
-        let file = match options().create_new(true).open(&path) {
-            Ok(file) => file,
+        let file = match options()
+            .access_mode(0xc008_0000) // GENERIC_READ | GENERIC_WRITE | WRITE_OWNER
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                // Only this newly created empty handle may receive an owner.
+                // Elevated tokens can otherwise choose their default group owner.
+                set_new_file_owner(&mut file, &self.user)?;
+                file
+            }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 options().open(&path).map_err(|_| Error::Permissions)?
             }
@@ -185,6 +194,21 @@ fn options() -> OpenOptions {
         .share_mode(3)
         .custom_flags(OPEN_REPARSE);
     options
+}
+fn set_new_file_owner(file: &mut File, user: &str) -> Result<()> {
+    let sd: LocalBox<SecurityDescriptor> = format!("O:{user}")
+        .parse()
+        .map_err(|_| Error::Permissions)?;
+    wrappers::SetSecurityInfo(
+        file,
+        SeObjectType::SE_FILE_OBJECT,
+        SecurityInformation::Owner,
+        Some(sd.owner().ok_or(Error::Permissions)?),
+        None,
+        None,
+        None,
+    )
+    .map_err(|_| Error::Permissions)
 }
 fn valid_name(path: &Path) -> Result<()> {
     let mut components = path.components();

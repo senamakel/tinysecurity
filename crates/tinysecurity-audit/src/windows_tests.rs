@@ -186,3 +186,42 @@ fn windows_diagnostic_classification_never_retains_identity_or_unknown_flag_text
     assert_eq!(control_flags("PARAI"), 7);
     assert_eq!(control_flags("Pprivate payload"), 129);
 }
+
+#[test]
+fn windows_owner_install_without_write_owner_denies_and_preserves_empty_file()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = std::env::var_os("TINYSECURITY_AUDIT_TEST_ROOT")
+        .ok_or("audit test namespace not provisioned")?;
+    let directory = tempfile::tempdir_in(root)?;
+    let mut file = options()
+        .create_new(true)
+        .open(directory.path().join("owner-write-denied"))?;
+    let owner_before = sid_text(
+        wrappers::GetSecurityInfo(
+            &file,
+            SeObjectType::SE_FILE_OBJECT,
+            SecurityInformation::Owner,
+        )?
+        .owner()
+        .ok_or("file owner absent")?,
+    )?;
+    assert_eq!(
+        set_new_file_owner(&mut file, &identity()?),
+        Err(Error::Permissions)
+    );
+    let owner_after = sid_text(
+        wrappers::GetSecurityInfo(
+            &file,
+            SeObjectType::SE_FILE_OBJECT,
+            SecurityInformation::Owner,
+        )?
+        .owner()
+        .ok_or("file owner absent")?,
+    )?;
+    assert!(
+        owner_before == owner_after,
+        "denied owner update must preserve ownership"
+    );
+    assert_eq!(file.metadata()?.len(), 0);
+    Ok(())
+}
