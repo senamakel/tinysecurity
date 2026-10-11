@@ -352,7 +352,7 @@ exit 0
     $file = Join-Path $PSHOME 'powershell.exe'
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $file
-    $start.Arguments = '-NoProfile -NonInteractive -Command "try { [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); $s=[Console]::In.ReadToEnd(); $e=''$ErrorActionPreference''; $o=[StringComparison]::Ordinal; if(-not $s.StartsWith($e)){exit 89}; $b=[ScriptBlock]::Create($s); $f=$b.Ast.EndBlock.Statements[0].Extent.Text; [Console]::WriteLine((''audit-account-stage=94 parsed=1 source-first={0} ordinal-prefix={1} ordinal-first={2}'' -f [int]$s[0],[int]$s.StartsWith($e,$o),[int]$f.Equals(($e + '' = ''''Stop''''''),$o))); & $b } catch { $t=[string]$_.TargetObject; $p=0; $c=0; if($t.Length -eq 23){if($t.EndsWith($e,$o)){$p=1;$c=[int]$t[0]}elseif($t.StartsWith($e,$o)){$p=2;$c=[int]$t[22]}}; [Console]::WriteLine((''audit-account-stage=95 preference-extra={0} codepoint={1} length={2} category={3} hresult={4}'' -f $p,$c,$t.Length,[int]$_.CategoryInfo.Category,$_.Exception.HResult)); exit 89 }"'
+    $start.Arguments = '-NoProfile -NonInteractive -Command "try { [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); $s=[Console]::In.ReadToEnd(); $e=''$ErrorActionPreference''; $o=[StringComparison]::Ordinal; if(-not $s.StartsWith($e,$o)){exit 89}; $b=[ScriptBlock]::Create($s); $f=$b.Ast.EndBlock.Statements[0].Extent.Text; [Console]::WriteLine((''audit-account-stage=94 parsed=1 source-first={0} ordinal-prefix={1} ordinal-first={2}'' -f [int]$s[0],[int]$s.StartsWith($e,$o),[int]$f.Equals(($e + '' = ''''Stop''''''),$o))); & $b } catch { $t=[string]$_.TargetObject; $p=0; $c=0; if($t.Length -eq 23){if($t.EndsWith($e,$o)){$p=1;$c=[int]$t[0]}elseif($t.StartsWith($e,$o)){$p=2;$c=[int]$t[22]}}; [Console]::WriteLine((''audit-account-stage=95 preference-extra={0} codepoint={1} length={2} category={3} hresult={4}'' -f $p,$c,$t.Length,[int]$_.CategoryInfo.Category,$_.Exception.HResult)); exit 89 }"'
     $start.UseShellExecute = $false
     $start.UserName = $network.UserName
     $start.Domain = $network.Domain
@@ -370,13 +370,17 @@ exit 0
     $stage = 30
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
+    # Framework Process.Start enables AutoFlush on its own redirected-input writer,
+    # emitting that writer's preamble before any replacement could wrap BaseStream.
+    [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
     if (-not $process.Start()) { throw 'ordinary helper did not start' }
     $started = $true
     $stdout = $process.StandardOutput.ReadToEndAsync()
     $stderr = $process.StandardError.ReadToEndAsync()
-    $inputWriter = [IO.StreamWriter]::new($process.StandardInput.BaseStream, [Text.UTF8Encoding]::new($false))
+    $inputWriter = $process.StandardInput
     try {
         Write-Output ('audit-account-stage=97 writer-codepage=' + $inputWriter.Encoding.CodePage + ' preamble-length=' + $inputWriter.Encoding.GetPreamble().Length)
+        if (($inputWriter.Encoding.CodePage -ne 65001) -or ($inputWriter.Encoding.GetPreamble().Length -ne 0)) { throw 'original input writer must preserve exact UTF8 without preamble' }
         $inputWriter.WriteLine($childScript)
     } finally { $inputWriter.Dispose() }
     $stage = 40
