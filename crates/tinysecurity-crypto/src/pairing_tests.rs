@@ -292,6 +292,8 @@ async fn revocation_wipes_still_owned_permitted_staging_backing() {
     assert!(
         backing
             .bytes
+            .as_ref()
+            .checked()
             .lock()
             .checked()
             .iter()
@@ -1320,7 +1322,15 @@ async fn account_fences_ignore_full_traffic_capacity_and_exhausted_rate() {
         } else {
             owner.invalidate(&account_request()).checked();
         }
-        assert!(held.bytes.lock().checked().iter().all(|byte| *byte == 0));
+        assert!(
+            held.bytes
+                .as_ref()
+                .checked()
+                .lock()
+                .checked()
+                .iter()
+                .all(|byte| *byte == 0)
+        );
         assert!(
             held.with_bytes(|bytes| {
                 bytes.fill(8);
