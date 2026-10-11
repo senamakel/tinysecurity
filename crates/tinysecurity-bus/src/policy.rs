@@ -237,6 +237,9 @@ pub struct ModuleConfig {
     /// Init-only ordered audit configuration; absent preserves legacy wire shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit: Option<crate::AuditConfig2>,
+    /// Init-only immutable approval subjects and callbacks; omitted for older hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approvals: Option<crate::ApprovalConfig2>,
 }
 impl Default for ModuleConfig {
     fn default() -> Self {
@@ -247,6 +250,7 @@ impl Default for ModuleConfig {
             redactor: crate::RedactorConfig::default(),
             trusted_host: None,
             audit: None,
+            approvals: None,
         }
     }
 }

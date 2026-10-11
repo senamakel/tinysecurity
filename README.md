@@ -9,7 +9,7 @@ through `RegisterPathPolicy`, `ValidatePath`, `ValidateParent` and `CheckPath`.
 Contract 1.3 adds native `Redact`, `ScanPrompt` and `ScanToolDefinition`, with a
 validated initialization-only literal registry and [bounded surface modes](crates/tinysecurity-redact/README.md).
 Blocked original content denies; suspicious content denies with
-approval-unavailable until the durable approval engine exists. Scan verdicts
+approval-unavailable in unbound policy methods. Scan verdicts
 never grant permission, and redaction never clears an existing scan finding.
 
 Contract 1.6 supplies `Audit2`, `EvaluateAudited2` and `CheckAudited2` with
@@ -26,16 +26,21 @@ The engine denies unknown tools and unsupported effects. Argument-free `pwd`,
 `date`, `uname`, and `whoami` are its supported shell diagnostics. Paths pass
 an unconditional credential/system/traversal floor and native ancestor
 resolution; enabled policy adds action-root, workspace and forbidden-root
-checks. Enabled writes deny until the approval engine exists. Pure local
+checks. Enabled writes require the durable approval surface. Pure local
 diagnostics work with disabled autonomy, which is the default.
 
 This is bootstrap infrastructure for [OpenHuman #7328](https://github.com/tinyhumansai/openhuman/issues/7328)
 and [TinySecurity #1](https://github.com/tinyhumansai/tinysecurity/issues/1).
-It does **not** complete the migration. Approval persistence,
-network connection pinning, sandbox planning, judge and crypto engines
+It does **not** complete the migration. Network connection pinning,
+sandbox planning, judge and crypto engines
 remain unavailable. Reserved wire types do not advertise callable handlers.
 There is no production host migration until an upstream release and checksum
 manifest exist.
+
+Contract 1.7 adds [durable exact approvals](crates/tinysecurity-approval/README.md)
+with authenticated store/CAS, delivery and human-ticket callbacks. Approval
+configuration disables older permission shortcuts. Pending rows and audits
+precede prompts; exact original-call bindings and CAS reservations govern execution.
 
 ## Workspace
 
@@ -44,6 +49,7 @@ manifest exist.
 | `tinysecurity-bus` | Wire types, errors, names and compatibility; normal dependencies only serde and thiserror |
 | `tinysecurity-policy` | Native conservative policy engine |
 | `tinysecurity-redact` | Internal immutable redaction registry and semantic intent scanner |
+| `tinysecurity-approval` | Internal durable exact approval, expiry and reservation engine |
 | `tinysecurity-audit` | Internal bounded authoritative journal and sanitized exact receipts |
 | `tinysecurity` | Internal implementation re-export |
 | `tinysecurity-module` | SDK initialization, bus dispatch and ABI cdylib |

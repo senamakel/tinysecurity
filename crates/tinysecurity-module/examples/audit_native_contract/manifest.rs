@@ -34,18 +34,24 @@ pub(super) async fn verify(
     assert_eq!(manifest.provides.len(), 1, "only policy is implemented");
     assert_eq!(
         manifest.requires.len(),
-        1,
-        "only implemented audit forwarding may be advertised"
+        3,
+        "only implemented audit/store/prompt callbacks may be advertised"
     );
-    let audit = &manifest.requires[0];
-    assert!(audit.optional, "native/absent audit needs no host callback");
-    assert_eq!(
-        audit.interface,
-        InterfaceVersion::consumed(
-            callback_names2::AUDIT_SINK.parse()?,
-            manifest.module.version.clone()
-        ),
-        "AuditSink2 must use the SDK package-version and caret minimum"
-    );
+    for interface in [
+        callback_names2::AUDIT_SINK,
+        callback_names2::APPROVAL_STORE,
+        callback_names2::APPROVAL_PROMPT,
+    ] {
+        let dependency = manifest
+            .requires
+            .iter()
+            .find(|d| d.interface.interface.as_str() == interface)
+            .ok_or("missing implemented callback dependency")?;
+        assert!(dependency.optional, "absent capabilities need no callback");
+        assert_eq!(
+            dependency.interface,
+            InterfaceVersion::consumed(interface.parse()?, manifest.module.version.clone())
+        );
+    }
     Ok(())
 }

@@ -75,11 +75,12 @@ handling and read-only grants. These members do not add command grammar parity.
 
 ## Reserved capabilities
 
-Approval lifecycle/flow/reply, redaction/scanning, privacy/URL guard, sandbox,
-audit and host callbacks have typed versioned wire payloads and golden
-fixtures. Their engines are not implemented and their member names are not
-advertised. No network/DNS pinning, sandbox isolation, audit persistence,
-approval expiry, judge verdict or keyring capability is claimed at bootstrap.
+Durable approval lifecycle/flow/reply, redaction/scanning, scoped egress guards
+and audit have implemented members in the generated method inventory.
+Contract 1.7 approvals use explicit initialization and authenticated callbacks;
+see [durable exact approvals](crates/tinysecurity-approval/README.md).
+Network/DNS connection pinning, sandbox isolation, judge and keyring consent
+remain unavailable. Their reserved payloads do not advertise callable members.
 Unsupported member calls return the bus's unknown-member error.
 
 ## Packaging and smoke checks

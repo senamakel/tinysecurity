@@ -5,6 +5,24 @@ pub const INTERFACE: &str = "ai.tinyhumans.tinysecurity.Policy";
 pub const OBJECT_PATH: &str = "/ai/tinyhumans/tinysecurity/Policy";
 /// Method names; availability is reported by `PolicyInfo`.
 pub mod methods {
+    /// Trusted legacy history migration without broad grant revival.
+    pub const IMPORT_APPROVAL_HISTORY2: &str = "ImportApprovalHistory2";
+    /// Durable exact approval evaluation.
+    pub const EVALUATE_APPROVAL2: &str = "EvaluateApproval2";
+    /// Exact opaque authenticated-human ticket decision.
+    pub const DECIDE2: &str = "Decide2";
+    /// Once-only exact execution reservation.
+    pub const CONSUME_APPROVAL2: &str = "ConsumeApproval2";
+    /// Exact durable terminal execution phase.
+    pub const RECORD_EXECUTION2: &str = "RecordExecution2";
+    /// Scoped sanitized durable rows.
+    pub const LIST_APPROVALS2: &str = "ListApprovals2";
+    /// Captured-scope cancellation phase.
+    pub const CANCEL_APPROVAL2: &str = "CancelApproval2";
+    /// Durable exact-boundary expiry phase.
+    pub const EXPIRE_APPROVAL2: &str = "ExpireApproval2";
+    /// Bounded exact already-reviewed flow grant validation.
+    pub const PREAUTHORIZE_FLOW2: &str = "PreauthorizeFlow2";
     /// Evaluate member.
     pub const EVALUATE: &str = "Evaluate";
     /// Check member.
@@ -89,6 +107,16 @@ pub const METHODS: &[&str] = &[
     methods::SCAN_PROMPT,
     methods::SCAN_TOOL_DEFINITION,
     methods::AUDIT2,
+    methods::EVALUATE_APPROVAL2,
+    methods::DECIDE2,
+    methods::CONSUME_APPROVAL2,
+    methods::RECORD_EXECUTION2,
+    methods::LIST_APPROVALS2,
+    methods::CANCEL_APPROVAL2,
+    methods::EXPIRE_APPROVAL2,
+    methods::PREAUTHORIZE_FLOW2,
+    methods::IMPORT_APPROVAL_HISTORY2,
+    methods::PARSE_REPLY,
     methods::POLICY_INFO,
 ];
 /// Accepted policy activation event.

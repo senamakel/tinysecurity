@@ -15,7 +15,7 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 # Handwritten contextual authority wrapper around generated typed dispatch.
-async-trait = "0.1"
+async-trait.workspace = true
 tinysecurity = { workspace = true }
 tinysecurity-bus = { workspace = true }
 tinybus = { workspace = true }

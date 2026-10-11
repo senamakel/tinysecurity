@@ -3,6 +3,33 @@ use super::*;
 use std::path::PathBuf;
 use tinybus::{Interface, broker::Broker, transport::memory::MemoryBus};
 use tinysecurity_bus::*;
+#[path = "adapter_approval_tests.rs"]
+mod approval_tests;
+#[tokio::test]
+async fn parsing_a_reply_returns_intent_without_minting_permission()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let service = service_for(
+        Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
+        None,
+    );
+    let member = names::methods::PARSE_REPLY.parse()?;
+    let response = service
+        .call(
+            &member,
+            serde_json::to_value((ParseReplyRequest {
+                request_id: "a".repeat(32),
+                reply: " YES ".into(),
+            },))?,
+        )
+        .await?;
+    let parsed: ParseReplyResponse = serde_json::from_value(response)?;
+    assert_eq!(parsed.verdict, ReplyVerdict::AllowOnce);
+    assert!(service.call(&names::methods::DECIDE.parse()?, serde_json::json!([{
+        "request_id": "a".repeat(32), "allow": true,
+        "caller": {"agent":"agent", "thread":null, "flow":null, "call_id":"call", "origin":"operator", "tier":"full"}
+    }])).await.is_err(), "parsed intent and caller JSON cannot grant authority");
+    Ok(())
+}
 #[derive(Clone)]
 struct PermissionAuditSink {
     rows: Arc<Mutex<std::collections::BTreeMap<String, AuditSinkRequest2>>>,
@@ -393,6 +420,7 @@ async fn required_audit_cannot_be_bypassed_by_an_unbound_permission_check()
 fn only_implemented_members_are_advertised() -> std::result::Result<(), Box<dyn std::error::Error>>
 {
     let service = PolicyService {
+        approvals: None,
         audit: None,
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
@@ -420,6 +448,7 @@ async fn native_dispatch_rejects_malformed_args_and_serves_ordered_checks()
         .serve_at(
             names::OBJECT_PATH.try_into()?,
             PolicyService {
+                approvals: None,
                 audit: None,
                 policy: Arc::new(RwLock::new(Policy::new(review_regression_config())?)),
                 paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
@@ -749,6 +778,7 @@ async fn blocked_filesystem_query_does_not_block_policy_info_or_another_scope()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let service = PolicyService {
+        approvals: None,
         audit: None,
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
@@ -817,6 +847,7 @@ async fn blocked_registration_does_not_block_policy_info_or_another_scope()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let service = PolicyService {
+        approvals: None,
         audit: None,
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
@@ -1215,6 +1246,7 @@ async fn native_egress_dispatch_binds_scope_and_denies_legacy_or_generic_local_c
         .serve_at(
             names::OBJECT_PATH.try_into()?,
             PolicyService {
+                approvals: None,
                 audit: None,
                 policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
                 paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
@@ -1349,6 +1381,7 @@ async fn assert_legacy_egress_is_denied(
 async fn consumption_work_runs_off_the_sole_sdk_worker_without_registry_locks()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let service = PolicyService {
+        approvals: None,
         audit: None,
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),

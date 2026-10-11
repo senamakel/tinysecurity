@@ -11,9 +11,16 @@ static COMMAND_SCOPES: OnceLock<Arc<Mutex<CommandPolicyRegistry>>> = OnceLock::n
 static EGRESS_SCOPES: OnceLock<Arc<Mutex<EgressPolicyRegistry>>> = OnceLock::new();
 static AUDIT_CLIENT: OnceLock<Option<Arc<crate::callbacks::AuditClient>>> = OnceLock::new();
 static HOST_BINDING: OnceLock<crate::callbacks::PeerBinding> = OnceLock::new();
+static APPROVALS: OnceLock<
+    Option<(
+        tinysecurity_bus::ApprovalConfig2,
+        Arc<tinysecurity::approval::Engine>,
+    )>,
+> = OnceLock::new();
 static ACTIVE: OnceLock<Arc<RwLock<Policy>>> = OnceLock::new();
 #[derive(Clone)]
 struct PolicyService {
+    approvals: Option<Arc<tinysecurity::approval::Engine>>,
     policy: Arc<RwLock<Policy>>,
     audit: Option<Arc<crate::callbacks::AuditClient>>,
     paths: Arc<Mutex<PathPolicyRegistry>>,
@@ -25,7 +32,7 @@ fn failure(error: &tinysecurity_bus::Error) -> tinybus::Error {
 }
 impl PolicyService {
     fn requires_bound_audit(&self) -> bool {
-        self.audit.as_ref().is_some_and(|client| client.required())
+        self.approvals.is_some() || self.audit.as_ref().is_some_and(|client| client.required())
     }
     fn require_unbound_permission(&self) -> BusResult<()> {
         if self.requires_bound_audit() {
@@ -207,7 +214,7 @@ impl PolicyService {
                 registry,
             )
             .await?;
-        if !audit.permitted {
+        if !audit.permitted || self.approvals.is_some() {
             deny_allow(&mut decision);
         }
         Ok(tinysecurity_bus::AuditedResponse2 { decision, audit })
@@ -233,7 +240,7 @@ impl PolicyService {
                 registry,
             )
             .await?;
-        if !audit.permitted {
+        if !audit.permitted || self.approvals.is_some() {
             decision.decisions.iter_mut().for_each(deny_allow);
         }
         Ok(tinysecurity_bus::AuditedResponse2 { decision, audit })
@@ -486,6 +493,144 @@ impl PolicyService {
             .ok_or_else(|| tinybus::Error::failed("audit unavailable"))?;
         Ok(client.append(request).await)
     }
+    async fn evaluate_approval2(
+        &self,
+        request: tinysecurity_bus::EvaluateApprovalRequest2,
+    ) -> BusResult<tinysecurity_bus::EvaluateApprovalResponse2> {
+        let engine = self
+            .approvals
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?;
+        let policy = self.read()?.clone();
+        let actual = request.request.clone();
+        let decision = tokio::task::spawn_blocking(move || policy.evaluate(&actual))
+            .await
+            .map_err(|_| tinybus::Error::failed("approval unavailable"))?
+            .map_err(|_| tinybus::Error::failed("approval denied"))?;
+        // Human approval cannot override floors, unknown effects or policy denial.
+        if matches!(decision.verdict,tinysecurity_bus::Verdict::Deny{ref reason} if *reason!=tinysecurity_bus::DenialReason::ApprovalUnavailable)
+        {
+            return Err(tinybus::Error::failed("approval denied"));
+        }
+        let row = engine.begin(request).await.map_err(approval_failure)?;
+        let verdict = match row.state {
+            tinysecurity_bus::ApprovalLifecycle2::Pending => {
+                tinysecurity_bus::Verdict::RequireApproval {
+                    request_id: row.request_id.clone(),
+                }
+            }
+            tinysecurity_bus::ApprovalLifecycle2::Approved => tinysecurity_bus::Verdict::Allow,
+            _ => tinysecurity_bus::Verdict::Deny {
+                reason: tinysecurity_bus::DenialReason::ApprovalUnavailable,
+            },
+        };
+        Ok(tinysecurity_bus::EvaluateApprovalResponse2 {
+            decision: Decision {
+                generation: row.binding.generation,
+                verdict,
+                cacheable: false,
+            },
+            record: row,
+        })
+    }
+    async fn decide2(
+        &self,
+        request: tinysecurity_bus::DecideRequest2,
+    ) -> BusResult<tinysecurity_bus::ApprovalRow2> {
+        self.approvals
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?
+            .decide(request)
+            .await
+            .map_err(approval_failure)
+    }
+    async fn consume_approval2(
+        &self,
+        request: tinysecurity_bus::ApprovalActionRequest2,
+    ) -> BusResult<tinysecurity_bus::ApprovalRow2> {
+        self.approvals
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?
+            .consume(request)
+            .await
+            .map_err(approval_failure)
+    }
+    async fn record_execution2(
+        &self,
+        request: tinysecurity_bus::RecordExecutionRequest2,
+    ) -> BusResult<tinysecurity_bus::ApprovalRow2> {
+        self.approvals
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?
+            .record_execution(request)
+            .await
+            .map_err(approval_failure)
+    }
+    async fn list_approvals2(
+        &self,
+        request: tinysecurity_bus::ApprovalRecordRequest2,
+    ) -> BusResult<Vec<tinysecurity_bus::ApprovalRow2>> {
+        if !request.request_id.is_empty() {
+            return Err(tinybus::Error::failed("invalid approval listing"));
+        }
+        self.approvals
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?
+            .list(&request.scope_id)
+            .await
+            .map_err(approval_failure)
+    }
+    async fn cancel_approval2(
+        &self,
+        request: tinysecurity_bus::ApprovalRecordRequest2,
+    ) -> BusResult<tinysecurity_bus::ApprovalRow2> {
+        self.approvals
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?
+            .cancel(request)
+            .await
+            .map_err(approval_failure)
+    }
+    async fn expire_approval2(
+        &self,
+        request: tinysecurity_bus::ApprovalRecordRequest2,
+    ) -> BusResult<tinysecurity_bus::ApprovalRow2> {
+        self.approvals
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?
+            .expire(request)
+            .await
+            .map_err(approval_failure)
+    }
+    async fn preauthorize_flow2(
+        &self,
+        request: tinysecurity_bus::PreauthorizeFlowRequest2,
+    ) -> BusResult<Vec<tinysecurity_bus::ApprovalRow2>> {
+        self.approvals
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?
+            .preauthorize_flow(request)
+            .await
+            .map_err(approval_failure)
+    }
+    async fn import_approval_history2(
+        &self,
+        request: tinysecurity_bus::ApprovalHistoryImport2,
+    ) -> BusResult<tinysecurity_bus::ApprovalRow2> {
+        self.approvals
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?
+            .import_history(request)
+            .await
+            .map_err(approval_failure)
+    }
+    async fn parse_reply(
+        &self,
+        request: tinysecurity_bus::ParseReplyRequest,
+    ) -> BusResult<tinysecurity_bus::ParseReplyResponse> {
+        std::future::ready(tinysecurity::approval::parse_reply(&request).map_err(approval_failure))
+            .await
+    }
     async fn policy_info(&self) -> BusResult<PolicyInfo> {
         let info = { self.read()?.info() };
         std::future::ready(Ok(info)).await
@@ -507,6 +652,9 @@ fn permission_payload(mut original: serde_json::Value) -> BusResult<String> {
         "request_and_decision": original,
     }))?)
 }
+fn approval_failure(error: tinysecurity::approval::Error) -> tinybus::Error {
+    tinybus::Error::failed(error.to_string())
+}
 fn deny_allow(decision: &mut Decision) {
     if matches!(decision.verdict, tinysecurity_bus::Verdict::Allow) {
         decision.verdict = tinysecurity_bus::Verdict::Deny {
@@ -520,6 +668,7 @@ fn service_for(
     audit: Option<Arc<crate::callbacks::AuditClient>>,
 ) -> PolicyService {
     PolicyService {
+        approvals: None,
         policy,
         audit,
         egress: Arc::clone(
@@ -533,16 +682,107 @@ fn service_for(
         ),
     }
 }
+fn configured_approvals(
+    connection: &Connection,
+    requested_host: Option<&str>,
+    approval_config: Option<tinysecurity_bus::ApprovalConfig2>,
+    audit_config: Option<&tinysecurity_bus::AuditConfig2>,
+    candidate: &Policy,
+    current: Option<
+        &Option<(
+            tinysecurity_bus::ApprovalConfig2,
+            Arc<tinysecurity::approval::Engine>,
+        )>,
+    >,
+) -> BusResult<
+    Option<(
+        tinysecurity_bus::ApprovalConfig2,
+        Arc<tinysecurity::approval::Engine>,
+    )>,
+> {
+    Ok(if let Some(current) = current {
+        if let Some((existing, engine)) = current {
+            if approval_config
+                .as_ref()
+                .is_some_and(|requested| requested != existing)
+            {
+                return Err(tinybus::Error::failed("immutable approval initialization"));
+            }
+            Some((existing.clone(), Arc::clone(engine)))
+        } else if approval_config.is_some() {
+            return Err(tinybus::Error::failed("immutable approval initialization"));
+        } else {
+            None
+        }
+    } else {
+        approval_config
+            .map(|config| {
+                if config
+                    .scopes
+                    .iter()
+                    .any(|scope| scope.generation != candidate.info().generation)
+                {
+                    return Err(tinybus::Error::failed("invalid approval generation"));
+                }
+                let audit_config = audit_config
+                    .ok_or_else(|| tinybus::Error::failed("approval audit unavailable"))?;
+                let ports = crate::approval_callbacks::ApprovalClients::new(
+                    connection,
+                    requested_host,
+                    &config,
+                    audit_config,
+                    &candidate.redactor(),
+                )?;
+                let engine = tinysecurity::approval::Engine::new(
+                    config.clone(),
+                    Arc::new(ports),
+                    Arc::new(tinysecurity::approval::SystemClock::default()),
+                    candidate.redactor(),
+                )
+                .map_err(approval_failure)?;
+                Ok((config, Arc::new(engine)))
+            })
+            .transpose()?
+    })
+}
+fn configured_audit(
+    connection: &Connection,
+    binding: &crate::callbacks::PeerBinding,
+    audit_config: Option<tinysecurity_bus::AuditConfig2>,
+    candidate: &Policy,
+) -> BusResult<Option<Arc<crate::callbacks::AuditClient>>> {
+    Ok(if let Some(active) = AUDIT_CLIENT.get() {
+        if let Some(client) = active {
+            client.verify_reinit(audit_config.as_ref())?;
+        } else if audit_config.is_some() {
+            return Err(tinybus::Error::failed("immutable audit initialization"));
+        }
+        active.clone()
+    } else {
+        audit_config
+            .map(|config| {
+                crate::callbacks::AuditClient::new(
+                    connection.clone(),
+                    binding.clone(),
+                    config,
+                    candidate.redactor(),
+                )
+                .map(Arc::new)
+            })
+            .transpose()?
+    })
+}
 async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
     // Validate before activation. The SDK serializes reinitializations and
     // preserves a fault latch; this adapter never provides retry RPCs.
     let audit_config = config.audit.clone();
-    let requested_host = config.trusted_host.as_deref();
+    let approval_config = config.approvals.clone();
+    let requested_host = config.trusted_host.clone();
     let binding = if let Some(binding) = HOST_BINDING.get() {
-        binding.verify_reinit(requested_host)?;
+        binding.verify_reinit(requested_host.as_deref())?;
         binding.clone()
     } else {
-        crate::callbacks::PeerBinding::new(requested_host)?
+        crate::callbacks::PeerBinding::new(requested_host.as_deref())?
     };
     let previous = ACTIVE
         .get()
@@ -565,26 +805,15 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
     })
     .await
     .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
-    let audit = if let Some(active) = AUDIT_CLIENT.get() {
-        if let Some(client) = active {
-            client.verify_reinit(audit_config.as_ref())?;
-        } else if audit_config.is_some() {
-            return Err(tinybus::Error::failed("immutable audit initialization"));
-        }
-        active.clone()
-    } else {
-        audit_config
-            .map(|config| {
-                crate::callbacks::AuditClient::new(
-                    connection.clone(),
-                    binding.clone(),
-                    config,
-                    candidate.redactor(),
-                )
-                .map(Arc::new)
-            })
-            .transpose()?
-    };
+    let audit = configured_audit(&connection, &binding, audit_config.clone(), &candidate)?;
+    let approvals = configured_approvals(
+        &connection,
+        requested_host.as_deref(),
+        approval_config,
+        audit_config.as_ref(),
+        &candidate,
+        APPROVALS.get(),
+    )?;
     if let Some(active) = ACTIVE.get() {
         let mut guard = active
             .write()
@@ -611,20 +840,30 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
         if let Some(client) = &audit {
             client.replace_registry(candidate.redactor())?;
         }
+        if let Some((_, engine)) = &approvals {
+            engine
+                .replace_redactor(candidate.redactor())
+                .map_err(approval_failure)?;
+            engine
+                .advance_generation(candidate.info().generation)
+                .map_err(approval_failure)?;
+        }
         *guard = candidate;
         return Ok(());
     }
     let policy = Arc::new(RwLock::new(candidate));
+    let mut service = service_for(Arc::clone(&policy), audit.clone());
+    service.approvals = approvals.as_ref().map(|(_, engine)| Arc::clone(engine));
     connection
         .serve_at(
             names::OBJECT_PATH.try_into()?,
-            crate::callbacks::Authenticated::new(
-                service_for(Arc::clone(&policy), audit.clone()),
-                binding.clone(),
-            ),
+            crate::callbacks::Authenticated::new(service, binding.clone()),
         )
         .await?;
     connection.request_name(names::INTERFACE).await?;
+    APPROVALS
+        .set(approvals)
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
     AUDIT_CLIENT
         .set(audit)
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
@@ -641,10 +880,10 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
+    methods = ["ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
-    optional = ["ai.tinyhumans.tinysecurity.AuditSink2"],
+    optional = ["ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],
     lazy = false,
 }
 #[cfg(test)]

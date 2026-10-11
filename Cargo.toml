@@ -25,6 +25,10 @@ license = "GPL-3.0-only"
 repository = "https://github.com/tinyhumansai/tinysecurity"
 
 [workspace.dependencies]
+# Internal durable exact approval engine, never host-linked.
+tinysecurity-approval = { path = "crates/tinysecurity-approval" }
+# Object-safe authenticated asynchronous callback ports.
+async-trait = "0.1"
 # Native audit engine remains internal to the module.
 tinysecurity-audit = { path = "crates/tinysecurity-audit" }
 # The wire contract. `crates/tinysecurity-module` depends on it and re-exports it, so a

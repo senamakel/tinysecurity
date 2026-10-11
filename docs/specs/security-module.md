@@ -180,8 +180,10 @@ audited permission methods and the implemented `AuditSink2` callback as an optio
 dependency. The SDK uses the package version as its spoken version and caret
 minimum compatible range. Callback forwarding runs only when audit is configured
 without native storage; absent audit or native storage needs no callback. Required
-audit still denies permission when its configured callback is unavailable. No
-approval storage or prompt callback engine is advertised. Caller verdicts, replacement
+audit still denies permission when its configured callback is unavailable. Contract 1.7 additionally advertises implemented `ApprovalStore2` and
+`ApprovalPrompt2` callbacks and durable approval lifecycle methods; their
+[exact callback and human authority contract](../../crates/tinysecurity-approval/README.md)
+requires explicit trusted initialization. Caller verdicts, replacement
 arguments and committed booleans cannot supply permission. Required audit makes
 unbound `Evaluate`/`Check` allows unavailable and refuses other unbound path,
 command and scoped egress authorization/consumption methods before they grant or

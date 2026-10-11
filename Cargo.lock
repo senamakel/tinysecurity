@@ -816,11 +816,26 @@ name = "tinysecurity"
 version = "0.2.3"
 dependencies = [
  "serde_json",
+ "tinysecurity-approval",
  "tinysecurity-audit",
  "tinysecurity-bus",
  "tinysecurity-egress",
  "tinysecurity-policy",
  "tinysecurity-redact",
+]
+
+[[package]]
+name = "tinysecurity-approval"
+version = "0.2.3"
+dependencies = [
+ "async-trait",
+ "getrandom 0.3.4",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tinysecurity-bus",
+ "tinysecurity-redact",
+ "tokio",
 ]
 
 [[package]]

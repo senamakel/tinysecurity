@@ -151,6 +151,10 @@ pub mod callback_names2 {
     pub const CAS: &str = "Cas";
     /// Scoped read member.
     pub const LOAD: &str = "Load";
+    /// Deliver a real per-user prompt; delivery alone is never authority.
+    pub const PROMPT: &str = "Prompt";
+    /// Verify an exact opaque authenticated-human ticket idempotently.
+    pub const VERIFY_HUMAN: &str = "VerifyHuman";
 }
 
 pub(crate) fn validate_scope(scope: &SubjectScope) -> crate::Result<()> {
