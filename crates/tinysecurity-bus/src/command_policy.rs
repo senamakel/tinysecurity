@@ -81,7 +81,7 @@ pub enum ShellDialect {
     /// POSIX shell quoting and backslash escapes.
     #[default]
     Posix,
-    /// PowerShell quoting and backtick escapes.
+    /// `PowerShell` quoting and backtick escapes.
     PowerShell,
     /// Windows command interpreter quoting and caret escapes.
     Cmd,
