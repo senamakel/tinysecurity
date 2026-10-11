@@ -288,7 +288,7 @@ fn windows_second_ordinary_account_cannot_read_or_replace_the_namespace()
     Ok(())
 }
 
-const ORDINARY_ACCOUNT_SCRIPT: &str = r"
+const ORDINARY_ACCOUNT_SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
 $account = 'tsa' + [Guid]::NewGuid().ToString('N').Substring(0, 16)
 $password = ConvertTo-SecureString ('Tsa!A1' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
@@ -342,6 +342,10 @@ catch [UnauthorizedAccessException] { }
 exit 0
 '@
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
+    $file = Join-Path $PSHOME 'powershell.exe'
+    $arguments = @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded)
+    $commandLength = ('"' + $file + '" ' + ($arguments -join ' ')).Length
+    Write-Output ('audit-account-stage=29 encoded-length=' + $encoded.Length + ' command-length=' + $commandLength)
     $stage = 30
     $process = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -Credential $credential -PassThru -WindowStyle Hidden
     $stage = 40
@@ -382,6 +386,22 @@ exit 0
         Write-Output ('audit-account-stage=' + $stage + ' depth=' + $depth + ' category=' + $kind + ' hresult=' + $exception.HResult + ' native=' + $native)
         $exception = $exception.InnerException
     }
+    if ($stage -eq 30) {
+        # A short launch is diagnostic only: retain the original failure even
+        # if it succeeds. Credentials and all other startup parameters match.
+        try {
+            $shortEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('exit 0'))
+            $shortArguments = @('-NoProfile', '-NonInteractive', '-EncodedCommand', $shortEncoded)
+            $shortLength = ('"' + $file + '" ' + ($shortArguments -join ' ')).Length
+            Write-Output ('audit-account-stage=37 short-command-length=' + $shortLength)
+            $process = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $shortArguments -Credential $credential -PassThru -WindowStyle Hidden
+            [void]$process.Handle
+            if (-not $process.WaitForExit(30000)) { throw 'short diagnostic helper timeout' }
+            Write-Output ('audit-account-stage=37 short-exit=' + $process.ExitCode)
+        } catch {
+            Write-Output ('audit-account-stage=37 hresult=' + $_.Exception.HResult)
+        }
+    }
     exit 1
 } finally {
     try {
@@ -416,7 +436,7 @@ exit 0
         exit 1
     }
 }
-";
+"#;
 
 #[test]
 fn windows_empty_or_null_directory_dacl_is_denied_before_candidate_commit()
