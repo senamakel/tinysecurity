@@ -391,17 +391,17 @@ fn rate_capacity_and_rollback_are_bounded_without_cross_scope_starvation() -> Te
         Err(Error::DeviceRate)
     ));
     drop(reg.reserve(&request('b', DeviceOperation2::Cancel), 1, time(0))?);
-    drop(reg.reserve(&req, 1, time(60000))?);
+    drop(reg.reserve(&req, 1, time(60_000))?);
     assert!(matches!(
-        reg.reserve(&req, 1, time(59999)),
+        reg.reserve(&req, 1, time(59_999)),
         Err(Error::DeviceClock)
     ));
     assert!(matches!(
-        reg.reserve(&req, 1, time(60001)),
+        reg.reserve(&req, 1, time(60_001)),
         Err(Error::DeviceClock)
     ));
     assert!(reg.reconfigure(reg.configuration()?, 2).is_ok());
-    assert!(reg.reserve(&req, 2, time(60002)).is_err());
+    assert!(reg.reserve(&req, 2, time(60_002)).is_err());
     let other = registry()?;
     other.fail_clock()?;
     assert!(other.reserve(&req, 1, time(0)).is_err());
@@ -602,8 +602,8 @@ fn invalid_initialization_inputs_and_every_operation_shape_fail_closed() -> Test
             1 => cfg.max_handles = 0,
             2 => cfg.max_in_flight = 33,
             3 => cfg.operations_per_minute = 0,
-            4 => cfg.max_ttl_ms = 300001,
-            5 => cfg.max_message_bytes = 1048577,
+            4 => cfg.max_ttl_ms = 300_001,
+            5 => cfg.max_message_bytes = 1_048_577,
             _ => cfg.max_bootstrap_nonces = 0,
         }
         assert!(init(cfg, &regs, ":1.1", 1).is_err());
@@ -652,5 +652,21 @@ fn invalid_initialization_inputs_and_every_operation_shape_fail_closed() -> Test
     let cfg = ConfidentialConfig::new(Some(config()));
     assert!(cfg.configuration().is_some());
     assert_eq!(format!("{cfg:?}"), "ConfidentialConfig([REDACTED])");
+    Ok(())
+}
+
+#[test]
+fn closing_retained_registry_drops_native_keys_and_denies_every_old_reservation() -> TestResult {
+    let reg = registry()?;
+    let weak = Arc::downgrade(&reg.lock()?.scopes[&"a".repeat(32)].key);
+    let (handle, _) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let req = request('a', DeviceOperation2::Revoke { handle });
+    let work = reg.reserve(&req, 1, time(0))?;
+    let observer = reg.clone();
+    reg.close();
+    assert!(weak.upgrade().is_none());
+    assert!(observer.execute(&work, &req.operation, 1, time(0)).is_err());
+    assert!(observer.reserve(&req, 1, time(0)).is_err());
+    assert!(observer.lock()?.scopes.is_empty());
     Ok(())
 }

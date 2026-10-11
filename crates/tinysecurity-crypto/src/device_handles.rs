@@ -33,6 +33,13 @@ enum Native {
     Key(Arc<KeyPair>, DeviceKeyPurpose2),
     Tunnel(Tunnel, String, String),
 }
+struct TunnelInput<'a> {
+    key: &'a str,
+    ephemeral: &'a str,
+    peer_static: &'a str,
+    peer_ephemeral: &'a str,
+    role: DeviceRole2,
+}
 struct Entry {
     scope: String,
     epoch: u64,
@@ -132,7 +139,7 @@ impl Registry {
                     origin: scope.origin.clone(),
                     key: Arc::new(key),
                     epoch: 1,
-                    minute: now.monotonic / 60000,
+                    minute: now.monotonic / 60_000,
                     operations: 0,
                 },
             );
@@ -189,7 +196,7 @@ impl Registry {
             .scopes
             .get_mut(&request.scope_id)
             .ok_or(Error::DeviceDenied)?;
-        let minute = now.monotonic / 60000;
+        let minute = now.monotonic / 60_000;
         if minute != scope.minute {
             scope.minute = minute;
             scope.operations = 0;
@@ -277,6 +284,18 @@ impl Registry {
         state.prune(now);
         check_operation(operation, state.limits.max_message_bytes)?;
         state.execute(work, operation)
+    }
+    /// Close native authority and drop all owned credentials even if observers remain.
+    /// Cleanup recovers a poisoned lock only to destroy state; it never restores authority.
+    pub fn close(&self) {
+        let mut state = match self.0.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.faulted = true;
+        state.handles.clear();
+        state.bootstrap.clear();
+        state.scopes.clear();
     }
     /// Latch an unavailable clock and invalidate every outstanding handle.
     /// # Errors
@@ -402,7 +421,12 @@ impl State {
         }
         let mut bytes = [0; 32];
         getrandom::fill(&mut bytes).map_err(|_| Error::Entropy)?;
-        let handle = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let hex = b"0123456789abcdef";
+        let handle = bytes
+            .iter()
+            .flat_map(|byte| [hex[usize::from(byte >> 4)], hex[usize::from(byte & 15)]])
+            .map(char::from)
+            .collect::<String>();
         if self.handles.contains_key(&handle) {
             return Err(Error::DeviceDenied);
         }
@@ -454,6 +478,45 @@ impl State {
         self.bootstrap.insert(nonce);
         Ok((public, plaintext.to_vec()))
     }
+    fn issue_key(
+        &mut self,
+        work: &Reservation,
+        purpose: DeviceKeyPurpose2,
+    ) -> Result<DeviceResponse2> {
+        let key = match purpose {
+            DeviceKeyPurpose2::Static => Arc::clone(&self.scopes[&work.scope].key),
+            DeviceKeyPurpose2::Ephemeral => Arc::new(KeyPair::generate()?),
+        };
+        Ok(DeviceResponse2 {
+            public_key: Some(key.public_key().encode()),
+            handle: Some(self.insert(work, Native::Key(key, purpose))?),
+            bytes: vec![],
+        })
+    }
+    fn create_tunnel(&mut self, work: &Reservation, input: &TunnelInput<'_>) -> Result<String> {
+        let own = self.key(input.key, work, DeviceKeyPurpose2::Static)?;
+        let eph = self.key(input.ephemeral, work, DeviceKeyPurpose2::Ephemeral)?;
+        let peer = PublicKey::decode(input.peer_ephemeral)?;
+        let (client, server, native_role) = match input.role {
+            DeviceRole2::Client => (eph.public_key(), peer, Role::Client),
+            DeviceRole2::Server => (peer, eph.public_key(), Role::Server),
+        };
+        let keys = own.session_keys(
+            PublicKey::decode(input.peer_static)?,
+            &eph,
+            peer,
+            client,
+            server,
+        )?;
+        self.insert(
+            work,
+            Native::Tunnel(
+                Tunnel::new(native_role, keys),
+                input.key.to_owned(),
+                input.ephemeral.to_owned(),
+            ),
+        )
+    }
     fn execute(
         &mut self,
         work: &Reservation,
@@ -466,14 +529,7 @@ impl State {
             bytes: vec![],
         };
         match operation {
-            Op::Key { purpose } => {
-                let key = match purpose {
-                    DeviceKeyPurpose2::Static => Arc::clone(&self.scopes[&work.scope].key),
-                    DeviceKeyPurpose2::Ephemeral => Arc::new(KeyPair::generate()?),
-                };
-                response.public_key = Some(key.public_key().encode());
-                response.handle = Some(self.insert(work, Native::Key(key, *purpose))?);
-            }
+            Op::Key { purpose } => return self.issue_key(work, *purpose),
             Op::Tunnel {
                 key,
                 ephemeral,
@@ -481,27 +537,20 @@ impl State {
                 peer_ephemeral,
                 role,
             } => {
-                let own = self.key(key, work, DeviceKeyPurpose2::Static)?;
-                let eph = self.key(ephemeral, work, DeviceKeyPurpose2::Ephemeral)?;
-                let peer = PublicKey::decode(peer_ephemeral)?;
-                let (client, server, native_role) = match role {
-                    DeviceRole2::Client => (eph.public_key(), peer, Role::Client),
-                    DeviceRole2::Server => (peer, eph.public_key(), Role::Server),
-                };
-                let keys =
-                    own.session_keys(PublicKey::decode(peer_static)?, &eph, peer, client, server)?;
-                response.handle = Some(self.insert(
+                response.handle = Some(self.create_tunnel(
                     work,
-                    Native::Tunnel(
-                        Tunnel::new(native_role, keys),
-                        key.clone(),
-                        ephemeral.clone(),
-                    ),
+                    &TunnelInput {
+                        key,
+                        ephemeral,
+                        peer_static,
+                        peer_ephemeral,
+                        role: *role,
+                    },
                 )?);
             }
             Op::Seal { handle, plaintext } => match &self.entry(handle, work)?.native {
                 Native::Tunnel(tunnel, _, _) => response.bytes = tunnel.seal(plaintext)?,
-                _ => return Err(Error::DeviceDenied),
+                Native::Key(..) => return Err(Error::DeviceDenied),
             },
             Op::Open { handle, frame } => {
                 self.entry(handle, work)?;
@@ -512,7 +561,7 @@ impl State {
                     .native
                 {
                     Native::Tunnel(tunnel, _, _) => response.bytes = tunnel.open(frame)?.to_vec(),
-                    _ => return Err(Error::DeviceDenied),
+                    Native::Key(..) => return Err(Error::DeviceDenied),
                 }
             }
             Op::SealHandshake {
@@ -579,8 +628,8 @@ fn validate_config(config: &DeviceConfig2) -> Result<()> {
         || !(1..=4096).contains(&config.max_handles)
         || !(1..=32).contains(&config.max_in_flight)
         || !(1..=4096).contains(&config.operations_per_minute)
-        || !(1..=300000).contains(&config.max_ttl_ms)
-        || !(1..=1048576).contains(&config.max_message_bytes)
+        || !(1..=300_000).contains(&config.max_ttl_ms)
+        || !(1..=1_048_576).contains(&config.max_message_bytes)
         || !(1..=4096).contains(&config.max_bootstrap_nonces)
     {
         return Err(Error::DeviceDenied);
@@ -617,10 +666,8 @@ fn check_operation(operation: &DeviceOperation2, max: u32) -> Result<()> {
     {
         return Err(Error::Limit);
     }
-    if let Op::OpenAck { peer, .. } = operation {
-        if peer.len() != 43 {
-            return Err(Error::InvalidInput);
-        }
+    if matches!(operation, Op::OpenAck { peer, .. } if peer.len() != 43) {
+        return Err(Error::InvalidInput);
     }
     Ok(())
 }

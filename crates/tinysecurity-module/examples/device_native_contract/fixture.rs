@@ -37,7 +37,7 @@ pub(crate) fn device_config() -> DeviceConfig2 {
         max_handles: 32,
         max_in_flight: 4,
         operations_per_minute: 4096,
-        max_ttl_ms: 300000,
+        max_ttl_ms: 300_000,
         max_message_bytes: 1024,
         max_bootstrap_nonces: 64,
     }
@@ -46,20 +46,20 @@ pub(crate) fn audit_config(native_path: Option<String>) -> AuditConfig2 {
     AuditConfig2 {
         scope: registration().subject,
         stream_id: "c".repeat(32),
-        timeout_ms: 30000,
+        timeout_ms: 30_000,
         required: true,
         native_path,
         max_bytes: 1_000_000,
         max_archives: 3,
         journal_max_bytes: 4_000_000,
-        journal_max_events: 10000,
+        journal_max_events: 10_000,
     }
 }
 pub(crate) fn request(instance: u64, operation: DeviceOperation2) -> DeviceRequest2 {
     DeviceRequest2 {
         scope_id: "a".repeat(32),
         call_id: format!("fixture-{instance}"),
-        ttl_ms: 300000,
+        ttl_ms: 300_000,
         operation,
     }
 }
@@ -92,34 +92,12 @@ pub(crate) async fn serve_callbacks(
     }
     Ok(())
 }
-pub(crate) async fn decide(
-    proxy: &tinybus::Proxy,
-    store: &Arc<Mutex<store::DiskStore>>,
-    row: ApprovalRow2,
-    sequence: u64,
-    choice: ApprovalChoice2,
-) -> tinybus::Result<ApprovalRow2> {
-    let ticket = store
-        .lock()
-        .map_err(|_| tinybus::Error::failed("fixture store"))?
-        .human_action(row.clone(), choice)?;
-    proxy
-        .call(
-            names::methods::DECIDE2,
-            (DecideRequest2 {
-                scope_id: "a".repeat(32),
-                request_id: row.request_id,
-                decision_ticket: ticket,
-                audit: audit(sequence),
-            },),
-        )
-        .await
-}
-pub(crate) async fn run(
+pub(crate) async fn run_at(
     proxy: &tinybus::Proxy,
     store: &Arc<Mutex<store::DiskStore>>,
     sequence: &mut u64,
     operation: DeviceOperation2,
+    generation: u64,
 ) -> tinybus::Result<DeviceResponse2> {
     let request = request(*sequence, operation);
     let row: ApprovalRow2 = proxy
@@ -127,12 +105,32 @@ pub(crate) async fn run(
             names::methods::EVALUATE_DEVICE2,
             (EvaluateDeviceRequest2 {
                 request: request.clone(),
-                audit: audit(*sequence),
+                audit: {
+                    let mut audit = audit(*sequence);
+                    audit.generation = generation;
+                    audit
+                },
             },),
         )
         .await?;
     let row = if row.state == ApprovalLifecycle2::Pending {
-        decide(proxy, store, row, *sequence + 1, ApprovalChoice2::Once).await?
+        let ticket = store
+            .lock()
+            .map_err(|_| tinybus::Error::failed("fixture store"))?
+            .human_action(row.clone(), ApprovalChoice2::Once)?;
+        let mut correlation = audit(*sequence + 1);
+        correlation.generation = generation;
+        proxy
+            .call(
+                names::methods::DECIDE2,
+                (DecideRequest2 {
+                    scope_id: "a".repeat(32),
+                    request_id: row.request_id,
+                    decision_ticket: ticket,
+                    audit: correlation,
+                },),
+            )
+            .await?
     } else {
         row
     };
@@ -145,10 +143,23 @@ pub(crate) async fn run(
             (ExecuteDeviceRequest2 {
                 request,
                 request_id: row.request_id,
-                audit: audit(*sequence + 2),
+                audit: {
+                    let mut audit = audit(*sequence + 2);
+                    audit.generation = generation;
+                    audit
+                },
             },),
         )
         .await;
     *sequence += 3;
     result
+}
+
+pub(crate) async fn run(
+    proxy: &tinybus::Proxy,
+    store: &Arc<Mutex<store::DiskStore>>,
+    sequence: &mut u64,
+    operation: DeviceOperation2,
+) -> tinybus::Result<DeviceResponse2> {
+    run_at(proxy, store, sequence, operation, 1).await
 }

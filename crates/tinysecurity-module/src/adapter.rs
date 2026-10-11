@@ -905,7 +905,8 @@ async fn configured_policy(config: ModuleConfig) -> BusResult<Policy> {
 async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()> {
     // Validate before activation. The SDK serializes reinitializations and
     // preserves a fault latch; this adapter never provides retry RPCs.
-    let device_config = config.device.take();
+    let mut device_config =
+        tinysecurity::crypto::device_handles::ConfidentialConfig::new(config.device.take());
     let device_clock: Arc<dyn tinysecurity::approval::Clock> =
         Arc::new(tinysecurity::approval::SystemClock::default());
     let sandbox_config = config.sandbox.clone();
@@ -929,7 +930,7 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
     .await?;
     let candidate = configured_policy(config).await?;
     let (device, device_limits) = device::configured(
-        device_config,
+        device_config.take(),
         requested_host.as_deref(),
         approval_config.as_ref(),
         audit_config.as_ref(),

@@ -39,7 +39,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         device: Some(fixture::device_config()),
         trusted_host: host.unique_name().map(|n| n.to_string()),
         approvals: Some(ApprovalConfig2 {
-            timeout_ms: 30000,
+            timeout_ms: 30_000,
             scopes: vec![fixture::registration()],
         }),
         audit: Some(fixture::audit_config(Some(
@@ -235,20 +235,29 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     lifecycle
         .reinitialize(&loaded.name, serde_json::to_value(configuration)?)
         .await?;
-    let request = fixture::request(sequence, DeviceOperation2::Revoke { handle: key });
+    // Valid new-generation approval/audit receipts cannot revive the old handle.
     assert!(
-        proxy
-            .call_confidential::<DeviceResponse2>(
-                names::methods::EXECUTE_DEVICE2,
-                (ExecuteDeviceRequest2 {
-                    request,
-                    request_id: "f".repeat(32),
-                    audit: fixture::audit(sequence)
-                },)
-            )
-            .await
-            .is_err()
+        fixture::run_at(
+            &proxy,
+            &store,
+            &mut sequence,
+            DeviceOperation2::Revoke { handle: key },
+            2
+        )
+        .await
+        .is_err()
     );
+    let current = fixture::run_at(
+        &proxy,
+        &store,
+        &mut sequence,
+        DeviceOperation2::Key {
+            purpose: DeviceKeyPurpose2::Static,
+        },
+        2,
+    )
+    .await?;
+    let observer = current.handle.ok_or("fixture handle")?;
     let after: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
     assert_eq!(after.generation, 2);
     let journal = std::fs::read(root.join("approvals.journal"))?;
@@ -260,6 +269,24 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     assert!(
         proxy
             .call::<PolicyInfo>(names::methods::POLICY_INFO, ())
+            .await
+            .is_err()
+    );
+    let mut correlation = fixture::audit(sequence);
+    correlation.generation = 2;
+    assert!(
+        proxy
+            .call_confidential::<DeviceResponse2>(
+                names::methods::EXECUTE_DEVICE2,
+                (ExecuteDeviceRequest2 {
+                    request: fixture::request(
+                        sequence,
+                        DeviceOperation2::Revoke { handle: observer }
+                    ),
+                    request_id: "f".repeat(32),
+                    audit: correlation
+                },)
+            )
             .await
             .is_err()
     );

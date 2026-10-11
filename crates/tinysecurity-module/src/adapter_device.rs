@@ -86,10 +86,31 @@ fn configure(
     let limits = registry.configuration().map_err(|_| denied())?;
     Ok((Some(registry), Some(limits)))
 }
+struct Lifetime(Weak<Registry>);
+impl Drop for Lifetime {
+    fn drop(&mut self) {
+        if let Some(registry) = self.0.upgrade() {
+            registry.close();
+        }
+    }
+}
+fn retain_lifetime(registry: &Arc<Registry>) {
+    let guard = Lifetime(Arc::downgrade(registry));
+    // Runtime shutdown cancels this future and drops the guard even if the SDK's
+    // reinit closure still retains the connection and served ObjectTree.
+    tokio::spawn(async move {
+        let _guard = guard;
+        std::future::pending::<()>().await;
+    });
+}
 pub(super) fn activate(registry: Option<&Arc<Registry>>) -> BusResult<()> {
     DEVICE
         .set(registry.map(Arc::downgrade))
-        .map_err(|_| denied())
+        .map_err(|_| denied())?;
+    if let Some(registry) = registry {
+        retain_lifetime(registry);
+    }
+    Ok(())
 }
 pub(super) fn advance(
     registry: Option<&Arc<Registry>>,
