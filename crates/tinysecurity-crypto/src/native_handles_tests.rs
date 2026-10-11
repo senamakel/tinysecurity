@@ -731,3 +731,90 @@ async fn admitted_backing_capacity_stays_charged_until_cancel_publication_and_re
     assert_eq!(reg.lock()?.retained_bytes, 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn borrowed_native_deadline_and_live_grant_validation_preserve_original_authority()
+-> TestResult {
+    let (reg, clock) = registry(Limits::default())?;
+    let work = reserve(
+        &reg,
+        Purpose::ConfigUserMaster,
+        OperationKind::NativeMasterGrant,
+        b"fixed backend",
+    )?;
+    let safe = work.binding().safe_arguments();
+    assert_eq!(work.binding().expires_at_ms(), 1100);
+    clock.0.store(50, Ordering::SeqCst);
+    assert_eq!(work.binding().expires_at_ms(), 1100);
+    assert_eq!(work.binding().safe_arguments(), safe);
+    let grant = reg.authorize_human(work, &Human).await?;
+    reg.validate_grant(&grant)?;
+    let (other, _) = registry(Limits::default())?;
+    assert!(other.validate_grant(&grant).is_err());
+    clock.0.store(100, Ordering::SeqCst);
+    assert!(reg.validate_grant(&grant).is_err());
+    Ok(())
+}
+#[tokio::test]
+async fn native_grant_validation_fences_revocation_generation_and_closed_owner() -> TestResult {
+    for mode in 0..3 {
+        let (reg, _) = registry(Limits::default())?;
+        let work = reserve(
+            &reg,
+            Purpose::ConfigUserMaster,
+            OperationKind::NativeMasterGrant,
+            b"fixed backend",
+        )?;
+        let grant = reg.authorize_human(work, &Human).await?;
+        match mode {
+            0 => reg.revoke_scope("a")?,
+            1 => reg.advance_generation(2)?,
+            _ => reg.close(),
+        }
+        assert!(reg.validate_grant(&grant).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn native_consumption_preserves_independently_verified_distinct_audit_scope() -> TestResult {
+    let (reg, _) = registry(Limits::default())?;
+    let work = reserve(
+        &reg,
+        Purpose::ConfigUserMaster,
+        OperationKind::NativeMasterGrant,
+        b"fixed backend",
+    )?;
+    let original = human_receipt(work.binding())?;
+    let mut actual = original.audit.clone();
+    actual.scope.user = "actual-audit-user".into();
+    let expected = actual.scope.clone();
+    let receipt = HumanGrantReceipt::from_verified_native_consumption(
+        work.binding(),
+        original.row.clone(),
+        actual.clone(),
+        expected.clone(),
+    )?;
+    receipt.verify(work.binding())?;
+    assert_eq!(receipt.audit, actual);
+    assert!(
+        HumanGrantReceipt::from_durable_consumption(
+            work.binding(),
+            original.row.clone(),
+            actual.clone()
+        )
+        .is_err()
+    );
+    let mut wrong = expected;
+    wrong.user = "other-audit-subject".into();
+    assert!(
+        HumanGrantReceipt::from_verified_native_consumption(
+            work.binding(),
+            original.row,
+            actual,
+            wrong
+        )
+        .is_err()
+    );
+    Ok(())
+}

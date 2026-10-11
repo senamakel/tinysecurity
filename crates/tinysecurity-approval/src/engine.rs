@@ -15,6 +15,60 @@ use tinysecurity_bus::{
     VerifyHumanRequest2,
 };
 use tinysecurity_redact::Redactor;
+/// Trusted acknowledgement binding an exact row to the untouched actual sink receipt.
+/// The adapter captures and validates sanitized scope through the audit owner.
+#[derive(Clone)]
+pub struct NativeAuditAcknowledgement {
+    row: ApprovalRow2,
+    expected_scope: SubjectScope,
+    receipt: tinysecurity_bus::AuditSinkResponse2,
+}
+impl std::fmt::Debug for NativeAuditAcknowledgement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NativeAuditAcknowledgement([REDACTED])")
+    }
+}
+impl NativeAuditAcknowledgement {
+    /// Acknowledge actual required persistence through a trusted port.
+    /// The creator validates authenticated sink, captured stream and original subject.
+    /// # Errors
+    /// Rejects mismatched fields without rewriting the receipt.
+    pub fn from_verified_sink(
+        row: ApprovalRow2,
+        expected_scope: SubjectScope,
+        receipt: tinysecurity_bus::AuditSinkResponse2,
+    ) -> Result<Self> {
+        let tail = row
+            .audit
+            .expected_tail
+            .checked_add(1)
+            .ok_or(Error::Invalid)?;
+        if receipt.scope != expected_scope
+            || !binding::hex(&receipt.stream_id, 32)
+            || receipt.new_tail != tail
+            || receipt.events.len() != 1
+            || receipt.events[0].sequence != tail
+            || receipt.events[0].event_id != row.audit.event_id
+        {
+            return Err(Error::Denied);
+        }
+        Ok(Self {
+            row,
+            expected_scope,
+            receipt,
+        })
+    }
+    /// Captured sanitized audit scope, distinct from the approval subject digest.
+    #[must_use]
+    pub fn expected_scope(&self) -> &SubjectScope {
+        &self.expected_scope
+    }
+    /// Return the actual sink response unchanged; never manufactures durability.
+    #[must_use]
+    pub fn into_receipt(self) -> tinysecurity_bus::AuditSinkResponse2 {
+        self.receipt
+    }
+}
 /// Trusted authenticated host storage, prompt and audit ports.
 #[async_trait::async_trait]
 pub trait Ports: Send + Sync + std::fmt::Debug {
@@ -38,6 +92,14 @@ pub trait Ports: Send + Sync + std::fmt::Debug {
     /// # Errors
     /// Rejects failed or unrelated persistence receipts.
     async fn audit(&self, row: ApprovalRow2) -> Result<()>;
+    /// Return the actual verified required-sink receipt for this exact durable phase.
+    /// Implementations must validate authenticated sink, scope, stream, event and tail.
+    /// The default denies native authority; a successful generic audit is insufficient.
+    /// # Errors
+    /// Rejects absent, uncommitted or unrelated receipts.
+    async fn native_audit(&self, _row: ApprovalRow2) -> Result<NativeAuditAcknowledgement> {
+        Err(Error::Denied)
+    }
 }
 /// Epoch and monotonic clocks injected together for deterministic expiration.
 pub trait Clock: Send + Sync + std::fmt::Debug {
@@ -65,6 +127,11 @@ impl Clock for SystemClock {
         u64::try_from(self.0.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 }
+struct NativeIntent {
+    original: ApprovalRow2,
+    decision: Option<ApprovalRow2>,
+    consumed: Option<ApprovalRow2>,
+}
 /// Immutable subject engine. Host-instance ownership prevents orphan execution.
 pub struct Engine {
     config: ApprovalConfig2,
@@ -77,6 +144,9 @@ pub struct Engine {
     generation: AtomicU64,
     time: Mutex<(u64, u64, u64, bool)>,
     creations: Mutex<std::collections::BTreeMap<String, ApprovalRow2>>,
+    // Only this trusted engine instance can establish native-row provenance.
+    // No serialized label or approval-row snapshot reconstructs it after restart.
+    native_intents: Mutex<std::collections::BTreeMap<String, NativeIntent>>,
 }
 impl std::fmt::Debug for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -135,6 +205,7 @@ impl Engine {
             generation: AtomicU64::new(generation),
             time: Mutex::new(time),
             creations: Mutex::new(std::collections::BTreeMap::new()),
+            native_intents: Mutex::new(std::collections::BTreeMap::new()),
         })
     }
     /// Replace the fully validated native scorer through trusted SDK setup only.
@@ -175,6 +246,40 @@ impl Engine {
     /// # Errors
     /// Rejects mismatches, unavailable callbacks and expired clocks.
     pub async fn begin(&self, request: EvaluateApprovalRequest2) -> Result<ApprovalRow2> {
+        if request.request.call.tool == "native_secret_grant" {
+            return Err(Error::Denied);
+        }
+        self.begin_inner(request, None).await
+    }
+    /// Begin exact native master authority through a trusted owner handler only.
+    /// The request must contain only the registry keyed safe wrapper and fixed tool.
+    /// `expires_at_ms` is the original reservation deadline, never a refreshed TTL.
+    /// Resume is limited to this live Engine instance; restart/reinit loses provenance.
+    /// # Errors
+    /// Denies generic/prepared rows, hard-denied origins, stale or over-ceiling deadlines.
+    pub async fn begin_native_grant(
+        &self,
+        request: EvaluateApprovalRequest2,
+        expires_at_ms: u64,
+    ) -> Result<ApprovalRow2> {
+        Self::native_request(&request.request)?;
+        if request.ttl_ms.is_some() {
+            return Err(Error::Denied);
+        }
+        self.begin_inner(request, Some(expires_at_ms)).await
+    }
+    fn native_request(request: &EvaluateRequest) -> Result<()> {
+        binding::native_safe_call(request)?;
+        if request.caller.origin == Origin::Cron {
+            return Err(Error::Denied);
+        }
+        Ok(())
+    }
+    async fn begin_inner(
+        &self,
+        request: EvaluateApprovalRequest2,
+        deadline: Option<u64>,
+    ) -> Result<ApprovalRow2> {
         let reg = self.registration(&request.scope_id)?;
         let (bound, args_redacted, external_effect) =
             binding::original(&reg, &request.request, &self.redactor()?)?;
@@ -188,21 +293,24 @@ impl Engine {
             _ => 600_000,
         };
         let ttl = request.ttl_ms.unwrap_or(ttl).min(ttl);
+        if let Some(deadline) = deadline {
+            self.check_native_deadline(&bound, deadline, now, ttl)?;
+        }
         if ttl == 0 {
             return Err(Error::Denied);
         }
         Self::correlation(&request.audit, reg.generation)?;
         let rows = self.rows(&reg).await?;
         self.reconcile_creations(&rows)?;
-        if let Some(row) = rows.iter().find(|r| r.binding == bound) {
-            return self.resume(&reg, row, now).await;
+        if let Some(row) = self
+            .existing_begin(&reg, &bound, &rows, now, deadline)
+            .await?
+        {
+            return Ok(row);
         }
-        let human_only = request.request.call.tool == "sandbox_host_network";
-        let reusable = if human_only {
-            None
-        } else {
-            self.live_reusable(&reg, &bound, &rows, now).await?
-        };
+        let (reusable, human_only) = self
+            .begin_reuse(&request, &reg, &bound, &rows, now, deadline.is_some())
+            .await?;
         let automatic = !human_only && rule == tinysecurity_auto::rules::Rule::Automatic;
         let judge = if !human_only && reusable.is_none() && !automatic {
             self.score(&request, &bound, external_effect).await?
@@ -224,18 +332,17 @@ impl Engine {
             return Err(Error::Denied);
         }
         let approved = reusable.is_some() || automatic || qualified;
-        let expiry = now.checked_add(ttl).ok_or(Error::Invalid)?;
+        let expiry = deadline.unwrap_or(now.checked_add(ttl).ok_or(Error::Invalid)?);
+        if expiry <= now {
+            return Err(Error::Denied);
+        }
         let row = ApprovalRow2 {
             request_id: binding::opaque()?,
             version: 1,
             binding: bound,
             host_instance: self.instance.clone(),
             nonce: binding::opaque()?,
-            tool_name: binding::text(
-                &self.redactor()?,
-                &request.request.call.tool,
-                RedactMode::Text,
-            )?,
+            tool_name: self.begin_tool_label(&request.request.call.tool, deadline.is_some())?,
             external_effect,
             args_redacted,
             summary: binding::text(&self.redactor()?, &request.summary, RedactMode::Text)?,
@@ -263,17 +370,131 @@ impl Engine {
             judge,
             audit: request.audit,
         };
-        let row = {
-            let mut creations = self.creations.lock().map_err(|_| Error::Unavailable)?;
-            if !creations.contains_key(&row.binding.call_sha256) && creations.len() >= 1024 {
-                return Err(Error::Unavailable);
+        let row = self.memo_begin(row, deadline.is_some())?;
+        self.finish_native_begin(&reg, row, now, deadline.is_some())
+            .await
+    }
+    fn begin_tool_label(&self, tool: &str, native: bool) -> Result<String> {
+        if native {
+            Ok("native_secret_grant".into())
+        } else {
+            binding::text(&self.redactor()?, tool, RedactMode::Text)
+        }
+    }
+    async fn finish_native_begin(
+        &self,
+        reg: &ApprovalScope2,
+        row: ApprovalRow2,
+        now: u64,
+        native: bool,
+    ) -> Result<ApprovalRow2> {
+        if native {
+            self.native_row(&row)?;
+        }
+        let result = self.finish_begin(reg, &row, now).await?;
+        if native {
+            self.native_row(&result)?;
+            self.live(&result)?;
+        }
+        Ok(result)
+    }
+    async fn existing_begin(
+        &self,
+        reg: &ApprovalScope2,
+        bound: &tinysecurity_bus::ApprovalBinding2,
+        rows: &[ApprovalRow2],
+        now: u64,
+        deadline: Option<u64>,
+    ) -> Result<Option<ApprovalRow2>> {
+        if let Some(row) = rows.iter().find(|r| &r.binding == bound) {
+            if let Some(deadline) = deadline {
+                self.native_row(row)?;
+                if row.expires_at_ms != deadline {
+                    return Err(Error::Denied);
+                }
             }
-            creations
-                .entry(row.binding.call_sha256.clone())
-                .or_insert(row)
-                .clone()
+            return self.resume(reg, row, now).await.map(Some);
+        }
+        Ok(None)
+    }
+    async fn begin_reuse(
+        &self,
+        request: &EvaluateApprovalRequest2,
+        reg: &ApprovalScope2,
+        bound: &tinysecurity_bus::ApprovalBinding2,
+        rows: &[ApprovalRow2],
+        now: u64,
+        native: bool,
+    ) -> Result<(Option<ApprovalRow2>, bool)> {
+        let human_only = native || request.request.call.tool == "sandbox_host_network";
+        let reusable = if human_only {
+            None
+        } else {
+            self.live_reusable(reg, bound, rows, now).await?
         };
-        self.finish_begin(&reg, &row, now).await
+        Ok((reusable, human_only))
+    }
+    fn check_native_deadline(
+        &self,
+        bound: &tinysecurity_bus::ApprovalBinding2,
+        deadline: u64,
+        now: u64,
+        ttl: u64,
+    ) -> Result<()> {
+        if deadline <= now || deadline - now > ttl.min(300_000) {
+            return Err(Error::Denied);
+        }
+        self.prune_native(now, bound.generation)?;
+        let intents = self.native_intents.lock().map_err(|_| Error::Unavailable)?;
+        if intents.len() >= 32 && !intents.contains_key(&bound.call_sha256) {
+            return Err(Error::Unavailable);
+        }
+        Ok(())
+    }
+    fn memo_begin(&self, row: ApprovalRow2, native: bool) -> Result<ApprovalRow2> {
+        let mut creations = self.creations.lock().map_err(|_| Error::Unavailable)?;
+        let mut intents = self.native_intents.lock().map_err(|_| Error::Unavailable)?;
+        if native && intents.len() >= 32 && !intents.contains_key(&row.binding.call_sha256) {
+            return Err(Error::Unavailable);
+        }
+        if !creations.contains_key(&row.binding.call_sha256) && creations.len() >= 1024 {
+            return Err(Error::Unavailable);
+        }
+        let row = creations
+            .entry(row.binding.call_sha256.clone())
+            .or_insert(row)
+            .clone();
+        if native {
+            if let Some(prior) = intents.get(&row.binding.call_sha256) {
+                if prior.original != row {
+                    return Err(Error::Denied);
+                }
+            } else {
+                intents.insert(
+                    row.binding.call_sha256.clone(),
+                    NativeIntent {
+                        original: row.clone(),
+                        decision: None,
+                        consumed: None,
+                    },
+                );
+            }
+        }
+        Ok(row)
+    }
+    async fn audit_row(&self, row: ApprovalRow2) -> Result<()> {
+        if row.tool_name == "native_secret_grant" {
+            self.native_identity(&row)?;
+            let acknowledgement = self.ports.native_audit(row.clone()).await?;
+            if acknowledgement.row != row {
+                return Err(Error::Denied);
+            }
+            self.native_identity(&row)?;
+            self.live(&row)?;
+            Ok(())
+        } else {
+            self.ports.audit(row).await
+        }
     }
     fn reconcile_creations(&self, rows: &[ApprovalRow2]) -> Result<()> {
         // Durable identities replace retry identities once confirmed by exact
@@ -300,7 +521,7 @@ impl Engine {
         };
         // Reconcile the exact source audit, then reload mutable state and time.
         // No callback lock is held, and an expired source never creates a row.
-        self.ports.audit(source.clone()).await?;
+        self.audit_row(source.clone()).await?;
         let current = self.rows(reg).await?;
         let now = self.now()?;
         let live = reusable_grant(&current, bound, now)
@@ -360,10 +581,13 @@ impl Engine {
         row: &ApprovalRow2,
         now: u64,
     ) -> Result<ApprovalRow2> {
+        if row.tool_name == "native_secret_grant" {
+            self.native_row(row)?;
+        }
         if row.host_instance != self.instance || row.expires_at_ms <= now {
             return Err(Error::Denied);
         }
-        self.ports.audit(row.clone()).await?;
+        self.audit_row(row.clone()).await?;
         if row.state == ApprovalLifecycle2::Pending {
             self.deliver(row.clone()).await?;
         }
@@ -379,11 +603,14 @@ impl Engine {
             return Err(Error::Denied);
         }
         Self::current(reg, &current)?;
+        if current.tool_name == "native_secret_grant" {
+            self.native_row(&current)?;
+        }
         if &current != row {
             // Delivery acknowledges the prompt only. A reentrant decision may
             // have committed without an audit acknowledgement; replay its exact
             // durable phase before reporting the winning permission.
-            self.ports.audit(current.clone()).await?;
+            self.audit_row(current.clone()).await?;
         }
         Ok(current)
     }
@@ -440,7 +667,7 @@ impl Engine {
             .into_iter()
             .find(|r| r.binding == bound && r.legacy_history_json.is_some())
         {
-            self.ports.audit(existing.clone()).await?;
+            self.audit_row(existing.clone()).await?;
             return Ok(existing);
         }
         let now = self.now()?;
@@ -473,6 +700,95 @@ impl Engine {
         self.persist(None, &row).await?;
         Ok(row)
     }
+    fn prune_native(&self, now: u64, generation: u64) -> Result<()> {
+        self.creations
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .retain(|_, row| {
+                row.tool_name != "native_secret_grant"
+                    || (row.expires_at_ms > now && row.binding.generation == generation)
+            });
+        self.native_intents
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .retain(|_, intent| {
+                intent.original.expires_at_ms > now
+                    && intent.original.binding.generation == generation
+            });
+        Ok(())
+    }
+    fn native_identity(&self, row: &ApprovalRow2) -> Result<()> {
+        let now = self.now()?;
+        let generation = self.generation.load(Ordering::SeqCst);
+        self.prune_native(now, generation)?;
+        let intents = self.native_intents.lock().map_err(|_| Error::Unavailable)?;
+        let intent = intents.get(&row.binding.call_sha256).ok_or(Error::Denied)?;
+        let original = &intent.original;
+        if row.binding != original.binding
+            || row.request_id != original.request_id
+            || row.nonce != original.nonce
+            || row.host_instance != self.instance
+            || row.tool_name != original.tool_name
+            || row.args_redacted != original.args_redacted
+            || row.created_at_ms != original.created_at_ms
+            || row.expires_at_ms != original.expires_at_ms
+            || row.external_effect != original.external_effect
+            || row.judge.is_some()
+            || row.legacy_history_json.is_some()
+            || (matches!(
+                row.state,
+                ApprovalLifecycle2::Approved
+                    | ApprovalLifecycle2::Reserved
+                    | ApprovalLifecycle2::Executed
+            ) && (row.choice != Some(ApprovalChoice2::Once)
+                || row.decision_ticket_sha256.is_none()))
+        {
+            return Err(Error::Denied);
+        }
+        Ok(())
+    }
+    fn native_row(&self, row: &ApprovalRow2) -> Result<()> {
+        self.native_identity(row)?;
+        let intents = self.native_intents.lock().map_err(|_| Error::Unavailable)?;
+        let intent = intents.get(&row.binding.call_sha256).ok_or(Error::Denied)?;
+        let original = &intent.original;
+        match row.state {
+            ApprovalLifecycle2::Pending if row != original => return Err(Error::Denied),
+            ApprovalLifecycle2::Approved if intent.decision.as_ref() != Some(row) => {
+                return Err(Error::Denied);
+            }
+            ApprovalLifecycle2::Reserved if intent.consumed.as_ref() != Some(row) => {
+                return Err(Error::Denied);
+            }
+            ApprovalLifecycle2::Executed => return Err(Error::Denied),
+            _ => {}
+        }
+        Ok(())
+    }
+    fn native_ack(&self, row: &ApprovalRow2, consumed: bool) -> Result<()> {
+        if row.tool_name != "native_secret_grant" {
+            return Ok(());
+        }
+        let mut intents = self.native_intents.lock().map_err(|_| Error::Unavailable)?;
+        let intent = intents
+            .get_mut(&row.binding.call_sha256)
+            .ok_or(Error::Denied)?;
+        if consumed {
+            intent.consumed = Some(row.clone());
+        } else {
+            intent.decision = Some(row.clone());
+        }
+        Ok(())
+    }
+    /// Exact approval-owned policy digest for trusted native registration composition.
+    /// # Errors
+    /// Rejects unknown registrations.
+    pub fn durable_policy_ref(&self, id: &str) -> Result<String> {
+        Ok(binding::digest(
+            b"tinysecurity/approval-policy/v1\0",
+            self.registration(id)?.policy_ref.as_bytes(),
+        ))
+    }
     fn registration(&self, id: &str) -> Result<ApprovalScope2> {
         let mut reg = self
             .config
@@ -491,11 +807,22 @@ impl Engine {
         Ok(())
     }
     fn now(&self) -> Result<u64> {
-        let wall = self.clock.wall_ms().ok_or(Error::Unavailable)?;
+        let Some(wall) = self.clock.wall_ms() else {
+            self.time.lock().map_err(|_| Error::Unavailable)?.3 = true;
+            self.native_intents
+                .lock()
+                .map_err(|_| Error::Unavailable)?
+                .clear();
+            return Err(Error::Unavailable);
+        };
         let mono = self.clock.monotonic_ms();
         let mut time = self.time.lock().map_err(|_| Error::Unavailable)?;
         if time.3 || wall < time.0 || mono < time.1 {
             time.3 = true;
+            self.native_intents
+                .lock()
+                .map_err(|_| Error::Unavailable)?
+                .clear();
             return Err(Error::Denied);
         }
         let elapsed = mono - time.1;
@@ -515,15 +842,23 @@ impl Engine {
         response
             .records
             .iter()
-            .map(|r| binding::parse(r, &requested.scope))
+            .map(|r| {
+                let row = binding::parse(r, &requested.scope)?;
+                Ok(row)
+            })
             .collect()
     }
     async fn row(&self, reg: &ApprovalScope2, id: &str) -> Result<ApprovalRow2> {
-        self.rows(reg)
+        let row = self
+            .rows(reg)
             .await?
             .into_iter()
             .find(|r| r.request_id == id)
-            .ok_or(Error::Denied)
+            .ok_or(Error::Denied)?;
+        if row.tool_name == "native_secret_grant" {
+            self.native_row(&row)?;
+        }
+        Ok(row)
     }
     async fn persist(&self, expected: Option<u64>, row: &ApprovalRow2) -> Result<()> {
         if row.binding.generation != self.generation.load(Ordering::SeqCst) {
@@ -552,7 +887,7 @@ impl Engine {
         request
             .verify_receipt(&receipt)
             .map_err(|_| Error::Invalid)?;
-        self.ports.audit(row.clone()).await?;
+        self.audit_row(row.clone()).await?;
         if row.binding.generation != self.generation.load(Ordering::SeqCst) {
             return Err(Error::Denied);
         }
@@ -584,13 +919,13 @@ impl Engine {
         let ticket = binding::digest(b"", request.decision_ticket.as_bytes());
         if row.state != ApprovalLifecycle2::Pending {
             if row.decision_ticket_sha256.as_ref() == Some(&ticket) && row.audit == request.audit {
-                self.ports.audit(row.clone()).await?;
+                self.audit_row(row.clone()).await?;
                 return Ok(row);
             }
             return Err(Error::Conflict);
         }
         self.live(&row)?;
-        self.ports.audit(row.clone()).await?;
+        self.audit_row(row.clone()).await?;
         Self::correlation(&request.audit, reg.generation)?;
         let reviewed = self
             .ports
@@ -603,6 +938,11 @@ impl Engine {
             || reviewed.ticket_sha256 != ticket
             || reviewed.actor.is_empty()
             || reviewed.actor.len() > 1024
+            || (row.tool_name == "native_secret_grant"
+                && !matches!(
+                    reviewed.choice,
+                    ApprovalChoice2::Once | ApprovalChoice2::Deny
+                ))
             || (reviewed.choice == ApprovalChoice2::Flow && row.binding.caller.flow.is_none())
             || (row.host_instance != self.instance && reviewed.choice != ApprovalChoice2::Deny)
         {
@@ -626,18 +966,47 @@ impl Engine {
         )?);
         row.audit = request.audit;
         self.persist(Some(previous), &row).await?;
+        self.native_ack(&row, false)?;
         Ok(row)
     }
     /// Reserve a reviewed execution exactly once, before the host dispatches it.
     /// # Errors
     /// Denies any changed call, stale grant, orphan, or repeat reservation.
     pub async fn consume(&self, request: ApprovalActionRequest2) -> Result<ApprovalRow2> {
+        if request.request.call.tool == "native_secret_grant" {
+            return Err(Error::Denied);
+        }
+        self.consume_inner(request, false).await
+    }
+    /// Consume a live trusted native Human Once row and return its actual sink receipt.
+    /// No backend authority is returned if audit is absent or acknowledgement fails.
+    /// # Errors
+    /// Denies generic rows, reuse, judge decisions, expired provenance and mismatched receipts.
+    pub async fn consume_native_grant(
+        &self,
+        request: ApprovalActionRequest2,
+    ) -> Result<(ApprovalRow2, NativeAuditAcknowledgement)> {
+        Self::native_request(&request.request)?;
+        let row = self.consume_inner(request, true).await?;
+        let receipt = self.ports.native_audit(row.clone()).await?;
+        if receipt.row != row {
+            return Err(Error::Denied);
+        }
+        self.native_row(&row)?;
+        self.live(&row)?;
+        Ok((row, receipt))
+    }
+    async fn consume_inner(
+        &self,
+        request: ApprovalActionRequest2,
+        native: bool,
+    ) -> Result<ApprovalRow2> {
         let reg = self.registration(&request.scope_id)?;
         let mut row = self.row(&reg, &request.request_id).await?;
         self.exact(&reg, &row, &request.request)?;
         self.live(&row)?;
-        self.ports.audit(row.clone()).await?;
-        if request.request.call.tool == "sandbox_host_network"
+        self.audit_row(row.clone()).await?;
+        if (native || request.request.call.tool == "sandbox_host_network")
             && (row.choice != Some(ApprovalChoice2::Once)
                 || row.decision_ticket_sha256.is_none()
                 || row.judge.is_some())
@@ -655,12 +1024,18 @@ impl Engine {
         row.audit = request.audit;
         self.persist(Some(previous), &row).await?;
         self.live(&row)?;
+        if native {
+            self.native_ack(&row, true)?;
+        }
         Ok(row)
     }
     /// Persist an immutable terminal outcome only for the exact consumed action.
     /// # Errors
     /// Denies pending, denied, unreserved or mismatched executions.
     pub async fn record_execution(&self, request: RecordExecutionRequest2) -> Result<ApprovalRow2> {
+        if request.action.request.call.tool == "native_secret_grant" {
+            return Err(Error::Denied);
+        }
         let reg = self.registration(&request.action.scope_id)?;
         let mut row = self.row(&reg, &request.action.request_id).await?;
         self.exact(&reg, &row, &request.action.request)?;
@@ -669,7 +1044,7 @@ impl Engine {
         }
         if row.state == ApprovalLifecycle2::Executed {
             if row.outcome.as_ref() == Some(&request.outcome) && row.audit == request.action.audit {
-                self.ports.audit(row.clone()).await?;
+                self.audit_row(row.clone()).await?;
                 return Ok(row);
             }
             return Err(Error::Conflict);
@@ -677,7 +1052,7 @@ impl Engine {
         if row.state != ApprovalLifecycle2::Reserved {
             return Err(Error::Denied);
         }
-        self.ports.audit(row.clone()).await?;
+        self.audit_row(row.clone()).await?;
         Self::correlation(&request.action.audit, reg.generation)?;
         let previous = row.version;
         row.version = previous.checked_add(1).ok_or(Error::Invalid)?;
@@ -729,9 +1104,15 @@ impl Engine {
         if next < previous || next == 0 {
             return Err(Error::Denied);
         }
+        let mut creations = self.creations.lock().map_err(|_| Error::Unavailable)?;
+        let mut intents = self.native_intents.lock().map_err(|_| Error::Unavailable)?;
         self.generation
             .compare_exchange(previous, next, Ordering::SeqCst, Ordering::SeqCst)
             .map_err(|_| Error::Conflict)?;
+        intents.retain(|_, intent| intent.original.binding.generation == next);
+        creations.retain(|_, row| {
+            row.tool_name != "native_secret_grant" || row.binding.generation == next
+        });
         Ok(())
     }
     /// Read scoped durable rows without promoting imported legacy broad grants.
@@ -761,7 +1142,7 @@ impl Engine {
         let mut row = self.row(&reg, &request.request_id).await?;
         Self::current(&reg, &row)?;
         if row.state == state && row.audit == request.audit {
-            self.ports.audit(row.clone()).await?;
+            self.audit_row(row.clone()).await?;
             return Ok(row);
         }
         if !matches!(
@@ -773,7 +1154,7 @@ impl Engine {
         if state == ApprovalLifecycle2::Expired && self.live(&row).is_ok() {
             return Err(Error::Denied);
         }
-        self.ports.audit(row.clone()).await?;
+        self.audit_row(row.clone()).await?;
         Self::correlation(&request.audit, reg.generation)?;
         let previous = row.version;
         row.version = previous.checked_add(1).ok_or(Error::Invalid)?;
@@ -811,7 +1192,8 @@ impl Engine {
             let row = self.row(&reg, &id).await?;
             Self::current(&reg, &row)?;
             self.live(&row)?;
-            if row.choice != Some(ApprovalChoice2::Flow)
+            if row.tool_name == "native_secret_grant"
+                || row.choice != Some(ApprovalChoice2::Flow)
                 || row.binding.caller.flow.as_ref() != Some(&flow)
                 || row.decision_ticket_sha256.is_none()
                 || !matches!(
@@ -823,7 +1205,7 @@ impl Engine {
             {
                 return Err(Error::Denied);
             }
-            self.ports.audit(row.clone()).await?;
+            self.audit_row(row.clone()).await?;
             result.push(row);
         }
         Ok(result)
@@ -835,7 +1217,8 @@ fn reusable_grant<'a>(
     now: u64,
 ) -> Option<&'a ApprovalRow2> {
     rows.iter().find(|r| {
-        r.binding.content_sha256 == bound.content_sha256
+        r.tool_name != "native_secret_grant"
+            && r.binding.content_sha256 == bound.content_sha256
             && r.binding.generation == bound.generation
             && r.binding.scope == bound.scope
             && r.binding.origin == bound.origin

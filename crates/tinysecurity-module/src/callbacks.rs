@@ -141,7 +141,7 @@ impl AuditClient {
             native,
         })
     }
-    fn registry(&self) -> Result<tinysecurity::Redactor> {
+    pub(crate) fn registry(&self) -> Result<tinysecurity::Redactor> {
         self.redactor
             .read()
             .map(|registry| registry.clone())
@@ -174,6 +174,21 @@ impl AuditClient {
         batch: tinysecurity_bus::AuditSinkRequest2,
         registry: Result<tinysecurity::Redactor>,
     ) -> tinysecurity_bus::AuditResponse2 {
+        self.append_mode(batch, registry, false).await
+    }
+    pub(crate) async fn append_native_with_registry(
+        &self,
+        batch: tinysecurity_bus::AuditSinkRequest2,
+        registry: Result<tinysecurity::Redactor>,
+    ) -> tinysecurity_bus::AuditResponse2 {
+        self.append_mode(batch, registry, true).await
+    }
+    async fn append_mode(
+        &self,
+        batch: tinysecurity_bus::AuditSinkRequest2,
+        registry: Result<tinysecurity::Redactor>,
+        confidential: bool,
+    ) -> tinysecurity_bus::AuditResponse2 {
         use tinysecurity_bus::{AuditHealth2, AuditResponse2};
         let clean = registry.and_then(|registry| {
             tinysecurity::audit::sanitize(&batch, &registry)
@@ -191,7 +206,7 @@ impl AuditClient {
             };
         }
         let result = match clean {
-            Ok(clean) => self.append_exact(clean).await,
+            Ok(clean) => self.append_exact(clean, confidential).await,
             Err(error) => Err(error),
         };
         match result {
@@ -216,6 +231,7 @@ impl AuditClient {
     async fn append_exact(
         &self,
         batch: tinysecurity_bus::AuditSinkRequest2,
+        confidential: bool,
     ) -> Result<tinysecurity_bus::AuditSinkResponse2> {
         use tinysecurity_bus::callback_names2 as names;
         let clean = batch;
@@ -234,13 +250,19 @@ impl AuditClient {
                 .as_ref()
                 .ok_or_else(|| tinybus::Error::failed("audit authority unavailable"))?;
             // Fixed unique destination: replacement of a well-known name grants no authority.
-            self.connection
+            let proxy = self
+                .connection
                 .proxy(peer.as_str(), names::OBJECT_PATH, names::AUDIT_SINK)?
                 .with_timeout(std::time::Duration::from_millis(u64::from(
                     self.config.timeout_ms,
-                )))
-                .call(names::APPEND, (clean.clone(),))
-                .await?
+                )));
+            if confidential {
+                proxy
+                    .call_confidential(names::APPEND, (clean.clone(),))
+                    .await?
+            } else {
+                proxy.call(names::APPEND, (clean.clone(),)).await?
+            }
         };
         clean
             .verify_receipt(&receipt)

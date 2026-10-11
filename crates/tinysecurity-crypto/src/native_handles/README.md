@@ -78,3 +78,18 @@ This checkpoint is internal retention and trust-boundary validation only.
 It proves neither real native consent/backend access nor confidential bus
 dispatch, Argon worker accounting, host RPC adoption, provider selection,
 released artifacts or native three-platform operation.
+
+The approval owner exposes trusted native begin/consume prerequisites with a fixed
+owner-sampled deadline and the exact keyed native call correlation. Its reserved
+label is rejected by generic execution paths. Native provenance is bounded to 32
+live intents and exists only in the same Engine instance; serialized rows cannot
+reconstruct it after restart or reinitialization. Actual Human verification and
+acknowledged decision/consumption CAS establish private state snapshots.
+Every native phase requires a confidential required-sink acknowledgement; an
+unimplemented native audit port denies before prompting. The acknowledgement
+retains the actual sink response and independently captured sanitized audit scope,
+which differs from the approval subject digest. Trusted constructors validate
+shape and binding, while the captured adapter remains responsible for provenance.
+Borrowed reservation bindings retain their original deadline, and live grant
+validation must bracket every subsequent backend await. Injected linked SDK tests
+exercise this composition; they do not establish real OS consent or storage.

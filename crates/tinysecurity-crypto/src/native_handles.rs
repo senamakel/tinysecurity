@@ -203,6 +203,11 @@ pub struct Binding {
     commitment: [u8; 32],
 }
 impl Binding {
+    /// Owner-sampled absolute wall deadline, for exact durable native approval.
+    #[must_use]
+    pub fn expires_at_ms(&self) -> u64 {
+        self.expires.wall
+    }
     /// Nonreversible keyed correlation for durable safe argument wrappers.
     #[must_use]
     pub fn safe_arguments(&self) -> String {
@@ -247,6 +252,13 @@ pub struct Reservation {
     registry: Registry,
     binding: Binding,
 }
+impl Reservation {
+    /// Borrow the exact original private binding; no new challenge or deadline is minted.
+    #[must_use]
+    pub fn binding(&self) -> &Binding {
+        &self.binding
+    }
+}
 impl Drop for Reservation {
     fn drop(&mut self) {
         if let Ok(mut state) = self.registry.state.lock() {
@@ -282,6 +294,7 @@ pub struct HumanGrantReceipt {
     echo: Echo,
     row: ApprovalRow2,
     audit: AuditSinkResponse2,
+    expected_audit_scope: SubjectScope,
 }
 impl HumanGrantReceipt {
     /// Acknowledge a completed exact Engine.consume operation, never a prepared
@@ -293,10 +306,24 @@ impl HumanGrantReceipt {
         row: ApprovalRow2,
         audit: AuditSinkResponse2,
     ) -> Result<Self> {
+        Self::from_verified_native_consumption(binding, row, audit, binding.durable_subject.clone())
+    }
+    /// Bind completed trusted consumption to the actual sanitized audit scope.
+    /// The verifier obtains scope independently from the registered subject and
+    /// actual verified required-sink acknowledgement, never a caller-selected scope.
+    /// # Errors
+    /// Rejects mismatched receipts and every ordinary grant mismatch.
+    pub fn from_verified_native_consumption(
+        binding: &Binding,
+        row: ApprovalRow2,
+        audit: AuditSinkResponse2,
+        expected_audit_scope: SubjectScope,
+    ) -> Result<Self> {
         let receipt = Self {
             echo: Echo::new(binding),
             row,
             audit,
+            expected_audit_scope,
         };
         receipt.verify(binding)?;
         Ok(receipt)
@@ -329,7 +356,7 @@ impl HumanGrantReceipt {
             || row.expires_at_ms <= row.created_at_ms
             || !row.attribution.as_deref().is_some_and(text)
             || !opaque(&self.audit.stream_id, 32)
-            || self.audit.scope != binding.durable_subject
+            || self.audit.scope != self.expected_audit_scope
             || self.audit.events.len() != 1
         {
             return Err(Error::NativeDenied);
@@ -655,6 +682,13 @@ impl Registry {
         receipt.verify(&work.binding)?;
         self.validate(&work)?;
         Ok(AuthorizedRoutine(work))
+    }
+    /// Check live human authority before each subsequent backend await and publication.
+    /// No lock remains held after this call; callers must recheck after every await.
+    /// # Errors
+    /// Denies wrong registry, expiry, revocation, generation and clock faults.
+    pub fn validate_grant(&self, grant: &HumanGrant) -> Result<()> {
+        self.validate(&grant.0)
     }
     /// Retain an owner-loaded native master after exact human authority; never reads or mints it here.
     /// # Errors

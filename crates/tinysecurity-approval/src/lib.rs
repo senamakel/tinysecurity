@@ -7,7 +7,7 @@
 mod binding;
 mod engine;
 mod error;
-pub use engine::{Clock, Engine, Ports, SystemClock};
+pub use engine::{Clock, Engine, NativeAuditAcknowledgement, Ports, SystemClock};
 pub use error::{Error, Result};
 
 pub use binding::scope_handle;

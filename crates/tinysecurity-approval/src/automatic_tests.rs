@@ -177,3 +177,17 @@ async fn qualified_judge_is_never_invoked_for_sandbox_host_network_human_require
     assert_eq!(judge.calls.load(Ordering::SeqCst), 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn native_master_grant_never_calls_a_qualified_configured_judge() -> Result<()> {
+    let fixture = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    let owner = engine(fixture, clock.clone())?;
+    let judge = judge(true);
+    scorer(&owner, judge.clone(), clock)?;
+    let row = owner.begin_native_grant(native_request(), 1000).await?;
+    assert_eq!(row.state, ApprovalLifecycle2::Pending);
+    assert!(row.judge.is_none());
+    assert_eq!(judge.calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}
