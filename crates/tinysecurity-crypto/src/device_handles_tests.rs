@@ -27,10 +27,12 @@ fn config() -> DeviceConfig2 {
         scopes: vec![
             DeviceScope2 {
                 scope_id: "a".repeat(32),
+                origin: tinysecurity_bus::Origin::Operator,
                 static_secret: Some([1; 32]),
             },
             DeviceScope2 {
                 scope_id: "b".repeat(32),
+                origin: tinysecurity_bus::Origin::Operator,
                 static_secret: Some([2; 32]),
             },
         ],
@@ -241,5 +243,414 @@ fn revocation_fences_pending_work_but_preserves_unrelated_handles() -> TestResul
         )
         .is_ok()
     );
+    Ok(())
+}
+
+#[test]
+fn a_reservation_cannot_transfer_authority_to_another_registry() -> TestResult {
+    let first = registry()?;
+    let other = registry()?;
+    let req = request(
+        'a',
+        DeviceOperation2::Key {
+            purpose: DeviceKeyPurpose2::Static,
+        },
+    );
+    let work = first.reserve(&req, 1, time(0))?;
+    assert!(other.execute(&work, &req.operation, 1, time(0)).is_err());
+    assert!(other.validate(&work, 1, time(0)).is_err());
+    Ok(())
+}
+
+#[test]
+fn scopes_purposes_and_exact_secret_operation_binding_are_immutable() -> TestResult {
+    let reg = registry()?;
+    let (static_key, public) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (ephemeral, _) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let peer = KeyPair::from_secret(Zeroizing::new([5; 32]))?
+        .public_key()
+        .encode();
+    assert!(
+        run(
+            &reg,
+            'b',
+            DeviceOperation2::SealAck {
+                handle: static_key.clone(),
+                peer: peer.clone(),
+                plaintext: vec![]
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        run(
+            &reg,
+            'a',
+            DeviceOperation2::SealHandshake {
+                handle: static_key,
+                peer: peer.clone(),
+                plaintext: vec![]
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        run(
+            &reg,
+            'a',
+            DeviceOperation2::SealAck {
+                handle: ephemeral,
+                peer,
+                plaintext: vec![]
+            }
+        )
+        .is_err()
+    );
+    let mut req = request(
+        'a',
+        DeviceOperation2::Seal {
+            handle: "c".repeat(64),
+            plaintext: b"private-secret".to_vec(),
+        },
+    );
+    req.call_id = "private-secret".into();
+    let first = reg.approval_call(&req)?;
+    let serialized = serde_json::to_string(&first)?;
+    assert!(!serialized.contains("private-secret"));
+    assert_eq!(first.caller.agent, format!("agent-{}", "a".repeat(32)));
+    assert_eq!(public.len(), 43);
+    if let DeviceOperation2::Seal { plaintext, .. } = &mut req.operation {
+        plaintext.push(1);
+    }
+    assert_ne!(first, reg.approval_call(&req)?);
+    let other = Registry::new(
+        config(),
+        &[registration(&"a".repeat(32)), registration(&"b".repeat(32))],
+        ":1.2",
+        1,
+        time(0),
+    )?;
+    assert_ne!(reg.approval_call(&req)?, other.approval_call(&req)?);
+    let wrapped = ConfidentialRequest::new(req);
+    assert_eq!(format!("{wrapped:?}"), "ConfidentialRequest([REDACTED])");
+    assert_eq!(format!("{reg:?}"), "Registry([REDACTED])");
+    Ok(())
+}
+#[test]
+fn exact_expiry_cancellation_and_reinit_invalidate_old_work_and_handles() -> TestResult {
+    let reg = registry()?;
+    let (handle, _) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let req = request('a', DeviceOperation2::Cancel);
+    let work = reg.reserve(&req, 1, time(0))?;
+    assert!(reg.validate(&work, 1, time(100)).is_err());
+    drop(work);
+    let new = reg.reserve(&req, 1, time(100))?;
+    assert!(
+        reg.execute(&new, &DeviceOperation2::Revoke { handle }, 1, time(100))
+            .is_err()
+    );
+    drop(new);
+    let cfg = reg.configuration()?;
+    assert!(cfg.scopes.iter().all(|s| s.static_secret.is_none()));
+    reg.reconfigure(cfg, 2)?;
+    let mut req = request(
+        'a',
+        DeviceOperation2::Key {
+            purpose: DeviceKeyPurpose2::Static,
+        },
+    );
+    assert!(reg.reserve(&req, 1, time(100)).is_err());
+    let pending = reg.reserve(&req, 2, time(100))?;
+    req.operation = DeviceOperation2::Cancel;
+    let cancel = reg.reserve(&req, 2, time(100))?;
+    reg.execute(&cancel, &req.operation, 2, time(100))?;
+    assert!(reg.validate(&pending, 2, time(100)).is_err());
+    Ok(())
+}
+#[test]
+fn rate_capacity_and_rollback_are_bounded_without_cross_scope_starvation() -> TestResult {
+    let mut cfg = config();
+    cfg.operations_per_minute = 1;
+    cfg.max_in_flight = 1;
+    let reg = Registry::new(
+        cfg,
+        &[registration(&"a".repeat(32)), registration(&"b".repeat(32))],
+        ":1.1",
+        1,
+        time(0),
+    )?;
+    let req = request('a', DeviceOperation2::Cancel);
+    let work = reg.reserve(&req, 1, time(0))?;
+    assert!(matches!(
+        reg.reserve(&request('b', DeviceOperation2::Cancel), 1, time(0)),
+        Err(Error::DeviceCapacity)
+    ));
+    drop(work);
+    assert!(matches!(
+        reg.reserve(&req, 1, time(0)),
+        Err(Error::DeviceRate)
+    ));
+    drop(reg.reserve(&request('b', DeviceOperation2::Cancel), 1, time(0))?);
+    drop(reg.reserve(&req, 1, time(60000))?);
+    assert!(matches!(
+        reg.reserve(&req, 1, time(59999)),
+        Err(Error::DeviceClock)
+    ));
+    assert!(matches!(
+        reg.reserve(&req, 1, time(60001)),
+        Err(Error::DeviceClock)
+    ));
+    assert!(reg.reconfigure(reg.configuration()?, 2).is_ok());
+    assert!(reg.reserve(&req, 2, time(60002)).is_err());
+    let other = registry()?;
+    other.fail_clock()?;
+    assert!(other.reserve(&req, 1, time(0)).is_err());
+    Ok(())
+}
+#[test]
+fn bootstrap_failed_tags_do_not_consume_bounded_replay_evidence() -> TestResult {
+    let reg = registry()?;
+    let (server, public) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (client, _) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let op = DeviceOperation2::SealHandshake {
+        handle: client.clone(),
+        peer: public.clone(),
+        plaintext: b"private-secret".to_vec(),
+    };
+    let frame = run(&reg, 'a', op)?.bytes;
+    let mut bad = frame.clone();
+    *bad.last_mut().ok_or("frame")? ^= 1;
+    assert!(
+        run(
+            &reg,
+            'a',
+            DeviceOperation2::OpenHandshake {
+                handle: server.clone(),
+                frame: bad
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(
+        run(
+            &reg,
+            'a',
+            DeviceOperation2::OpenHandshake {
+                handle: server.clone(),
+                frame: frame.clone()
+            }
+        )?
+        .bytes,
+        b"private-secret"
+    );
+    run(&reg, 'a', DeviceOperation2::Cancel)?;
+    let (new_server, _) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    assert!(matches!(
+        run(
+            &reg,
+            'a',
+            DeviceOperation2::OpenHandshake {
+                handle: new_server,
+                frame
+            }
+        ),
+        Err(Error::Replay)
+    ));
+    // A new ephemeral credential receives a different replay binding after cancellation.
+    let (client, client_public) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let ack = run(
+        &reg,
+        'a',
+        DeviceOperation2::SealAck {
+            handle: key(&reg, 'a', DeviceKeyPurpose2::Static)?.0,
+            peer: client_public.clone(),
+            plaintext: b"ack".to_vec(),
+        },
+    )?
+    .bytes;
+    let op = DeviceOperation2::OpenAck {
+        handle: client,
+        peer: public,
+        frame: ack,
+    };
+    assert_eq!(run(&reg, 'a', op.clone())?.bytes, b"ack");
+    assert!(matches!(run(&reg, 'a', op), Err(Error::Replay)));
+    let (client, _) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    assert!(matches!(
+        run(
+            &reg,
+            'a',
+            DeviceOperation2::OpenAck {
+                handle: client,
+                peer: client_public,
+                frame: vec![4; 41]
+            }
+        ),
+        Err(Error::DeviceCapacity)
+    ));
+    Ok(())
+}
+#[test]
+fn both_native_tunnel_roles_preserve_direction_replay_and_reflection() -> TestResult {
+    let reg = registry()?;
+    let (static_a, public_a) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (static_b, public_b) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (eph_a, epublic_a) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let (eph_b, epublic_b) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let a = tunnel(
+        &reg,
+        &static_a,
+        &eph_a,
+        &public_b,
+        &epublic_b,
+        DeviceRole2::Client,
+    )?;
+    let b = tunnel(
+        &reg,
+        &static_b,
+        &eph_b,
+        &public_a,
+        &epublic_a,
+        DeviceRole2::Server,
+    )?;
+    let frame = run(
+        &reg,
+        'a',
+        DeviceOperation2::Seal {
+            handle: a.clone(),
+            plaintext: b"private-secret".to_vec(),
+        },
+    )?
+    .bytes;
+    assert!(
+        run(
+            &reg,
+            'a',
+            DeviceOperation2::Open {
+                handle: a,
+                frame: frame.clone()
+            }
+        )
+        .is_err()
+    );
+    let mut bad = frame.clone();
+    *bad.last_mut().ok_or("frame")? ^= 1;
+    assert!(
+        run(
+            &reg,
+            'a',
+            DeviceOperation2::Open {
+                handle: b.clone(),
+                frame: bad
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(
+        run(
+            &reg,
+            'a',
+            DeviceOperation2::Open {
+                handle: b.clone(),
+                frame: frame.clone()
+            }
+        )?
+        .bytes,
+        b"private-secret"
+    );
+    assert!(matches!(
+        run(
+            &reg,
+            'a',
+            DeviceOperation2::Open {
+                handle: b.clone(),
+                frame
+            }
+        ),
+        Err(Error::Replay)
+    ));
+    assert!(run(&reg, 'a', DeviceOperation2::Revoke { handle: b.clone() }).is_ok());
+    assert!(
+        run(
+            &reg,
+            'a',
+            DeviceOperation2::Seal {
+                handle: b,
+                plaintext: vec![]
+            }
+        )
+        .is_err()
+    );
+    Ok(())
+}
+#[test]
+fn invalid_initialization_inputs_and_every_operation_shape_fail_closed() -> TestResult {
+    let regs = [registration(&"a".repeat(32)), registration(&"b".repeat(32))];
+    let init = |cfg, rs: &[ApprovalScope2], peer, generation| {
+        Registry::new(cfg, rs, peer, generation, time(0))
+    };
+    assert!(init(config(), &regs, "well.known", 1).is_err());
+    assert!(init(config(), &regs, ":1.1", 0).is_err());
+    assert!(init(config(), &[], ":1.1", 1).is_err());
+    let mut duplicate = config();
+    duplicate.scopes.push(duplicate.scopes[0].clone());
+    assert!(init(duplicate, &regs, ":1.1", 1).is_err());
+    for change in 0..7 {
+        let mut cfg = config();
+        match change {
+            0 => cfg.scopes.clear(),
+            1 => cfg.max_handles = 0,
+            2 => cfg.max_in_flight = 33,
+            3 => cfg.operations_per_minute = 0,
+            4 => cfg.max_ttl_ms = 300001,
+            5 => cfg.max_message_bytes = 1048577,
+            _ => cfg.max_bootstrap_nonces = 0,
+        }
+        assert!(init(cfg, &regs, ":1.1", 1).is_err());
+    }
+    let mut rs = regs.clone();
+    rs[0].auto_approve_all = true;
+    assert!(init(config(), &rs, ":1.1", 1).is_err());
+    let mut cfg = config();
+    cfg.scopes[0].static_secret = Some([0; 32]);
+    assert!(init(cfg, &regs, ":1.1", 1).is_err());
+    let reg = registry()?;
+    let mut req = request('a', DeviceOperation2::Cancel);
+    req.call_id.clear();
+    assert!(reg.reserve(&req, 1, time(0)).is_err());
+    req.call_id = "call".into();
+    req.ttl_ms = 0;
+    assert!(reg.reserve(&req, 1, time(0)).is_err());
+    req.ttl_ms = 101;
+    assert!(reg.reserve(&req, 1, time(0)).is_err());
+    for op in [
+        DeviceOperation2::Seal {
+            handle: "a".repeat(65),
+            plaintext: vec![],
+        },
+        DeviceOperation2::SealAck {
+            handle: "a".repeat(64),
+            peer: "p".into(),
+            plaintext: vec![0; 1001],
+        },
+        DeviceOperation2::OpenAck {
+            handle: "a".repeat(64),
+            peer: "p".into(),
+            frame: vec![],
+        },
+        DeviceOperation2::OpenHandshake {
+            handle: "a".repeat(64),
+            frame: vec![0; 1074],
+        },
+    ] {
+        assert!(reg.reserve(&request('a', op), 1, time(0)).is_err());
+    }
+    let mut cfg = reg.configuration()?;
+    cfg.scopes[0].static_secret = Some([1; 32]);
+    assert!(reg.reconfigure(cfg, 2).is_err());
+    assert!(reg.reconfigure(reg.configuration()?, 1).is_err());
+    let cfg = ConfidentialConfig::new(Some(config()));
+    assert!(cfg.configuration().is_some());
+    assert_eq!(format!("{cfg:?}"), "ConfidentialConfig([REDACTED])");
     Ok(())
 }

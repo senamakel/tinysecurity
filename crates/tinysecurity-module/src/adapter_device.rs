@@ -1,7 +1,9 @@
 //! Authenticated confidential device work over exact human/audit receipt clients.
 use super::{Arc, BusResult, PolicyService, approval_failure};
 use std::sync::{OnceLock, Weak};
-use tinysecurity::crypto::device_handles::{ConfidentialRequest, Registry, Time};
+use tinysecurity::crypto::device_handles::{
+    ConfidentialConfig, ConfidentialRequest, Registry, Time,
+};
 use tinysecurity_bus::{
     ApprovalChoice2, ApprovalLifecycle2, DeviceConfig2, DeviceResponse2, EvaluateDeviceRequest2,
     ExecuteDeviceRequest2,
@@ -17,6 +19,14 @@ fn time(clock: &dyn tinysecurity::approval::Clock) -> BusResult<Time> {
         monotonic: clock.monotonic_ms(),
     })
 }
+type Configured = (Option<Arc<Registry>>, Option<DeviceConfig2>);
+struct Initialization<'a> {
+    peer: Option<&'a str>,
+    registrations: Option<&'a tinysecurity_bus::ApprovalConfig2>,
+    audit: Option<&'a tinysecurity_bus::AuditConfig2>,
+    generation: u64,
+    clock: &'a dyn tinysecurity::approval::Clock,
+}
 pub(super) fn configured(
     config: Option<DeviceConfig2>,
     peer: Option<&str>,
@@ -24,38 +34,57 @@ pub(super) fn configured(
     audit: Option<&tinysecurity_bus::AuditConfig2>,
     generation: u64,
     clock: &dyn tinysecurity::approval::Clock,
-) -> BusResult<Option<Arc<Registry>>> {
-    if let Some(current) = DEVICE.get() {
+) -> BusResult<Configured> {
+    configure(
+        config,
+        DEVICE.get(),
+        &Initialization {
+            peer,
+            registrations,
+            audit,
+            generation,
+            clock,
+        },
+    )
+}
+fn configure(
+    config: Option<DeviceConfig2>,
+    current: Option<&Option<Weak<Registry>>>,
+    init: &Initialization<'_>,
+) -> BusResult<Configured> {
+    let mut config = ConfidentialConfig::new(config);
+    if let Some(current) = current {
         return match current {
             Some(current) => {
                 let registry = current.upgrade().ok_or_else(denied)?;
-                let requested = config.unwrap_or(registry.configuration().map_err(|_| denied())?);
+                let existing = registry.configuration().map_err(|_| denied())?;
+                let requested = config.configuration().unwrap_or(&existing);
                 registry
-                    .validate_configuration(&requested, generation)
+                    .validate_configuration(requested, init.generation)
                     .map_err(|_| denied())?;
-                Ok(Some(registry))
+                // Validation prohibits credentials on reinit; this copy contains no private keys.
+                Ok((Some(registry), Some(requested.clone())))
             }
-            None if config.is_none() => Ok(None),
+            None if config.configuration().is_none() => Ok((None, None)),
             None => Err(denied()),
         };
     }
-    let Some(config) = config else {
-        return Ok(None);
-    };
-    if !audit.is_some_and(|audit| audit.required) {
+    if config.configuration().is_none() {
+        return Ok((None, None));
+    }
+    if !init.audit.is_some_and(|audit| audit.required) {
         return Err(denied());
     }
-    let registrations = registrations.ok_or_else(denied)?;
-    Registry::new(
-        config,
-        &registrations.scopes,
-        peer.ok_or_else(denied)?,
-        generation,
-        time(clock)?,
-    )
-    .map(Arc::new)
-    .map(Some)
-    .map_err(|_| denied())
+    let registrations = init.registrations.ok_or_else(denied)?;
+    let now = time(init.clock)?;
+    let peer = init.peer.ok_or_else(denied)?;
+    let actual = config.take().ok_or_else(denied)?;
+    let registry = Arc::new(
+        Registry::new(actual, &registrations.scopes, peer, init.generation, now)
+            .map_err(|_| denied())?,
+    );
+    let limits = registry.configuration().map_err(|_| denied())?;
+    Ok((Some(registry), Some(limits)))
 }
 pub(super) fn activate(registry: Option<&Arc<Registry>>) -> BusResult<()> {
     DEVICE
@@ -77,7 +106,15 @@ pub(super) fn advance(
 }
 impl PolicyService {
     fn device_time(&self) -> BusResult<Time> {
-        time(self.sandbox_clock.as_ref())
+        match time(self.sandbox_clock.as_ref()) {
+            Ok(now) => Ok(now),
+            Err(error) => {
+                if let Some(registry) = &self.device {
+                    registry.fail_clock().map_err(|_| denied())?;
+                }
+                Err(error)
+            }
+        }
     }
     pub(super) async fn device_approval(
         &self,
@@ -151,7 +188,10 @@ impl PolicyService {
         let actual = Arc::clone(&registry);
         let (work, result) = tokio::task::spawn_blocking(move || {
             let result = time(clock.as_ref())
-                .map_err(|_| tinysecurity::crypto::Error::DeviceClock)
+                .map_err(|_| {
+                    let _ = actual.fail_clock();
+                    tinysecurity::crypto::Error::DeviceClock
+                })
                 .and_then(|now| {
                     actual.execute(&work, &original.request().operation, generation, now)
                 });

@@ -26,6 +26,8 @@ pub struct DeviceConfig2 {
 pub struct DeviceScope2 {
     /// Existing approval scope identity; never a caller-asserted subject.
     pub scope_id: String,
+    /// Actual verified turn origin captured by the trusted host during initialization.
+    pub origin: crate::Origin,
     /// Optional owned X25519 credential supplied only during SDK initialization.
     /// Absent generates a process-local static key; neither variant exports it.
     pub static_secret: Option<[u8; 32]>,

@@ -928,8 +928,8 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
     )
     .await?;
     let candidate = configured_policy(config).await?;
-    let device = device::configured(
-        device_config.clone(),
+    let (device, device_limits) = device::configured(
+        device_config,
         requested_host.as_deref(),
         approval_config.as_ref(),
         audit_config.as_ref(),
@@ -983,7 +983,7 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
                 .advance_generation(candidate.info().generation)
                 .map_err(approval_failure)?;
         }
-        device::advance(device.as_ref(), device_config, candidate.info().generation)?;
+        device::advance(device.as_ref(), device_limits, candidate.info().generation)?;
         *guard = candidate;
         return Ok(());
     }

@@ -23,6 +23,7 @@ pub struct Time {
 }
 struct Scope {
     registration: ApprovalScope2,
+    origin: tinysecurity_bus::Origin,
     key: Arc<KeyPair>,
     epoch: u64,
     minute: u64,
@@ -128,6 +129,7 @@ impl Registry {
                 scope.scope_id.clone(),
                 Scope {
                     registration: registration.clone(),
+                    origin: scope.origin.clone(),
                     key: Arc::new(key),
                     epoch: 1,
                     minute: now.monotonic / 60000,
@@ -211,6 +213,9 @@ impl Registry {
     /// # Errors
     /// Rejects cancelled, revoked, expired, stale or rollback-observed work.
     pub fn validate(&self, work: &Reservation, generation: u64, now: Time) -> Result<()> {
+        if !Arc::ptr_eq(&self.0, &work.registry.0) {
+            return Err(Error::DeviceDenied);
+        }
         let mut state = self.lock()?;
         state.check_time(now)?;
         state.live(work, generation, now)
@@ -241,7 +246,7 @@ impl Registry {
             caller: tinysecurity_bus::CallerContext {
                 agent: scope.registration.subject.agent.clone(),
                 call_id: format!("device-{binding}"),
-                origin: tinysecurity_bus::Origin::Operator,
+                origin: scope.origin.clone(),
                 tier: scope.registration.ceiling.clone(),
                 ..Default::default()
             },
@@ -263,12 +268,24 @@ impl Registry {
         generation: u64,
         now: Time,
     ) -> Result<DeviceResponse2> {
+        if !Arc::ptr_eq(&self.0, &work.registry.0) {
+            return Err(Error::DeviceDenied);
+        }
         let mut state = self.lock()?;
         state.check_time(now)?;
         state.live(work, generation, now)?;
         state.prune(now);
         check_operation(operation, state.limits.max_message_bytes)?;
         state.execute(work, operation)
+    }
+    /// Latch an unavailable clock and invalidate every outstanding handle.
+    /// # Errors
+    /// Rejects a poisoned registry; it cannot authorize any further work.
+    pub fn fail_clock(&self) -> Result<()> {
+        let mut state = self.lock()?;
+        state.faulted = true;
+        state.handles.clear();
+        Ok(())
     }
     /// Return init registrations and current limits without retaining credential inputs.
     /// # Errors
@@ -651,6 +668,42 @@ impl Drop for ConfidentialRequest {
             | Op::OpenHandshake { frame, .. }
             | Op::OpenAck { frame, .. } => zeroize::Zeroize::zeroize(frame),
             _ => {}
+        }
+    }
+}
+
+/// Owned init configuration with cleanup on every early validation failure.
+pub struct ConfidentialConfig(Option<DeviceConfig2>);
+impl std::fmt::Debug for ConfidentialConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ConfidentialConfig([REDACTED])")
+    }
+}
+impl ConfidentialConfig {
+    /// Take ownership of an optional SDK credential configuration.
+    #[must_use]
+    pub fn new(config: Option<DeviceConfig2>) -> Self {
+        Self(config)
+    }
+    /// Borrow it for validation without copying private material.
+    #[must_use]
+    pub fn configuration(&self) -> Option<&DeviceConfig2> {
+        self.0.as_ref()
+    }
+    /// Move validated initialization into the native registry, which owns cleanup.
+    #[must_use]
+    pub fn take(&mut self) -> Option<DeviceConfig2> {
+        self.0.take()
+    }
+}
+impl Drop for ConfidentialConfig {
+    fn drop(&mut self) {
+        if let Some(config) = &mut self.0 {
+            for scope in &mut config.scopes {
+                if let Some(secret) = &mut scope.static_secret {
+                    zeroize::Zeroize::zeroize(secret);
+                }
+            }
         }
     }
 }
