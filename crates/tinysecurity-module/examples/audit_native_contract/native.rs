@@ -51,9 +51,44 @@ fn namespace() -> std::result::Result<(tempfile::TempDir, PathBuf), Box<dyn std:
 }
 
 #[cfg(windows)]
-fn provision(path: &Path) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let script = r#"
+const NAMESPACE_INSTALL_SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
+function Get-ExceptionKind {
+    param($exception)
+    switch ($exception.GetType().FullName) {
+        'System.UnauthorizedAccessException' { 1 }
+        'System.ArgumentException' { 2 }
+        'System.InvalidOperationException' { 3 }
+        'System.Management.Automation.CommandNotFoundException' { 4 }
+        'System.Management.Automation.MethodInvocationException' { 5 }
+        'System.Management.Automation.PSArgumentException' { 6 }
+        'System.ComponentModel.Win32Exception' { 7 }
+        'System.Management.Automation.ProviderInvocationException' { 9 }
+        'System.Management.Automation.CmdletInvocationException' { 10 }
+        'System.Management.Automation.ActionPreferenceStopException' { 11 }
+        'System.Management.Automation.ParameterBindingException' { 12 }
+        'System.Management.Automation.ItemNotFoundException' { 13 }
+        'System.Management.Automation.DriveNotFoundException' { 14 }
+        'System.Management.Automation.RuntimeException' { 15 }
+        'System.Management.Automation.SessionStateUnauthorizedAccessException' { 16 }
+        'System.Security.AccessControl.PrivilegeNotHeldException' { 17 }
+        'System.Security.SecurityException' { 18 }
+        'System.NotSupportedException' { 19 }
+        'System.Management.Automation.PSInvalidOperationException' { 20 }
+        'System.Management.Automation.ParentContainsErrorRecordException' { 21 }
+        'System.Management.Automation.PSNotSupportedException' { 22 }
+        'System.Management.Automation.ParameterBindingValidationException' { 23 }
+        'System.Management.Automation.ParameterBindingArgumentTransformationException' { 24 }
+        'System.Management.Automation.PSArgumentNullException' { 25 }
+        'System.Management.Automation.PSArgumentOutOfRangeException' { 26 }
+        'System.IO.IOException' { 27 }
+        'System.IO.DirectoryNotFoundException' { 28 }
+        'System.IO.FileNotFoundException' { 29 }
+        'System.Management.Automation.PSInvalidCastException' { 30 }
+        'System.SystemException' { 31 }
+        default { 8 }
+    }
+}
 $stage = 1
 try {
     Write-Output "audit-native-installer stage=$stage"
@@ -80,20 +115,22 @@ try {
 } catch {
     # Never render the error record: messages may contain paths or identities.
     $exception = $_.Exception
-    # Method/cmdlet wrappers otherwise hide the useful OS exception code.
-    for ($depth = 0; $depth -lt 8 -and $null -ne $exception.InnerException; $depth++) {
-        $exception = $exception.InnerException
+    $wrapper = Get-ExceptionKind $exception
+    # PowerShell can wrap provider errors in ErrorRecord instead of InnerException.
+    # Inspect only bounded exception links; no record or message is rendered.
+    for ($depth = 0; $depth -lt 8; $depth++) {
+        $candidate = $exception.InnerException
+        if ($null -eq $candidate -and $exception -is [System.Management.Automation.RuntimeException]) {
+            $candidate = $exception.ErrorRecord.Exception
+        }
+        if ($null -eq $candidate -or [object]::ReferenceEquals($candidate, $exception)) {
+            break
+        }
+        $exception = $candidate
     }
-    $kind = switch ($exception.GetType().FullName) {
-        'System.UnauthorizedAccessException' { 1 }
-        'System.ArgumentException' { 2 }
-        'System.InvalidOperationException' { 3 }
-        'System.Management.Automation.CommandNotFoundException' { 4 }
-        'System.Management.Automation.MethodInvocationException' { 5 }
-        'System.Management.Automation.PSArgumentException' { 6 }
-        'System.ComponentModel.Win32Exception' { 7 }
-        default { 8 }
-    }
+    $kind = Get-ExceptionKind $exception
+    $category = [int]$_.CategoryInfo.Category
+    if ($category -lt 0 -or $category -gt 31) { $category = 31 }
     $native = 0
     if ($exception -is [System.ComponentModel.Win32Exception]) {
         $native = $exception.NativeErrorCode
@@ -102,13 +139,24 @@ try {
     if ($kind -eq 4 -and $_.CategoryInfo.TargetName -eq 'Set-Acl') {
         $command = 1
     }
+    if ($command -eq 0 -and $_.InvocationInfo.MyCommand.Name -eq 'Set-Acl') {
+        $command = 2
+    }
     $hresult = $exception.HResult
-    Write-Output "audit-native-installer stage=$stage error=$kind hresult=$hresult native=$native command=$command"
+    Write-Output "audit-native-installer stage=$stage error=$kind hresult=$hresult native=$native command=$command wrapper=$wrapper category=$category"
     exit 1
 }
 "#;
+
+#[cfg(windows)]
+fn provision(path: &Path) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let output = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            NAMESPACE_INSTALL_SCRIPT,
+        ])
         .env("TINYSECURITY_NATIVE_DIRECTORY", path)
         .output()?;
     for line in installer_diagnostics(&output.stdout)? {
@@ -135,7 +183,7 @@ fn installer_diagnostics(stdout: &[u8]) -> Result<Vec<&str>, &'static str> {
     }
     for line in &lines {
         let fields: Vec<_> = line.split(' ').collect();
-        if !matches!(fields.len(), 2 | 6) || fields[0] != "audit-native-installer" {
+        if !matches!(fields.len(), 2 | 8) || fields[0] != "audit-native-installer" {
             return Err("native audit installer diagnostics invalid");
         }
         let number = |field: &str, key: &str, min: i32, max: i32| {
@@ -149,11 +197,13 @@ fn installer_diagnostics(stdout: &[u8]) -> Result<Vec<&str>, &'static str> {
                 .is_some()
         };
         if !number(fields[1], "stage=", 1, 14)
-            || (fields.len() == 6
-                && (!number(fields[2], "error=", 1, 8)
+            || (fields.len() == 8
+                && (!number(fields[2], "error=", 1, 31)
                     || !number(fields[3], "hresult=", i32::MIN, i32::MAX)
                     || !number(fields[4], "native=", 0, i32::MAX)
-                    || !number(fields[5], "command=", 0, 1)))
+                    || !number(fields[5], "command=", 0, 2)
+                    || !number(fields[6], "wrapper=", 1, 31)
+                    || !number(fields[7], "category=", 0, 31)))
         {
             return Err("native audit installer diagnostics invalid");
         }
