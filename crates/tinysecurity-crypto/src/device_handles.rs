@@ -3,6 +3,7 @@
 use crate::{
     Error, Result,
     device::{KeyPair, PublicKey, Role, Tunnel},
+    work_budget::{BudgetError, RateCounter, WorkBudget},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -26,8 +27,7 @@ struct Scope {
     origin: tinysecurity_bus::Origin,
     key: Arc<KeyPair>,
     epoch: u64,
-    minute: u64,
-    operations: u32,
+    rate: RateCounter,
 }
 enum Native {
     Key(Arc<KeyPair>, DeviceKeyPurpose2),
@@ -55,7 +55,7 @@ struct State {
     bootstrap: BTreeSet<(String, Vec<u8>)>,
     time: Time,
     faulted: bool,
-    in_flight: u32,
+    budget: WorkBudget,
     limits: DeviceConfig2,
 }
 /// Service-owned registry; dropping its last owner drops all private key material.
@@ -83,7 +83,7 @@ impl std::fmt::Debug for Reservation {
 impl Drop for Reservation {
     fn drop(&mut self) {
         if let Ok(mut state) = self.registry.0.lock() {
-            state.in_flight = state.in_flight.saturating_sub(1);
+            state.budget.release();
         }
     }
 }
@@ -139,8 +139,7 @@ impl Registry {
                     origin: scope.origin.clone(),
                     key: Arc::new(key),
                     epoch: 1,
-                    minute: now.monotonic / 60_000,
-                    operations: 0,
+                    rate: RateCounter::new(now.monotonic),
                 },
             );
         }
@@ -152,7 +151,7 @@ impl Registry {
             bootstrap: BTreeSet::new(),
             time: now,
             faulted: false,
-            in_flight: 0,
+            budget: WorkBudget::default(),
             limits: config.0.clone(),
         }))))
     }
@@ -180,7 +179,7 @@ impl Registry {
             return Err(Error::DeviceDenied);
         }
         check_operation(&request.operation, state.limits.max_message_bytes)?;
-        if state.in_flight >= state.limits.max_in_flight {
+        if state.budget.full(state.limits.max_in_flight) {
             return Err(Error::DeviceCapacity);
         }
         let expires_wall = now
@@ -196,17 +195,27 @@ impl Registry {
             .scopes
             .get_mut(&request.scope_id)
             .ok_or(Error::DeviceDenied)?;
-        let minute = now.monotonic / 60_000;
-        if minute != scope.minute {
-            scope.minute = minute;
-            scope.operations = 0;
-        }
-        if scope.operations >= rate {
-            return Err(Error::DeviceRate);
-        }
-        scope.operations += 1;
         let epoch = scope.epoch;
-        state.in_flight += 1;
+        let State {
+            budget,
+            scopes,
+            limits,
+            ..
+        } = &mut *state;
+        budget
+            .reserve(
+                &mut scopes
+                    .get_mut(&request.scope_id)
+                    .ok_or(Error::DeviceDenied)?
+                    .rate,
+                now.monotonic,
+                limits.max_in_flight,
+                rate,
+            )
+            .map_err(|error| match error {
+                BudgetError::Capacity => Error::DeviceCapacity,
+                BudgetError::Rate => Error::DeviceRate,
+            })?;
         Ok(Reservation {
             registry: self.clone(),
             scope: request.scope_id.clone(),

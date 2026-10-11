@@ -21,3 +21,5 @@ pub mod keyring;
 pub mod password;
 pub mod secretstore;
 pub use error::{Error, Result};
+
+mod work_budget;
