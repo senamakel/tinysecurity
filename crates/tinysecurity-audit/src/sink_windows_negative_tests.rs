@@ -319,11 +319,13 @@ try {
     $exactUser = [int]($network.UserName -ceq $account)
     Write-Output ('audit-account-stage=27 credential-separators=' + $credentialSeparators + ' domain-separators=' + $domainSeparators + ' user-separators=' + $userSeparators + ' exact-domain=' + $exactDomain + ' exact-user=' + $exactUser)
     if (($credentialSeparators -ne 1) -or ($domainSeparators -ne 0) -or ($userSeparators -ne 0) -or ($exactDomain -ne 1) -or ($exactUser -ne 1)) { throw 'credential parser must preserve the exact local identity' }
+    Write-Output ('audit-account-stage=98 parent-foreign-present=' + [int]($null -ne $env:TINYSECURITY_TEST_FOREIGN) + ' parent-foreign-nonempty=' + [int](-not [String]::IsNullOrEmpty($env:TINYSECURITY_TEST_FOREIGN)) + ' parent-owner-present=' + [int]($null -ne $env:TINYSECURITY_TEST_OWNER) + ' parent-owner-nonempty=' + [int](-not [String]::IsNullOrEmpty($env:TINYSECURITY_TEST_OWNER)) + ' parent-directory-present=' + [int]($null -ne $env:TINYSECURITY_TEST_DIRECTORY) + ' parent-directory-nonempty=' + [int](-not [String]::IsNullOrEmpty($env:TINYSECURITY_TEST_DIRECTORY)))
     $childScript = @'
 $ErrorActionPreference = 'Stop'
 [Console]::WriteLine('audit-account-stage=96 child-entry=1')
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 [Console]::WriteLine('audit-account-stage=96 identity-read=1')
+[Console]::WriteLine(('audit-account-stage=98 child-foreign-present={0} child-foreign-nonempty={1} child-owner-present={2} child-owner-nonempty={3} child-directory-present={4} child-directory-nonempty={5} identity-foreign-match={6} identity-owner-match={7}' -f [int]($null -ne $env:TINYSECURITY_TEST_FOREIGN),[int](-not [String]::IsNullOrEmpty($env:TINYSECURITY_TEST_FOREIGN)),[int]($null -ne $env:TINYSECURITY_TEST_OWNER),[int](-not [String]::IsNullOrEmpty($env:TINYSECURITY_TEST_OWNER)),[int]($null -ne $env:TINYSECURITY_TEST_DIRECTORY),[int](-not [String]::IsNullOrEmpty($env:TINYSECURITY_TEST_DIRECTORY)),[int][String]::Equals($identity.User.Value,$env:TINYSECURITY_TEST_FOREIGN,[StringComparison]::Ordinal),[int][String]::Equals($identity.User.Value,$env:TINYSECURITY_TEST_OWNER,[StringComparison]::Ordinal)))
 if ($identity.User.Value -eq $env:TINYSECURITY_TEST_OWNER) { exit 81 }
 if ($identity.User.Value -ne $env:TINYSECURITY_TEST_FOREIGN) { exit 86 }
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -390,7 +392,7 @@ exit 0
     $requiredPhases = @('audit-account-stage=90 foreign-identity=1 nonadmin=1', 'audit-account-stage=91 exact-control-read=1', 'audit-account-stage=92 private-file-denials=6', 'audit-account-stage=93 namespace-denial=1')
     $allLines = @($stdout.Result.Split([char]10) | ForEach-Object { $_.TrimEnd([char]13) } | Where-Object { $_.Length -gt 0 })
     $lines = @($allLines | Where-Object { $requiredPhases -ccontains $_ })
-    $diagnostics = @($allLines | Where-Object { $_ -cmatch '^audit-account-stage=94 parsed=1 source-first=[0-9]+ ordinal-prefix=[01] ordinal-first=[01]$|^audit-account-stage=95 preference-extra=[0-2] codepoint=[0-9]+ length=[0-9]+ category=[0-9]+ hresult=-?[0-9]+$|^audit-account-stage=96 (child-entry|identity-read)=1$' })
+    $diagnostics = @($allLines | Where-Object { $_ -cmatch '^audit-account-stage=94 parsed=1 source-first=[0-9]+ ordinal-prefix=[01] ordinal-first=[01]$|^audit-account-stage=95 preference-extra=[0-2] codepoint=[0-9]+ length=[0-9]+ category=[0-9]+ hresult=-?[0-9]+$|^audit-account-stage=96 (child-entry|identity-read)=1$|^audit-account-stage=98 child-foreign-present=[01] child-foreign-nonempty=[01] child-owner-present=[01] child-owner-nonempty=[01] child-directory-present=[01] child-directory-nonempty=[01] identity-foreign-match=[01] identity-owner-match=[01]$' })
     foreach ($line in $allLines) {
         if (($requiredPhases -ccontains $line) -or ($diagnostics -ccontains $line)) { Write-Output $line }
     }
