@@ -64,11 +64,11 @@ pub struct Limits {
     pub operations_per_minute: u32,
     /// At most 300000 milliseconds.
     pub max_ttl_ms: u32,
-    /// Per-input bound, at most one MiB.
+    /// Per-input logical-length bound, at most one MiB; backing capacity is charged separately.
     pub max_input_bytes: usize,
-    /// Aggregate retained native material bound, at most sixteen MiB.
+    /// Aggregate retained backing-capacity bound, at most sixteen MiB.
     pub max_retained_bytes: usize,
-    /// Aggregate pending private input and challenge bytes, at most sixteen MiB.
+    /// Aggregate pending input backing capacity and fixed challenge bytes, at most sixteen MiB.
     pub max_pending_bytes: usize,
     /// Combined pending, retained and generation-key bytes, at most thirty-two MiB.
     pub max_resident_bytes: usize,
@@ -121,6 +121,9 @@ impl std::ops::Deref for ConfidentialBytes {
     }
 }
 impl ConfidentialBytes {
+    fn capacity(&self) -> usize {
+        self.0.capacity()
+    }
     fn as_mut_slice(&mut self) -> &mut [u8] {
         self.0.as_mut_slice()
     }
@@ -163,7 +166,7 @@ impl Material {
                 let _ = std::mem::size_of_val(key);
                 32
             }
-            Self::Plaintext(bytes) => bytes.len(),
+            Self::Plaintext(bytes) => bytes.capacity(),
         }
     }
 }
@@ -250,7 +253,7 @@ impl Drop for Reservation {
             state.budget.release();
             state.pending_bytes = state
                 .pending_bytes
-                .saturating_sub(self.binding.input.len() + 32);
+                .saturating_sub(self.binding.input.capacity() + 32);
         }
     }
 }
@@ -553,7 +556,7 @@ impl Registry {
         };
         let pending = state
             .pending_bytes
-            .checked_add(input.len())
+            .checked_add(input.capacity())
             .and_then(|v| v.checked_add(32))
             .ok_or(Error::NativeCapacity)?;
         if pending > state.limits.max_pending_bytes

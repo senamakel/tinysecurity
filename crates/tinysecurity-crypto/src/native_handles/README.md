@@ -50,12 +50,18 @@ Clock rollback or clock-port failure permanently closes authority. Close works
 even when retained objects or pending futures still own the registry.
 
 Bounds cover registrations, handles, admitted operations, per-subject rate,
-per-input bytes, pending input/challenge bytes, retained native bytes and
+per-input logical bytes, pending input backing capacity/challenge bytes,
+retained native backing capacity and
 combined pending/retained/generation-key bytes. At most 4096 handles, 32 admitted
 operations, one MiB per input and 300000 ms lifetime are admitted. Password
 retention input bindings are at most 4112 bytes (password plus fixed salt);
 this is not a password parser or a derivation worker. Retained and pending
 ceilings are at most sixteen MiB each, combined ceiling thirty-two MiB.
+Input and plaintext Vec capacities are charged in full, even when their logical
+length is smaller. Admission never shrinks or reallocates these secret buffers
+to conceal their backing capacity. Fixed master/password keys, challenges and
+the generation key each contribute 32 bytes. Logical input ceilings remain
+separate from these backing-capacity limits.
 No wait queue exists. Cancellation releases capacity without refunding rate;
 old-generation reservations keep their private-input charges until actual Drop.
 These counters measure registry-owned secret buffers, not the complete allocator,

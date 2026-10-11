@@ -627,3 +627,107 @@ async fn denied_publication_and_close_wipe_owned_buffers_before_releasing_alloca
     });
     Ok(())
 }
+
+fn backed_input(capacity: usize) -> Zeroizing<Vec<u8>> {
+    let mut bytes = Zeroizing::new(vec![b'x'; capacity]);
+    bytes.truncate(1);
+    bytes
+}
+fn reserve_backed(reg: &Registry, capacity: usize) -> Result<Reservation> {
+    reg.reserve(Request {
+        registration: "a",
+        authenticated_peer: ":1.1",
+        purpose: Purpose::ConfigUserMaster,
+        kind: OperationKind::RetainPlaintext,
+        call_id: "call",
+        input: backed_input(capacity),
+        ttl_ms: 100,
+        generation: 1,
+    })
+}
+#[test]
+fn pending_backing_capacity_cannot_bypass_logical_input_and_resident_limits() -> TestResult {
+    for limits in [
+        Limits {
+            max_input_bytes: 1,
+            max_pending_bytes: 33,
+            ..Limits::default()
+        },
+        Limits {
+            max_input_bytes: 1,
+            max_resident_bytes: 66,
+            ..Limits::default()
+        },
+    ] {
+        let (reg, _) = registry(limits)?;
+        assert!(matches!(
+            reserve_backed(&reg, 1_048_576),
+            Err(Error::NativeCapacity)
+        ));
+        assert_eq!(reg.lock()?.pending_bytes, 0);
+    }
+    Ok(())
+}
+#[tokio::test]
+async fn retained_backing_capacity_cannot_bypass_retained_or_resident_limits() -> TestResult {
+    for limits in [
+        Limits {
+            max_input_bytes: 1,
+            max_retained_bytes: 1,
+            ..Limits::default()
+        },
+        Limits {
+            max_input_bytes: 1,
+            max_resident_bytes: 66,
+            ..Limits::default()
+        },
+    ] {
+        let (reg, _) = registry(limits)?;
+        let auth = reg
+            .authorize_routine(reserve_backed(&reg, 1)?, &Routine)
+            .await?;
+        assert!(matches!(
+            reg.retain_plaintext(auth, backed_input(1_048_576)),
+            Err(Error::NativeCapacity)
+        ));
+        assert_eq!(reg.lock()?.retained_bytes, 0);
+        assert_eq!(reg.lock()?.pending_bytes, 0);
+    }
+    Ok(())
+}
+#[tokio::test]
+async fn admitted_backing_capacity_stays_charged_until_cancel_publication_and_revoke() -> TestResult
+{
+    let (reg, _) = registry(Limits {
+        max_input_bytes: 1,
+        ..Limits::default()
+    })?;
+    let work = reserve_backed(&reg, 128)?;
+    assert_eq!(reg.lock()?.pending_bytes, 160);
+    reg.advance_generation(2)?;
+    assert_eq!(reg.lock()?.pending_bytes, 160);
+    drop(work);
+    assert_eq!(reg.lock()?.pending_bytes, 0);
+    let work = reg.reserve(Request {
+        registration: "a",
+        authenticated_peer: ":1.1",
+        purpose: Purpose::ConfigUserMaster,
+        kind: OperationKind::RetainPlaintext,
+        call_id: "call",
+        input: backed_input(128),
+        ttl_ms: 100,
+        generation: 2,
+    })?;
+    let auth = reg.authorize_routine(work, &Routine).await?;
+    assert_eq!(reg.lock()?.pending_bytes, 160);
+    let handle = reg.retain_plaintext(auth, backed_input(256))?;
+    assert_eq!(reg.lock()?.pending_bytes, 0);
+    assert_eq!(reg.lock()?.retained_bytes, 256);
+    reg.validate_handle(&handle, "a", Purpose::ConfigUserMaster, ":1.1", 2)?;
+    assert_eq!(reg.lock()?.retained_bytes, 256);
+    reg.revoke_scope("b")?;
+    assert_eq!(reg.lock()?.retained_bytes, 256);
+    reg.revoke_scope("a")?;
+    assert_eq!(reg.lock()?.retained_bytes, 0);
+    Ok(())
+}
