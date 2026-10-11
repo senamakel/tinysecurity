@@ -749,6 +749,9 @@ impl Inner {
             })?;
         state.pending_bytes += charge;
         state.reserved_tokens += usize::from(token);
+        // Reserve retained output atomically before a matched code can burn.
+        // Publication transfers this charge; cancellation refunds it on Drop.
+        state.retained_bytes += extra;
         Ok(Reservation {
             inner: Arc::clone(self),
             account: index,
@@ -818,6 +821,9 @@ impl Drop for Reservation {
                     account.challenge = None;
                     account.reference = None;
                 }
+            }
+            if self.token && !self.finished {
+                state.retained_bytes = state.retained_bytes.saturating_sub(TOKEN_BYTES);
             }
             state.pending_bytes = state.pending_bytes.saturating_sub(self.charge);
             state.reserved_tokens = state
@@ -1389,7 +1395,7 @@ impl PairingOwner {
         account.accepted = Some(delivery.binding);
         let epoch = account.epoch;
         state.tokens += 1;
-        state.retained_bytes += TOKEN_BYTES;
+        // The output's retained charge was acquired before code consumption.
         reserved.as_mut().ok_or(Error::NativeDenied)?.finished = true;
         drop(state);
         Ok(VerifyOutcome::Accepted(AcceptedPairing {
@@ -1402,22 +1408,23 @@ impl PairingOwner {
     }
     /// Idempotently invalidate first-run challenge and pending work, without grant.
     /// # Errors
-    /// Denies stale requests, admission limits and clock faults.
+    /// Denies stale requests and clock faults; traffic admission cannot block this fence.
     pub fn invalidate(&self, request: &TrustedAccountRequest<'_>) -> Result<()> {
         self.fence_account(request, false)
     }
     /// Revoke this account, including configured and committed token authority.
     /// # Errors
-    /// Denies stale requests, admission limits and clock faults.
+    /// Denies stale requests and clock faults; traffic admission cannot block this fence.
     pub fn revoke_account(&self, request: &TrustedAccountRequest<'_>) -> Result<()> {
         self.fence_account(request, true)
     }
     fn fence_account(&self, request: &TrustedAccountRequest<'_>, revoke: bool) -> Result<()> {
-        let permit;
+        // Nonqueued control work uses only the bounded registration table and
+        // existing account state. No allocation, future or traffic permit is
+        // needed, so pending work and exhausted rates cannot prevent fencing.
         let mut state = self.inner.lock()?;
         self.inner.sample(&mut state)?;
         let index = Inner::index(&state, request)?;
-        permit = self.inner.admit(&mut state, index, false, false)?;
         let account = &mut state.accounts[index];
         let Some(epoch) = account.epoch.checked_add(1) else {
             state.close();
@@ -1435,8 +1442,6 @@ impl PairingOwner {
             account.revoked = true;
             state.tokens = state.tokens.saturating_sub(number);
         }
-        drop(state);
-        drop(permit);
         Ok(())
     }
     /// Strictly advance generation and permanently revoke all old account state.

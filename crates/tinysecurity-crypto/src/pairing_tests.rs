@@ -1171,3 +1171,230 @@ async fn matched_code_stays_burned_after_bounded_nonce_collision_and_entropy_fai
         PairingOwner::new(vec![], 1, Limits::default(), 1, clock, consumer, verifier).checked();
     production.close().checked();
 }
+
+// Account-neutral internal port used only to prove aggregate admission.
+struct AggregateConsumer;
+impl NativePairingConsumer for AggregateConsumer {
+    fn stage<'a>(&'a self, delivery: &'a StagedDelivery) -> Verification<'a, StageAck> {
+        Box::pin(async move {
+            let mut backing = delivery.allocate_buffer(67)?;
+            delivery.stage_into(&mut backing)
+        })
+    }
+    fn complete<'a>(&'a self, delivery: &'a StagedDelivery) -> Verification<'a, DeliveryAck> {
+        Box::pin(async move { delivery.acknowledge_delivery() })
+    }
+}
+#[tokio::test]
+async fn parallel_grants_reserve_retained_headroom_before_burning_second_code() {
+    let (_, clock, _, verifier, entropy) = setup(true, vec![], Limits::default());
+    let create = |limits| {
+        let mut second = registration(true, vec![]);
+        second.account = "second".into();
+        Arc::new(
+            PairingOwner::construct(
+                vec![registration(true, vec![]), second],
+                1,
+                limits,
+                300_000,
+                clock.clone(),
+                Arc::new(AggregateConsumer),
+                verifier.clone(),
+                entropy.clone(),
+            )
+            .checked(),
+        )
+    };
+    let baseline = create(Limits::default())
+        .inner
+        .state
+        .lock()
+        .checked()
+        .retained_bytes;
+    let ceiling = baseline + TOKEN_BYTES;
+    let owner = create(Limits {
+        retained_bytes: ceiling,
+        ..Limits::default()
+    });
+    let other = TrustedAccountRequest {
+        account: "second",
+        ..account_request()
+    };
+    let first = reference(&owner).await;
+    let second = match owner.begin(&other).await.checked() {
+        BeginOutcome::Active(reference) => reference,
+        BeginOutcome::Inactive => unreachable!("second challenge must be active"),
+    };
+    verifier.pause.store(true, Ordering::SeqCst);
+    let task_owner = owner.clone();
+    let task = tokio::spawn(async move { task_owner.verify(attempt(&first, "000000")).await });
+    verifier.entered.notified().await;
+    let mut inbound = attempt(&second, "000000");
+    inbound.account = other;
+    // Poll exactly through admission. If admitted, the same persistence barrier
+    // holds the second future; never wait on that barrier to detect the defect.
+    let mut competing = Box::pin(owner.verify(inbound));
+    let result =
+        std::future::poll_fn(|cx| std::task::Poll::Ready(competing.as_mut().poll(cx))).await;
+    assert!(matches!(
+        result,
+        std::task::Poll::Ready(Err(Error::NativeCapacity))
+    ));
+    assert!(
+        owner.inner.state.lock().checked().accounts[1]
+            .challenge
+            .is_some()
+    );
+    assert_eq!(verifier.calls.load(Ordering::SeqCst), 1);
+    assert!(owner.inner.state.lock().checked().retained_bytes <= ceiling);
+    drop(competing);
+    verifier.resume.notify_one();
+    assert!(matches!(
+        task.await.checked().checked(),
+        VerifyOutcome::Accepted(_)
+    ));
+    let state = owner.inner.state.lock().checked();
+    assert_eq!(state.retained_bytes, ceiling);
+    assert_eq!(state.reserved_tokens, 0);
+    assert_eq!(state.tokens, 1);
+}
+#[tokio::test]
+async fn account_fences_ignore_full_traffic_capacity_and_exhausted_rate() {
+    for revoke in [false, true] {
+        let (_, clock, consumer, verifier, entropy) = setup(true, vec![], Limits::default());
+        let mut second = registration(false, vec!["second token".into()]);
+        second.account = "second".into();
+        let owner = Arc::new(
+            PairingOwner::construct(
+                vec![registration(true, vec![]), second],
+                1,
+                Limits {
+                    in_flight: 1,
+                    rate: 1,
+                    ..Limits::default()
+                },
+                300_000,
+                clock,
+                consumer.clone(),
+                verifier,
+                entropy,
+            )
+            .checked(),
+        );
+        consumer.pause.store(true, Ordering::SeqCst);
+        let task_owner = owner.clone();
+        let task = tokio::spawn(async move { task_owner.begin(&account_request()).await });
+        consumer.entered.notified().await;
+        let binding = owner.inner.state.lock().checked().accounts[0]
+            .pending
+            .as_ref()
+            .checked()
+            .binding;
+        let delivery = StagedDelivery {
+            inner: owner.inner.clone(),
+            account: 0,
+            binding,
+        };
+        let mut held = delivery.allocate_buffer(512).checked();
+        held.with_bytes(|bytes| {
+            bytes.fill(7);
+            Ok(())
+        })
+        .checked();
+        let held_charge = held.charge;
+        assert!(matches!(
+            owner.status(&account_request()),
+            Err(Error::NativeCapacity)
+        ));
+        if revoke {
+            owner.revoke_account(&account_request()).checked();
+        } else {
+            owner.invalidate(&account_request()).checked();
+        }
+        assert!(held.bytes.lock().checked().iter().all(|byte| *byte == 0));
+        assert!(
+            held.with_bytes(|bytes| {
+                bytes.fill(8);
+                Ok(())
+            })
+            .is_err()
+        );
+        consumer.resume.notify_one();
+        assert!(matches!(task.await.checked(), Err(Error::NativeDenied)));
+        assert_eq!(
+            owner.inner.state.lock().checked().pending_bytes,
+            held_charge
+        );
+        // With the in-flight slot now free, rate exhaustion remains. Repeated
+        // invalidation still works without resetting/refunding the traffic rate.
+        if !revoke {
+            assert!(matches!(
+                owner.status(&account_request()),
+                Err(Error::NativeRate)
+            ));
+            owner.invalidate(&account_request()).checked();
+        }
+        let other = TrustedAccountRequest {
+            account: "second",
+            ..account_request()
+        };
+        assert!(owner.authenticate(&other, b"second token").checked());
+        drop(held);
+        assert_eq!(owner.inner.state.lock().checked().pending_bytes, 0);
+    }
+}
+
+#[test]
+fn account_fences_ignore_exhausted_rate_without_pending_work() {
+    for revoke in [false, true] {
+        let (owner, _, _, _, _) = setup(
+            true,
+            vec![],
+            Limits {
+                rate: 1,
+                ..Limits::default()
+            },
+        );
+        assert!(!owner.authenticate(&account_request(), b"unknown").checked());
+        assert!(matches!(
+            owner.status(&account_request()),
+            Err(Error::NativeRate)
+        ));
+        if revoke {
+            owner.revoke_account(&account_request()).checked();
+        } else {
+            owner.invalidate(&account_request()).checked();
+        }
+        let state = owner.inner.state.lock().checked();
+        assert_eq!(state.accounts[0].epoch, 1);
+        assert!(!state.accounts[0].initial);
+        assert_eq!(state.accounts[0].revoked, revoke);
+    }
+}
+
+#[tokio::test]
+async fn unpublished_retained_token_reservation_releases_once_on_cancel() {
+    let (owner, _, _, verifier, _) = setup(true, vec![], Limits::default());
+    let reference = reference(&owner).await;
+    let baseline = owner.inner.state.lock().checked().retained_bytes;
+    verifier.pause.store(true, Ordering::SeqCst);
+    let task_owner = owner.clone();
+    let task = tokio::spawn(async move { task_owner.verify(attempt(&reference, "000000")).await });
+    verifier.entered.notified().await;
+    assert_eq!(
+        owner.inner.state.lock().checked().retained_bytes,
+        baseline + TOKEN_BYTES
+    );
+    owner.invalidate(&account_request()).checked();
+    // The admitted future still owns output capacity until it drops.
+    assert_eq!(
+        owner.inner.state.lock().checked().retained_bytes,
+        baseline + TOKEN_BYTES
+    );
+    task.abort();
+    let _ = task.await;
+    let state = owner.inner.state.lock().checked();
+    assert_eq!(state.retained_bytes, baseline);
+    assert_eq!(state.reserved_tokens, 0);
+    assert_eq!(state.tokens, 0);
+}
