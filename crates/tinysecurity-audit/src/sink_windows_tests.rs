@@ -65,6 +65,7 @@ pub(super) fn fixture()
     let path = dir.path().join("audit");
     // The authoritative namespace exists before the sink accepts receipts.
     let mut journal = OpenOptions::new()
+        .write(true) // Rust validates create_new independently of the custom access mask.
         .access_mode(0xc008_0000) // GENERIC_READ | GENERIC_WRITE | WRITE_OWNER
         .create_new(true)
         .open(dir.path().join("audit.journal"))?;
