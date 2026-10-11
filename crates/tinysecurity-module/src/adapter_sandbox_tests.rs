@@ -602,3 +602,7 @@ async fn copied_artifact_cannot_authorize_changed_concrete_spawn_operation()
     );
     Ok(())
 }
+
+#[cfg(unix)]
+#[path = "adapter_sandbox_review_tests.rs"]
+mod review_tests;

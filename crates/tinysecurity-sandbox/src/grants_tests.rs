@@ -155,3 +155,6 @@ impl<T> Required for Option<T> {
         self.ok_or_else(|| "missing test fixture".into())
     }
 }
+
+#[path = "grants_review_tests.rs"]
+mod review_tests;
