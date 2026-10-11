@@ -41,6 +41,33 @@ impl MasterSlot {
         }
     }
 }
+/// A trusted immutable binding between a legacy reader and its historical slot.
+/// This generic store binding grants no native file access or mutation authority.
+pub struct LegacySource {
+    reader: Arc<dyn SecretStore>,
+    slot: MasterSlot,
+}
+impl std::fmt::Debug for LegacySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LegacySource([redacted])")
+    }
+}
+impl LegacySource {
+    /// Bind a known store to the exact slot to read, without performing I/O.
+    /// Applicability and slot validity are checked by resolver construction.
+    #[must_use]
+    pub fn at_slot(reader: Arc<dyn SecretStore>, slot: MasterSlot) -> Self {
+        Self { reader, slot }
+    }
+}
+fn validated_name(slot: &MasterSlot) -> Result<String> {
+    if matches!(slot, MasterSlot::User(user) if user.is_empty() || user.contains(':')) {
+        return Err(Error::InvalidInput);
+    }
+    let name = slot.name();
+    tinystoragedrivers::secrets::validate_name(&name).map_err(|_| Error::InvalidInput)?;
+    Ok(name)
+}
 /// Trusted injected entropy source; production delegates to the driver.
 pub trait MasterMint: Send + Sync {
     /// Generate a new native master only after all registered sources are absent.
@@ -73,7 +100,7 @@ impl MasterKey {
 /// Ordered immutable store inventory established by trusted construction.
 pub struct MasterResolver {
     target: Arc<dyn SecretStore>,
-    legacy: Vec<Arc<dyn SecretStore>>,
+    legacy: Vec<LegacySource>,
     name: String,
     mint: Arc<dyn MasterMint>,
     reserved: AtomicBool,
@@ -94,13 +121,45 @@ impl MasterResolver {
         slot: &MasterSlot,
         mint: Arc<dyn MasterMint>,
     ) -> Result<Self> {
-        let name = slot.name();
-        if legacy.len() > 3
-            || matches!(slot, MasterSlot::User(user) if user.is_empty() || user.contains(':'))
-        {
+        Self::new_with_sources(
+            target,
+            legacy
+                .into_iter()
+                .map(|reader| LegacySource::at_slot(reader, slot.clone()))
+                .collect(),
+            slot,
+            mint,
+        )
+    }
+    /// Bind an ordered inventory of at most three source readers and slots.
+    /// Exact slots are allowed; only File/User bindings may cross slots, for
+    /// configuration masters. File denotes a generic named store entry here.
+    /// No filesystem capability or cross-provider CAS is provided.
+    /// # Errors
+    /// Rejects invalid identities, excessive inventory and cross-purpose bindings
+    /// before any target or source I/O.
+    pub fn new_with_sources(
+        target: Arc<dyn SecretStore>,
+        legacy: Vec<LegacySource>,
+        slot: &MasterSlot,
+        mint: Arc<dyn MasterMint>,
+    ) -> Result<Self> {
+        if legacy.len() > 3 {
             return Err(Error::InvalidInput);
         }
-        tinystoragedrivers::secrets::validate_name(&name).map_err(|_| Error::InvalidInput)?;
+        let name = validated_name(slot)?;
+        for source in &legacy {
+            validated_name(&source.slot)?;
+            if source.slot != *slot
+                && !matches!(
+                    (slot, &source.slot),
+                    (MasterSlot::User(_), MasterSlot::File)
+                        | (MasterSlot::File, MasterSlot::User(_))
+                )
+            {
+                return Err(Error::InvalidInput);
+            }
+        }
         Ok(Self {
             target,
             legacy,
@@ -138,7 +197,8 @@ impl MasterResolver {
         let mut selected: Option<(MasterKey, Zeroizing<Vec<u8>>)> = None;
         for source in &self.legacy {
             if let Some(bytes) = source
-                .get(&self.name)
+                .reader
+                .get(&source.slot.name())
                 .await
                 .map_err(|e| project_error(&e))?
             {

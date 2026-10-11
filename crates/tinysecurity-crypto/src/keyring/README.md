@@ -27,9 +27,18 @@ library. Driver native key-creation locks do not establish cross-provider
 migration atomicity.
 
 The app:master_key, {user}:secretstore.master_key, and .secret_key slots remain
-distinct. This checkpoint binds target and all registered sources to one slot.
-Explicit source-slot registration for legacy .secret_key-to-user migration remains
-pending; no filesystem I/O or cross-slot fallback is implemented.
+distinct. `MasterResolver::new` preserves same-slot registration; the typed
+`new_with_sources` constructor takes private-field `LegacySource::at_slot`
+bindings. Each registered source is read through its own slot. Exact slots and
+User/File configuration-master mappings are allowed; App/User, App/File and
+different-user mappings are rejected before I/O. Inventory stays bounded to
+three sources, with invalid user identities rejected during construction.
+
+A File source or target here is only the `.secret_key` named entry of an injected
+SecretStore. This library performs no filesystem operations and supplies no
+native protected-file capability. Binding a generic encrypted map does not turn
+its named entry into a plaintext key-file reader. The driver-owned protected
+read-only file accessor and native platform acceptance remain separate work.
 
 No method is advertised through TinyBus at this checkpoint. Native keyring
 providers, durable consent callbacks, handles and real three-OS acceptance
