@@ -352,6 +352,18 @@ exit 0
     if ($_.Exception -is [UnauthorizedAccessException]) { $category = 1 }
     elseif ($_.Exception -is [ComponentModel.Win32Exception]) { $category = 2 }
     Write-Output ('audit-account-stage=' + $stage + ' category=' + $category + ' hresult=' + $_.Exception.HResult)
+    # Start-Process can discard the native exception. Classify only an exact
+    # localized Win32-message suffix against this bounded numeric vocabulary.
+    # Raw exception text stays in memory and ambiguous matches report zero.
+    $message = $_.Exception.Message.TrimEnd([char[]]@('.', ' ', [char]13, [char]10))
+    $matches = @()
+    foreach ($candidate in @(2, 3, 5, 8, 14, 87, 193, 233, 267, 740, 1058, 1060, 1314, 1326, 1330, 1385, 1450, 1783)) {
+        $suffix = [ComponentModel.Win32Exception]::new($candidate).Message.TrimEnd([char[]]@('.', ' ', [char]13, [char]10))
+        if ($message.EndsWith($suffix, [StringComparison]::Ordinal)) { $matches += $candidate }
+    }
+    $derived = 0
+    if ($matches.Count -eq 1) { $derived = $matches[0] }
+    Write-Output ('audit-account-stage=' + $stage + ' message-derived-code=' + $derived + ' candidates=' + $matches.Count)
     $exception = $_.Exception
     for ($depth = 0; ($null -ne $exception) -and ($depth -lt 8); $depth++) {
         $native = 0
