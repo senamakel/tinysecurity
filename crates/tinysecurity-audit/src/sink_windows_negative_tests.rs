@@ -250,6 +250,10 @@ fn windows_second_ordinary_account_cannot_read_or_replace_the_namespace()
     // The privileged test installer creates a temporary ordinary local account.
     // Its generated password stays inside PowerShell memory, never in arguments,
     // environment, stdout, diagnostics or a persisted test file.
+    eprintln!(
+        "audit-account-stage=0 outer-script-units={}",
+        ORDINARY_ACCOUNT_SCRIPT.encode_utf16().count()
+    );
     let output = std::process::Command::new("powershell.exe")
         .args([
             "-NoProfile",
@@ -263,6 +267,18 @@ fn windows_second_ordinary_account_cannot_read_or_replace_the_namespace()
     eprintln!(
         "audit-stage=ordinary-account exit={:?}",
         output.status.code()
+    );
+    // Startup failures may occur before the script's first guarded operation.
+    // Classify fixed PowerShell error identifiers in memory; never render stderr.
+    let error_text = String::from_utf8_lossy(&output.stderr);
+    eprintln!(
+        "audit-account-stage=1 stdout-bytes={} stderr-bytes={} parser-error={} command-not-found={} security-error={} utf16-stdout={}",
+        output.stdout.len(),
+        output.stderr.len(),
+        u8::from(error_text.contains("ParserError")),
+        u8::from(error_text.contains("CommandNotFoundException")),
+        u8::from(error_text.contains("PSSecurityException")),
+        u8::from(output.stdout.starts_with(&[0xff, 0xfe]))
     );
     // Only the helper's fixed numeric diagnostics are forwarded; raw PowerShell
     // errors can contain account details and must never enter test logs.
@@ -291,25 +307,44 @@ fn windows_second_ordinary_account_cannot_read_or_replace_the_namespace()
 
 const ORDINARY_ACCOUNT_SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
-$account = 'tsa' + [Guid]::NewGuid().ToString('N').Substring(0, 16)
-$password = ConvertTo-SecureString ('Tsa!A1' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
+[Console]::WriteLine('audit-account-stage=2 outer-entry=1')
+$account = $null
+$password = $null
 $created = $false
 $process = $null
 $started = $false
-$stage = 10
+$stage = 3
 try {
+    $account = 'tsa' + [Guid]::NewGuid().ToString('N').Substring(0, 16)
+    Write-Output 'audit-account-stage=3 account-generated=1'
+    $stage = 4
+    $password = ConvertTo-SecureString ('Tsa!A1' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
+    Write-Output 'audit-account-stage=4 password-generated=1'
+    $stage = 10
     New-LocalUser -Name $account -Password $password | Out-Null
     $created = $true
+    Write-Output 'audit-account-stage=10 account-created=1'
     $stage = 20
     Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $account
+    Write-Output 'audit-account-stage=20 group-added=1'
     $stage = 25
     $env:TINYSECURITY_TEST_FOREIGN = (Get-LocalUser -Name $account).SID.Value
+    Write-Output 'audit-account-stage=25 identity-read=1'
+    $stage = 21
     $protected = @('', 'audit', 'audit.1', 'audit.2', 'audit.3', 'audit.lock', 'audit.journal')
     $acls = @($protected | ForEach-Object { (Get-Acl (Join-Path $env:TINYSECURITY_TEST_DIRECTORY $_)).Sddl })
+    Write-Output 'audit-account-stage=21 acl-snapshots=1'
+    $stage = 22
     $marker = Join-Path $env:TINYSECURITY_TEST_DIRECTORY 'read-control'
     $acl = Get-Acl $marker
+    Write-Output 'audit-account-stage=22 control-acl-read=1'
+    $stage = 23
     $acl.SetSecurityDescriptorSddlForm(('O:' + $env:TINYSECURITY_TEST_OWNER + 'D:P(A;;FA;;;' + $env:TINYSECURITY_TEST_OWNER + ')(A;;FR;;;' + $env:TINYSECURITY_TEST_FOREIGN + ')'))
+    Write-Output 'audit-account-stage=23 control-acl-built=1'
+    $stage = 24
     Set-Acl -LiteralPath $marker -AclObject $acl
+    Write-Output 'audit-account-stage=24 control-acl-installed=1'
+    $stage = 26
     $credential = [PSCredential]::new(($env:COMPUTERNAME + '\' + $account), $password)
     $stage = 27
     $network = $credential.GetNetworkCredential()
