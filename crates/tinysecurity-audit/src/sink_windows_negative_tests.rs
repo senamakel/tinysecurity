@@ -309,6 +309,15 @@ try {
     $acl.SetSecurityDescriptorSddlForm(('O:' + $env:TINYSECURITY_TEST_OWNER + 'D:P(A;;FA;;;' + $env:TINYSECURITY_TEST_OWNER + ')(A;;FR;;;' + $env:TINYSECURITY_TEST_FOREIGN + ')'))
     Set-Acl -LiteralPath $marker -AclObject $acl
     $credential = [PSCredential]::new(($env:COMPUTERNAME + '\' + $account), $password)
+    $stage = 27
+    $network = $credential.GetNetworkCredential()
+    $credentialSeparators = $credential.UserName.Split([char]92).Length - 1
+    $domainSeparators = $network.Domain.Split([char]92).Length - 1
+    $userSeparators = $network.UserName.Split([char]92).Length - 1
+    $exactDomain = [int]($network.Domain -ceq $env:COMPUTERNAME)
+    $exactUser = [int]($network.UserName -ceq $account)
+    Write-Output ('audit-account-stage=27 credential-separators=' + $credentialSeparators + ' domain-separators=' + $domainSeparators + ' user-separators=' + $userSeparators + ' exact-domain=' + $exactDomain + ' exact-user=' + $exactUser)
+    if (($credentialSeparators -ne 1) -or ($domainSeparators -ne 0) -or ($userSeparators -ne 0) -or ($exactDomain -ne 1) -or ($exactUser -ne 1)) { throw 'credential parser must preserve the exact local identity' }
     $childScript = @'
 $ErrorActionPreference = 'Stop'
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -376,13 +385,32 @@ exit 0
     exit 1
 } finally {
     try {
-        if ($null -ne $process) {
-            try {
-                if (-not $process.HasExited) { $process.Kill() }
-                $process.WaitForExit()
-            } finally { $process.Dispose() }
+        $terminated = $null -eq $process
+        try {
+            if ($null -ne $process) {
+                try {
+                    if (-not $process.HasExited) { $process.Kill() }
+                    $process.WaitForExit()
+                    $terminated = $true
+                } finally {
+                    try {
+                        if (-not $terminated) {
+                            if (-not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
+                            $terminated = $process.HasExited
+                        }
+                    } finally { $process.Dispose() }
+                }
+            }
+        } finally {
+            if ($created) {
+                if ($terminated) { Remove-LocalUser -Name $account }
+                else {
+                    Disable-LocalUser -Name $account
+                    Write-Output 'audit-account-stage=71 cleanup-incomplete=1'
+                    throw 'owned helper termination unconfirmed; disabled account needs cleanup'
+                }
+            }
         }
-        if ($created) { Remove-LocalUser -Name $account }
     } catch {
         Write-Output ('audit-account-stage=70 hresult=' + $_.Exception.HResult)
         exit 1
