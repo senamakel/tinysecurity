@@ -1054,3 +1054,54 @@ async fn source_expiring_during_audit_never_poison_durable_subject_rows() -> Res
     }
     Ok(())
 }
+#[tokio::test]
+async fn sandbox_host_network_requires_exact_authenticated_human_once_despite_auto_all()
+-> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    let mut cfg = config();
+    cfg.scopes[0].auto_approve_all = true;
+    cfg.scopes[0].require_approval = false;
+    let owner = Engine::new(
+        cfg,
+        f.clone(),
+        clock,
+        Redactor::new(&RedactorConfig::default()).map_err(|_| Error::Invalid)?,
+    )?;
+    let mut begin = request();
+    begin.request.call.tool = "sandbox_host_network".into();
+    begin.request.call.checks = vec![Check::Unknown {
+        description: "sandbox_host_network".into(),
+    }];
+    let row = owner.begin(begin.clone()).await?;
+    assert_eq!(row.state, ApprovalLifecycle2::Pending);
+    assert!(row.judge.is_none());
+    assert!(row.attribution.is_none());
+    let approved = owner.decide(decision(&row)).await?;
+    assert!(approved.decision_ticket_sha256.is_some());
+    let mut consume = action(&row, 3);
+    consume.request = begin.request.clone();
+    let reserved = owner.consume(consume.clone()).await?;
+    assert_eq!(reserved.state, ApprovalLifecycle2::Reserved);
+    assert!(owner.consume(consume).await.is_err());
+    let mut other = begin;
+    other.request.caller.call_id = "different-plan".into();
+    other.audit = audit(4);
+    let row = owner.begin(other).await?;
+    assert_eq!(row.state, ApprovalLifecycle2::Pending);
+    f.choice.store(1, Ordering::SeqCst);
+    owner
+        .decide(DecideRequest2 {
+            audit: audit(5),
+            ..decision(&row)
+        })
+        .await?;
+    let mut consume = action(&row, 6);
+    consume.request.call.tool = "sandbox_host_network".into();
+    consume.request.call.checks = vec![Check::Unknown {
+        description: "sandbox_host_network".into(),
+    }];
+    consume.request.caller.call_id = "different-plan".into();
+    assert!(owner.consume(consume).await.is_err());
+    Ok(())
+}

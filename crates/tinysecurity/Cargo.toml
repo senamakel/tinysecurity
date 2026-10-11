@@ -11,6 +11,7 @@ categories = ["authentication"]
 publish = false
 
 [dependencies]
+tinysecurity-sandbox.workspace = true
 # Native judge and bounded approval rules.
 tinysecurity-auto.workspace = true
 # Durable exact approvals remain inside the native module.

@@ -17,9 +17,17 @@ static APPROVALS: OnceLock<
         Arc<tinysecurity::approval::Engine>,
     )>,
 > = OnceLock::new();
+static SANDBOX: OnceLock<
+    Option<(
+        tinysecurity_bus::SandboxConfig2,
+        Arc<tinysecurity::sandbox::Engine>,
+    )>,
+> = OnceLock::new();
 static ACTIVE: OnceLock<Arc<RwLock<Policy>>> = OnceLock::new();
 #[derive(Clone)]
 struct PolicyService {
+    sandbox_clock: Arc<dyn tinysecurity::approval::Clock>,
+    sandbox: Option<Arc<tinysecurity::sandbox::Engine>>,
     approvals: Option<Arc<tinysecurity::approval::Engine>>,
     policy: Arc<RwLock<Policy>>,
     audit: Option<Arc<crate::callbacks::AuditClient>>,
@@ -169,6 +177,48 @@ impl PolicyService {
 }
 #[tinybus::interface(name = "ai.tinyhumans.tinysecurity.Policy")]
 impl PolicyService {
+    async fn plan(
+        &self,
+        _request: tinysecurity_bus::SandboxPlanRequest,
+    ) -> BusResult<tinysecurity_bus::SandboxPlanResponse> {
+        let generation = { self.read()?.info().generation };
+        std::future::ready(Ok(tinysecurity_bus::SandboxPlanResponse {
+            decision: Decision {
+                generation,
+                verdict: tinysecurity_bus::Verdict::Deny {
+                    reason: tinysecurity_bus::DenialReason::InvalidContext,
+                },
+                cacheable: false,
+            },
+            backend: None,
+            grants: vec![],
+            network: tinysecurity_bus::NetworkPolicy::None,
+            limits: tinysecurity_bus::ResourceLimits {
+                memory_bytes: 0,
+                cpu_millis: 0,
+                processes: 0,
+            },
+        }))
+        .await
+    }
+    async fn evaluate_sandbox_approval2(
+        &self,
+        request: tinysecurity_bus::EvaluateSandboxApprovalRequest2,
+    ) -> BusResult<tinysecurity_bus::ApprovalRow2> {
+        self.sandbox_approval(request).await
+    }
+    async fn consume_sandbox_plan2(
+        &self,
+        request: tinysecurity_bus::ConsumeSandboxPlanRequest2,
+    ) -> BusResult<tinysecurity_bus::ConsumeSandboxPlanResponse2> {
+        self.sandbox_consume(request).await
+    }
+    async fn plan2(
+        &self,
+        request: tinysecurity_bus::SandboxPlanRequest2,
+    ) -> BusResult<tinysecurity_bus::SandboxPlanResponse2> {
+        self.sandbox_plan(request).await
+    }
     async fn evaluate(&self, request: EvaluateRequest) -> BusResult<Decision> {
         let policy = self.read()?.clone();
         let mut decision = tokio::task::spawn_blocking(move || {
@@ -686,6 +736,8 @@ fn service_for(
     audit: Option<Arc<crate::callbacks::AuditClient>>,
 ) -> PolicyService {
     PolicyService {
+        sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
+        sandbox: None,
         approvals: None,
         policy,
         audit,
@@ -837,6 +889,7 @@ async fn configured_policy(config: ModuleConfig) -> BusResult<Policy> {
 async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
     // Validate before activation. The SDK serializes reinitializations and
     // preserves a fault latch; this adapter never provides retry RPCs.
+    let sandbox_config = config.sandbox.clone();
     let judge_config = config.judge.clone();
     let audit_config = config.audit.clone();
     let approval_config = config.approvals.clone();
@@ -847,6 +900,14 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
     } else {
         crate::callbacks::PeerBinding::new(requested_host.as_deref())?
     };
+    let sandbox = sandbox_configured(
+        sandbox_config,
+        requested_host.as_deref(),
+        audit_config.as_ref(),
+        approval_config.as_ref(),
+        SANDBOX.get(),
+    )
+    .await?;
     let candidate = configured_policy(config).await?;
     let audit = configured_audit(&connection, &binding, audit_config.clone(), &candidate)?;
     let approvals = configured_approvals(
@@ -900,6 +961,7 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
     }
     let policy = Arc::new(RwLock::new(candidate));
     let mut service = service_for(Arc::clone(&policy), audit.clone());
+    service.sandbox = sandbox.as_ref().map(|(_, engine)| Arc::clone(engine));
     service.approvals = approvals.as_ref().map(|(_, engine)| Arc::clone(engine));
     if let Some(engine) = &service.approvals {
         engine.replace_automatic(judge).map_err(approval_failure)?;
@@ -911,6 +973,9 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
         )
         .await?;
     connection.request_name(names::INTERFACE).await?;
+    SANDBOX
+        .set(sandbox)
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
     APPROVALS
         .set(approvals)
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
@@ -930,7 +995,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
+    methods = ["Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = ["ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],
@@ -939,3 +1004,7 @@ tinybus_module::module_export! {
 #[cfg(test)]
 #[path = "adapter_tests.rs"]
 mod tests;
+
+#[path = "adapter_sandbox.rs"]
+mod sandbox;
+use sandbox::sandbox_configured;

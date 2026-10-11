@@ -197,9 +197,14 @@ impl Engine {
         if let Some(row) = rows.iter().find(|r| r.binding == bound) {
             return self.resume(&reg, row, now).await;
         }
-        let reusable = self.live_reusable(&reg, &bound, &rows, now).await?;
-        let automatic = rule == tinysecurity_auto::rules::Rule::Automatic;
-        let judge = if reusable.is_none() && !automatic {
+        let human_only = request.request.call.tool == "sandbox_host_network";
+        let reusable = if human_only {
+            None
+        } else {
+            self.live_reusable(&reg, &bound, &rows, now).await?
+        };
+        let automatic = !human_only && rule == tinysecurity_auto::rules::Rule::Automatic;
+        let judge = if !human_only && reusable.is_none() && !automatic {
             self.score(&request, &bound, external_effect).await?
         } else {
             None
@@ -632,6 +637,13 @@ impl Engine {
         self.exact(&reg, &row, &request.request)?;
         self.live(&row)?;
         self.ports.audit(row.clone()).await?;
+        if request.request.call.tool == "sandbox_host_network"
+            && (row.choice != Some(ApprovalChoice2::Once)
+                || row.decision_ticket_sha256.is_none()
+                || row.judge.is_some())
+        {
+            return Err(Error::Denied);
+        }
         if row.state != ApprovalLifecycle2::Approved || row.host_instance != self.instance {
             return Err(Error::Denied);
         }

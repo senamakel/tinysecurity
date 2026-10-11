@@ -204,13 +204,38 @@ Windows directory-creation durability guarantees.
 
 ## Sandbox and crypto
 
-`Plan` returns a declarative backend, grants, network policy and resource limits.
-It does not spawn processes. SaaS always requires isolation regardless of an
-`OPENHUMAN_SANDBOX=off` override. Untrusted MCP, skill and downloaded sources
-cannot fall back to `Noop`. No grant opens credential stores. Host-network
-access requires explicit policy permission and applicable approval. Unsupported
-capabilities return a typed denial rather than an optimistic backend choice.
-TinyBox verifies actual runtime suitability before execution.
+Contract 1.9 implements `Plan2`, `EvaluateSandboxApproval2` and
+`ConsumeSandboxPlan2`. The legacy reserved `Plan` payload retains its strict
+wire form and always denies. Initialization authenticates the unique host peer
+and fixes source provenance, deployment, mode settings, path/network/resource
+ceilings and executor capability identity. Callers select those facts by ID;
+they cannot supply their own trust, availability or enforcement claims.
+
+SaaS and untrusted sources require kernel isolation and enforced filesystem
+protection before any disabled mode is considered. Every requested hard
+constraint must be `Enforced`; Noop, BestEffort, unsupported CPU time, unvalidated
+proxy routing and credential-covering roots deny. `ResourceLimits2.cpu_time_ms`
+means CPU time, while `cpu_millicores` means thousandths of a core. The legacy
+`ResourceLimits.cpu_millis` remains CPU time; it must never be translated into
+TinyBox 0.1.17's same-named millicore setting.
+
+Host networking requires permission under the immutable network ceiling plus
+an authenticated human Once ticket bound durably to the exact canonical
+operation, source, scope, generation and executor capability. Automatic judge
+approval, generic reusable grants and caller approval flags do not qualify.
+Exact sanitized Sandbox audit commits before an opaque artifact becomes active.
+A fingerprint is correlation only. Consume validates the full registered
+artifact and owner, audits the exact phase, then rechecks expiry and generation
+before atomically reserving it once. Registry capacity and pending expiry are
+bounded; callbacks execute without policy or registry locks.
+
+Planning and admission do not spawn processes or prove native confinement.
+TinyBox owns actual enforcement and must recheck live backend availability,
+capability identity and every hard constraint immediately before spawning.
+The native sandbox fixture proves loaded-module policy, authenticated human
+approval, audit and artifact admission only. The current Landlock filesystem
+floor, Seatbelt BestEffort and AppContainer unsupported subprocess isolation
+cannot satisfy constraints they do not enforce.
 
 Crypto is last: password encryption, keyring backends, device encryption and
 pairing have one implementation with consent callbacks. Authentication,
@@ -240,3 +265,10 @@ Full completion also requires fuzz/property tests, 90% per-file coverage,
 dependency/license checks, MSRV and warning-free rustdoc, released artifacts,
 OpenHuman migration and deletion of duplicated implementations. Bootstrap
 checks passing establish only bootstrap completion.
+
+`ConsumeSandboxPlan2` carries the original typed `Plan2` envelope as well as the
+opaque artifact. The host derives that envelope from the exact prepared spawn:
+argv, environment, cwd and input belong in its bounded original operation.
+The owner validates its canonical binding before audit and again after the
+callback; changed operations cannot consume a copied artifact. This does not
+replace TinyBox's live isolation and capability checks.

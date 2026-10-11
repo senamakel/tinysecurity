@@ -1,0 +1,21 @@
+[package]
+name = "tinysecurity-sandbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+[dependencies]
+# Private declarative planning reuses the owner path engine, never an executor.
+tinysecurity-bus.workspace = true
+tinysecurity-policy.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+# Unforgeable opaque native artifact registry identities.
+getrandom.workspace = true
+thiserror.workspace = true
+[dev-dependencies]
+tempfile.workspace = true
+[lints]
+workspace = true

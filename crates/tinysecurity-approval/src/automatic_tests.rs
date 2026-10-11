@@ -158,3 +158,22 @@ async fn uncertain_judge_preserves_authenticated_human_and_unavailable_channel_d
     );
     Ok(())
 }
+#[tokio::test]
+async fn qualified_judge_is_never_invoked_for_sandbox_host_network_human_requirement() -> Result<()>
+{
+    let f = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    let owner = engine(f, clock.clone())?;
+    let judge = judge(true);
+    scorer(&owner, judge.clone(), clock)?;
+    let mut begin = request();
+    begin.request.call.tool = "sandbox_host_network".into();
+    begin.request.call.checks = vec![Check::Unknown {
+        description: "sandbox_host_network".into(),
+    }];
+    let row = owner.begin(begin).await?;
+    assert_eq!(row.state, ApprovalLifecycle2::Pending);
+    assert!(row.judge.is_none());
+    assert_eq!(judge.calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}

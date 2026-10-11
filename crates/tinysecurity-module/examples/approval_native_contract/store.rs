@@ -12,13 +12,13 @@ use tinysecurity_bus::{
     VerifyHumanRequest2,
 };
 #[derive(Debug)]
-pub(super) struct DiskStore {
+pub(crate) struct DiskStore {
     path: PathBuf,
-    pub(super) mutations: BTreeMap<String, ApprovalCasRequest2>,
-    pub(super) tickets: BTreeMap<String, HumanDecisionReceipt2>,
+    pub(crate) mutations: BTreeMap<String, ApprovalCasRequest2>,
+    pub(crate) tickets: BTreeMap<String, HumanDecisionReceipt2>,
 }
 impl DiskStore {
-    pub(super) fn open(path: &Path) -> tinybus::Result<Self> {
+    pub(crate) fn open(path: &Path) -> tinybus::Result<Self> {
         let mut store = Self {
             path: path.into(),
             mutations: BTreeMap::new(),
@@ -79,7 +79,7 @@ impl DiskStore {
             resulting_version: request.next_record.version,
         }
     }
-    pub(super) fn load(
+    pub(crate) fn load(
         &self,
         request: &ApprovalLoadRequest2,
     ) -> tinybus::Result<ApprovalLoadResponse2> {
@@ -102,7 +102,7 @@ impl DiskStore {
             .map_err(|_| tinybus::Error::failed("fixture invalid load"))?;
         Ok(response)
     }
-    pub(super) fn cas(
+    pub(crate) fn cas(
         &mut self,
         request: ApprovalCasRequest2,
     ) -> tinybus::Result<ApprovalCasResponse2> {
@@ -131,7 +131,7 @@ impl DiskStore {
         self.mutations.insert(request.mutation_id.clone(), request);
         Ok(receipt)
     }
-    pub(super) fn human_action(
+    pub(crate) fn human_action(
         &mut self,
         row: ApprovalRow2,
         choice: ApprovalChoice2,
@@ -151,7 +151,7 @@ impl DiskStore {
         self.tickets.insert(ticket_sha256, receipt);
         Ok(ticket)
     }
-    pub(super) fn human(
+    pub(crate) fn human(
         &self,
         request: &VerifyHumanRequest2,
     ) -> tinybus::Result<HumanDecisionReceipt2> {

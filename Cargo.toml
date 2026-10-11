@@ -25,6 +25,8 @@ license = "GPL-3.0-only"
 repository = "https://github.com/tinyhumansai/tinysecurity"
 
 [workspace.dependencies]
+# Private declarative sandbox planner, never linked by a host.
+tinysecurity-sandbox = { path = "crates/tinysecurity-sandbox" }
 # Optional probabilistic approval engine remains native and host-inaccessible.
 tinysecurity-auto = { path = "crates/tinysecurity-auto" }
 # Validated typed Jev HTTP client, pinned by the owner submodule gitlink.

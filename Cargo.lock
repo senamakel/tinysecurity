@@ -1250,6 +1250,7 @@ dependencies = [
  "tinysecurity-egress",
  "tinysecurity-policy",
  "tinysecurity-redact",
+ "tinysecurity-sandbox",
 ]
 
 [[package]]
@@ -1361,6 +1362,19 @@ dependencies = [
  "tinysecurity-bus",
  "unicode-normalization",
  "url",
+]
+
+[[package]]
+name = "tinysecurity-sandbox"
+version = "0.2.3"
+dependencies = [
+ "getrandom 0.3.4",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tinysecurity-bus",
+ "tinysecurity-policy",
 ]
 
 [[package]]

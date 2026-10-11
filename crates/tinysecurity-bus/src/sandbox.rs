@@ -1,5 +1,8 @@
 //! Scoped declarative sandbox planning. Only trusted native initialization supplies facts.
-use crate::{AccessTier, AuditCorrelation2, AuditResponse2, Decision, NetworkPolicy, Origin, PathGrant, PathPolicy, SandboxBackend, SourceTrust, SubjectScope};
+use crate::{
+    AccessTier, AuditCorrelation2, AuditResponse2, Decision, NetworkPolicy, Origin, PathGrant,
+    PathPolicy, SandboxBackend, SourceTrust, SubjectScope,
+};
 use serde::{Deserialize, Serialize};
 /// Actual executor support, verified by the trusted host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,9 +62,9 @@ pub struct ConstraintSupport2 {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceLimits2 {
-    /// Consumed CPU time. Current TinyBox has no enforceable mapping; requests deny.
+    /// Consumed CPU time. Current `TinyBox` has no enforceable mapping; requests deny.
     pub cpu_time_ms: Option<u64>,
-    /// CPU throughput: 1000 is one core. Maps only to TinyBox cpu_millis.
+    /// CPU throughput: 1000 is one core. Maps only to `TinyBox` `cpu_millis`.
     pub cpu_millicores: Option<u32>,
     /// Memory bytes.
     pub memory_bytes: Option<u64>,
@@ -132,6 +135,8 @@ impl std::fmt::Debug for SandboxProxy2 {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SandboxScope2 {
+    /// Exact immutable human approval registration for host networking.
+    pub approval_scope_id: Option<String>,
     /// Opaque registration identity.
     pub scope_id: String,
     /// Verified user/workspace/agent owner.
@@ -141,13 +146,13 @@ pub struct SandboxScope2 {
     /// Maximum acting authority.
     pub tier: AccessTier,
     /// Verified deployment mode; mandatory isolation precedes all overrides.
-    pub saas: bool,
+    pub deployment: SandboxDeployment2,
     /// Verified environment override, relevant only to trusted local execution.
-    pub env_off: bool,
+    pub environment: SandboxSetting2,
     /// Verified agent-mode isolation request.
-    pub agent_isolation: bool,
+    pub agent_mode: SandboxSetting2,
     /// Verified configuration isolation request.
-    pub configured_isolation: bool,
+    pub configured: SandboxSetting2,
     /// Owner filesystem policy, including internal-state reservations.
     pub paths: PathPolicy,
     /// Maximum grant reach and write authority.
@@ -186,6 +191,8 @@ impl std::fmt::Debug for SandboxConfig2 {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SandboxPlanRequest2 {
+    /// Exact authenticated human grant to reserve once, never a boolean permission.
+    pub host_approval: Option<SandboxApprovalUse2>,
     /// Registered owner scope.
     pub scope_id: String,
     /// Host-derived requesting owner; must exactly match registration.
@@ -222,6 +229,12 @@ impl std::fmt::Debug for SandboxPlanRequest2 {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SandboxArtifact2 {
+    /// Minimum verified isolation required at actual launch.
+    pub minimum_isolation: IsolationLevel2,
+    /// Opaque module-issued identity; a public fingerprint never supplies permission.
+    pub plan_id: String,
+    /// Verified once-only durable approval reservation, when host networking is granted.
+    pub approval_reservation_id: Option<String>,
     /// Module-computed canonical original request/plan binding.
     pub fingerprint: String,
     /// Bound immutable registration.
@@ -301,6 +314,89 @@ pub struct SandboxPlanResponse2 {
 impl std::fmt::Debug for SandboxPlanResponse2 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("SandboxPlanResponse2([REDACTED])")
+    }
+}
+/// Exact once-only durable human grant consumption correlation.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxApprovalUse2 {
+    /// Durable authenticated human grant identity.
+    pub request_id: String,
+    /// Separate exact consumption audit preceding the plan audit.
+    pub audit: AuditCorrelation2,
+}
+impl std::fmt::Debug for SandboxApprovalUse2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SandboxApprovalUse2([REDACTED])")
+    }
+}
+/// Create an exact pending sandbox host-network human approval under current policy.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvaluateSandboxApprovalRequest2 {
+    /// Original sandbox operation with no approval claim.
+    pub request: SandboxPlanRequest2,
+    /// Sanitized human-facing summary.
+    pub summary: String,
+    /// Durable pending-row audit correlation.
+    pub audit: AuditCorrelation2,
+}
+impl std::fmt::Debug for EvaluateSandboxApprovalRequest2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EvaluateSandboxApprovalRequest2([REDACTED])")
+    }
+}
+/// Verified deployment identity; `SaaS` cannot disable isolation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxDeployment2 {
+    /// Trusted local host.
+    Local,
+    /// Remote service deployment.
+    Saas,
+}
+/// Verified host isolation settings; these are init facts, never model parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxSetting2 {
+    /// Explicit isolation request.
+    Enabled,
+    /// Disabled request; immutable `SaaS`/source floors take precedence.
+    Disabled,
+}
+/// Exact registered-artifact execution reservation; live `TinyBox` verification remains host-owned.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsumeSandboxPlanRequest2 {
+    /// Exact original plan envelope derived by the host from the concrete spawn operation.
+    /// Changed argv, environment, cwd, input, provenance or constraints never reuse a plan.
+    pub request: SandboxPlanRequest2,
+    /// Complete expected artifact; any field change or fabricated identifier denies.
+    pub artifact: SandboxArtifact2,
+    /// Verified requesting owner.
+    pub subject: SubjectScope,
+    /// Separate exact consume audit correlation.
+    pub audit: AuditCorrelation2,
+}
+impl std::fmt::Debug for ConsumeSandboxPlanRequest2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ConsumeSandboxPlanRequest2([REDACTED])")
+    }
+}
+/// Once-only execution admission result; no OS confinement attestation.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsumeSandboxPlanResponse2 {
+    /// True only after exact audit and atomic module-owned reservation.
+    pub permitted: bool,
+    /// Content-free refusal reason.
+    pub denial: Option<SandboxDenial2>,
+    /// Exact durability evidence, retained on stale/replayed denial.
+    pub audit: Option<AuditResponse2>,
+}
+impl std::fmt::Debug for ConsumeSandboxPlanResponse2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ConsumeSandboxPlanResponse2([REDACTED])")
     }
 }
 #[cfg(test)]

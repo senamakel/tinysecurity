@@ -26,3 +26,17 @@ to enforce this must use verified egress mediation or deny protected access.
 TinyBox changes land upstream before host gitlinks move. Every spawner is
 inventoried and tested. Unit tests can validate plans, but actual OS isolation
 and transport pinning need native integration tests on supported platforms.
+
+## Scoped planning admission (contract 1.9)
+
+The initialized host registers immutable provenance and capability declarations.
+The planner checks enforced constraints and immutable ceilings, then commits an
+exact sanitized audit before activating a bounded opaque artifact. A public
+fingerprint cannot mint authority. Consume audits and atomically reserves that
+artifact once with fresh owner, generation and expiry checks. Host networking
+requires an authenticated exact human Once decision, including when Jev is
+qualified for generic automatic approval.
+
+This admission port does not attest a running child. TinyBox remains responsible
+for live capability validation and OS enforcement at launch; OpenHuman's later
+adapter binds managed child and warm-pool reuse to the artifact's full scope.
