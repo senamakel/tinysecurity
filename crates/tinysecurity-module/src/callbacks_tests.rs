@@ -51,7 +51,7 @@ fn native_namespace()
         // Use the native fixture's .NET installer APIs, independent of cmdlet
         // resolution. Elevated tokens can assign Administrators as the default
         // owner, so both the directory and empty journal need the current user.
-        let script = r#"
+        let script = r"
 $ErrorActionPreference = 'Stop'
 try {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -71,7 +71,7 @@ try {
         $journal.Flush($true)
     } finally { $journal.Dispose() }
 } catch { exit 1 }
-"#;
+";
         let output = std::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .env("TINYSECURITY_CALLBACK_DIRECTORY", directory.path())
