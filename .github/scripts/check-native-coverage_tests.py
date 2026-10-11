@@ -4,6 +4,12 @@ import unittest
 import sys
 import shlex
 import subprocess
+import contextlib
+import io
+import json
+import runpy
+import tempfile
+from unittest import mock
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -27,6 +33,70 @@ def report(*entries):
 
 
 class NativeCoverageAdmission(unittest.TestCase):
+    @contextlib.contextmanager
+    def git_coverage_fixture(self, contents):
+        """Create actual Git output and reports for one covered changed line."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / WINDOWS
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b'// initial\n')
+            commands = (
+                ['init', '--quiet'],
+                ['add', 'crates/'],
+                ['-c', 'user.name=Coverage Test', '-c', 'user.email=coverage@example.invalid',
+                 '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'base'],
+            )
+            for command in commands:
+                subprocess.run(['git', *command], cwd=root, check=True, capture_output=True)
+            base = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=root, check=True,
+                                  capture_output=True).stdout.decode('ascii').strip()
+            source.write_bytes(contents)
+            subprocess.run(['git', 'add', 'crates/'], cwd=root, check=True, capture_output=True)
+            subprocess.run(['git', '-c', 'user.name=Coverage Test',
+                            '-c', 'user.email=coverage@example.invalid',
+                            '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'change'],
+                           cwd=root, check=True, capture_output=True)
+            data = report((WINDOWS, 1, 1), (ACL, 1, 1))
+            for entry in data['data'][0]['files']:
+                entry['filename'] = str(root / entry['filename'][len(ROOT) + 1:])
+            json_path, lcov_path = root / 'coverage.json', root / 'coverage.lcov'
+            json_path.write_text(json.dumps(data), encoding='utf-8')
+            lcov_path.write_text(''.join(f'SF:{root / name}\nDA:1,1\nend_of_record\n'
+                                        for name in (WINDOWS, ACL)), encoding='utf-8')
+            yield ['check-native-coverage.py', '--json', str(json_path), '--lcov',
+                   str(lcov_path), '--base', base, '--root', str(root)]
+
+    def test_utf8_git_diff_is_measured_under_windows_charmap_locale(self):
+        contents = '// caf\u00e9 \u0141\n'.encode('utf-8')
+        self.assertIn(b'\x81', contents)
+        with self.assertRaises(UnicodeDecodeError):
+            contents.decode('cp1252')
+        output = io.StringIO()
+        with self.git_coverage_fixture(contents) as argv, \
+                mock.patch.object(sys, 'argv', argv), \
+                mock.patch.object(subprocess, '_text_encoding', return_value='cp1252'), \
+                contextlib.redirect_stdout(output):
+            # Only the locale default is simulated: main runs real Git and
+            # Popen reads its bytes through the actual subprocess path.
+            gate.main()
+        self.assertIn('Changed executable lines: 1/1 (100.00%)', output.getvalue())
+        self.assertNotIn('No changed production', output.getvalue())
+
+    def test_malformed_utf8_git_diff_is_rejected_instead_of_skipping_changes(self):
+        output, errors = io.StringIO(), io.StringIO()
+        with self.git_coverage_fixture(b'// invalid \xff\n') as argv, \
+                mock.patch.object(sys, 'argv', argv), \
+                mock.patch.object(subprocess, '_text_encoding', return_value='cp1252'), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors), \
+                self.assertRaises(SystemExit) as failure:
+            runpy.run_path(str(Path(gate.__file__)), run_name='__main__')
+        self.assertEqual(failure.exception.code, 1)
+        self.assertIn('native coverage rejected:', errors.getvalue())
+        self.assertIn('utf-8', errors.getvalue())
+        self.assertNotIn('No changed production', output.getvalue())
+        self.assertNotIn('Changed executable lines:', output.getvalue())
+
     def test_native_report_command_is_accepted_without_recollecting_tests(self):
         workflow = Path(__file__).parents[1].joinpath('workflows/ci.yml').read_text()
         commands = [shlex.split(line.strip()) for line in workflow.splitlines()

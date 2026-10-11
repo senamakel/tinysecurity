@@ -172,11 +172,13 @@ def main():
     for name, (covered, count) in sorted(files.items()):
         if count:
             print(f'{name}\t{covered * 100 / count:.2f}%\t{covered}\t{count}')
+    # Decode after byte capture: Windows text-reader threads can lose stdout
+    # on a decoding failure. Strict UTF-8 errors must reject the gate instead.
     diff = subprocess.run(
         ['git', '-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-renames',
          '--unified=0', args.base, 'HEAD', '--', 'crates/'],
-        cwd=args.root, check=True, text=True, capture_output=True,
-    ).stdout
+        cwd=args.root, check=True, capture_output=True,
+    ).stdout.decode('utf-8')
     changed = changed_lines(diff)
     lcov = parse_lcov(Path(args.lcov).read_text(encoding='utf-8'), args.root)
     result = check_changed(lcov, changed, 80, files)
