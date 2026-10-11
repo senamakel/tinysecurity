@@ -125,7 +125,10 @@ try {
     # Install the empty authority with the actual user owner before any bytes;
     # retain the directory's restricted inherited access rule unchanged.
     $journalPath = [IO.Path]::Combine($env:TINYSECURITY_NATIVE_DIRECTORY, 'audit.journal')
-    $journal = [IO.File]::Open($journalPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+    # Generic read/write does not grant WRITE_OWNER to SetAccessControl.
+    # The rights overload grants TakeOwnership on this create-new handle only.
+    $journalRights = [Security.AccessControl.FileSystemRights]::Read -bor [Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::TakeOwnership
+    $journal = [IO.FileStream]::new($journalPath, [IO.FileMode]::CreateNew, $journalRights, [IO.FileShare]::ReadWrite, 4096, [IO.FileOptions]::None)
     try {
         $journalAcl = $journal.GetAccessControl()
         $journalAcl.SetOwner($identity.User)

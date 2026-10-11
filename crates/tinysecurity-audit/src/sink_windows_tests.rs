@@ -120,12 +120,15 @@ fn windows_protected_preprovisioned_namespace_commits_exact_retry()
             SeObjectType::SE_FILE_OBJECT,
             SecurityInformation::Owner | SecurityInformation::Dacl,
         )?;
-        assert_eq!(sd.owner(), Some(&*expected));
+        assert!(
+            sd.owner() == Some(&*expected),
+            "file owner must match the current user"
+        );
         let acl = sd.dacl().ok_or("missing file DACL")?;
         assert_eq!(acl.len(), 1);
-        assert_eq!(
-            acl.get_ace(0).ok_or("missing user ACE")?.sid(),
-            Some(&*expected)
+        assert!(
+            acl.get_ace(0).ok_or("missing user ACE")?.sid() == Some(&*expected),
+            "file access rule must match the current user"
         );
     }
     Ok(())
@@ -193,9 +196,13 @@ fn windows_new_engine_file_is_owned_by_current_user_before_any_bytes()
         SeObjectType::SE_FILE_OBJECT,
         SecurityInformation::Owner,
     )?;
-    let owner =
-        wrappers::ConvertSidToStringSid(sd.owner().ok_or("file owner absent")?)?.into_string()?;
-    assert_eq!(owner, identity()?);
+    let owner = wrappers::ConvertSidToStringSid(sd.owner().ok_or("file owner absent")?)?
+        .into_string()
+        .map_err(|_| "file owner encoding invalid")?;
+    assert!(
+        owner == identity()?,
+        "new file owner must match the current user"
+    );
     assert_eq!(file.metadata()?.len(), 0);
     Ok(())
 }
@@ -228,9 +235,13 @@ fn windows_existing_foreign_owner_is_denied_without_owner_repair()
         SeObjectType::SE_FILE_OBJECT,
         SecurityInformation::Owner,
     )?;
-    let owner =
-        wrappers::ConvertSidToStringSid(sd.owner().ok_or("file owner absent")?)?.into_string()?;
-    assert_eq!(owner, "S-1-5-32-544");
+    let owner = wrappers::ConvertSidToStringSid(sd.owner().ok_or("file owner absent")?)?
+        .into_string()
+        .map_err(|_| "file owner encoding invalid")?;
+    assert!(
+        owner == "S-1-5-32-544",
+        "denied existing file owner must remain unchanged"
+    );
     println!("audit-native-init stage=4 category=0");
     Ok(())
 }
@@ -257,8 +268,9 @@ fn windows_token_default_owner_explains_ordinary_created_file_owner()
         SeObjectType::SE_FILE_OBJECT,
         SecurityInformation::Owner,
     )?;
-    let file_owner =
-        wrappers::ConvertSidToStringSid(sd.owner().ok_or("file owner absent")?)?.into_string()?;
+    let file_owner = wrappers::ConvertSidToStringSid(sd.owner().ok_or("file owner absent")?)?
+        .into_string()
+        .map_err(|_| "file owner encoding invalid")?;
     let user = identity()?;
     println!(
         "audit-native-owner stage=1 token-user={} file-token={} file-user={}",
@@ -266,6 +278,9 @@ fn windows_token_default_owner_explains_ordinary_created_file_owner()
         u8::from(file_owner == token_owner),
         u8::from(file_owner == user)
     );
-    assert_eq!(file_owner, token_owner);
+    assert!(
+        file_owner == token_owner,
+        "ordinary file owner must match the token default owner"
+    );
     Ok(())
 }
