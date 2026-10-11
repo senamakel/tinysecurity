@@ -314,6 +314,43 @@ $created = $false
 $process = $null
 $started = $false
 $stage = 3
+function Get-AuditExceptionKind($exception) {
+    if ($null -eq $exception) { return 0 }
+    switch -Exact ($exception.GetType().FullName) {
+        'System.UnauthorizedAccessException' { return 1 }
+        'System.ComponentModel.Win32Exception' { return 2 }
+        'System.InvalidOperationException' { return 3 }
+        'System.Management.Automation.RuntimeException' { return 4 }
+        'System.Management.Automation.CommandNotFoundException' { return 5 }
+        'System.Management.Automation.ParentContainsErrorRecordException' { return 6 }
+        'System.Management.Automation.MethodInvocationException' { return 7 }
+        'System.Management.Automation.CmdletInvocationException' { return 8 }
+        'System.Management.Automation.ParameterBindingException' { return 9 }
+        'System.Management.Automation.ProviderInvocationException' { return 10 }
+        'System.Reflection.TargetInvocationException' { return 11 }
+        'System.TypeInitializationException' { return 12 }
+        'System.ArgumentException' { return 13 }
+        'System.NotSupportedException' { return 14 }
+        'System.Security.Cryptography.CryptographicException' { return 15 }
+        'System.Management.Automation.PSNotSupportedException' { return 16 }
+        default { return 0 }
+    }
+}
+function Write-AuditErrorRecord($record, $depth) {
+    # Only a fixed command vocabulary and numeric metadata leave the process.
+    # Never emit exception names, identifiers, target objects or command text.
+    $command = 0
+    switch -Exact ($record.InvocationInfo.MyCommand.Name) {
+        'ConvertTo-SecureString' { $command = 1 }
+        'New-LocalUser' { $command = 2 }
+        'Add-LocalGroupMember' { $command = 3 }
+        'Get-LocalUser' { $command = 4 }
+        'Get-Acl' { $command = 5 }
+        'Remove-LocalUser' { $command = 6 }
+    }
+    $recordKind = Get-AuditExceptionKind $record.Exception
+    Write-Output ('audit-account-stage=' + $stage + ' record-depth=' + $depth + ' error-category=' + [int]$record.CategoryInfo.Category + ' command=' + $command + ' record-kind=' + $recordKind)
+}
 try {
     $account = 'tsa' + [Guid]::NewGuid().ToString('N').Substring(0, 16)
     Write-Output 'audit-account-stage=3 account-generated=1'
@@ -507,6 +544,7 @@ exit 0
     }
     Write-Output 'audit-account-stage=60'
 } catch {
+    Write-AuditErrorRecord $_ 0
     $category = 0
     if ($_.Exception -is [UnauthorizedAccessException]) { $category = 1 }
     elseif ($_.Exception -is [ComponentModel.Win32Exception]) { $category = 2 }
@@ -526,11 +564,12 @@ exit 0
     $exception = $_.Exception
     for ($depth = 0; ($null -ne $exception) -and ($depth -lt 8); $depth++) {
         $native = 0
-        $kind = 0
-        if ($exception -is [ComponentModel.Win32Exception]) { $kind = 2; $native = $exception.NativeErrorCode }
-        elseif ($exception -is [UnauthorizedAccessException]) { $kind = 1 }
-        elseif ($exception -is [InvalidOperationException]) { $kind = 3 }
+        $kind = Get-AuditExceptionKind $exception
+        if ($exception -is [ComponentModel.Win32Exception]) { $native = $exception.NativeErrorCode }
         Write-Output ('audit-account-stage=' + $stage + ' depth=' + $depth + ' category=' + $kind + ' hresult=' + $exception.HResult + ' native=' + $native)
+        if (($exception -is [Management.Automation.RuntimeException]) -and ($null -ne $exception.ErrorRecord)) {
+            Write-AuditErrorRecord $exception.ErrorRecord ($depth + 1)
+        }
         $exception = $exception.InnerException
     }
     exit 1
