@@ -221,6 +221,79 @@ fn windows_reparse_directory_is_denied_without_outside_mutation()
     Ok(())
 }
 
+// PowerShell 7 only normalizes module paths when it launches Windows PowerShell
+// directly. Cargo and this Rust test process are intermediaries, so construct the
+// Desktop defaults in the child instead of inheriting potentially Core modules.
+fn use_desktop_module_paths(command: &mut std::process::Command) {
+    command.env_remove("PSModulePath");
+}
+
+#[test]
+fn windows_powershell_child_reconstructs_desktop_module_paths()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    // Probe the actual launch environment independently of the account fixture.
+    // Its inherited branch can succeed under Bash and fail under PowerShell 7.
+    // Neither branch creates an account or exposes paths or error text.
+    const PROBE: &str = r"
+$ErrorActionPreference = 'Stop'
+$desktop = [int]($PSVersionTable.PSEdition -ceq 'Desktop')
+$corePath = [int]($env:PSModulePath -match '(?i)\\PowerShell\\7(?:\\|;)')
+[Console]::WriteLine(('audit-module-context desktop={0} core-path={1}' -f $desktop,$corePath))
+$failed = $false
+$ordinal = 0
+foreach ($name in @('ConvertTo-SecureString','New-LocalUser','Get-Acl','Set-Acl')) {
+    $ordinal++
+    try {
+        $command = Get-Command -Name $name -ErrorAction Stop
+        $core = [int]($command.Module.CompatiblePSEditions -contains 'Core' -and $command.Module.CompatiblePSEditions -notcontains 'Desktop')
+        [Console]::WriteLine(('audit-module-context command={0} resolved=1 core-only={1} category=0' -f $ordinal,$core))
+        if ($core -ne 0) { $failed = $true }
+    } catch {
+        [Console]::WriteLine(('audit-module-context command={0} resolved=0 core-only=0 category={1}' -f $ordinal,[int]$_.CategoryInfo.Category))
+        $failed = $true
+    }
+}
+if ($failed -or $desktop -ne 1) { exit 1 }
+exit 0
+";
+    let parent = std::env::var_os("PSModulePath");
+    for scenario in 0..3 {
+        let mut command = std::process::Command::new("powershell.exe");
+        if scenario == 2 {
+            // Deliberately start with a foreign-edition module search path even
+            // when this test's parent was launched from Bash.
+            command.env("PSModulePath", r"C:\Program Files\PowerShell\7\Modules");
+        }
+        if scenario != 0 {
+            use_desktop_module_paths(&mut command);
+        }
+        let output = command
+            .args(["-NoProfile", "-NonInteractive", "-Command", PROBE])
+            .output()?;
+        eprintln!(
+            "audit-module-context scenario={scenario} exit={:?}",
+            output.status.code()
+        );
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if line.starts_with("audit-module-context ")
+                && line
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "=- ".contains(c))
+            {
+                eprintln!("{line}");
+            }
+        }
+        if scenario != 0 {
+            assert!(
+                output.status.success(),
+                "Desktop child must resolve its own security and local-account cmdlets"
+            );
+        }
+    }
+    assert_eq!(std::env::var_os("PSModulePath"), parent);
+    Ok(())
+}
+
 #[test]
 fn windows_second_ordinary_account_cannot_read_or_replace_the_namespace()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -254,7 +327,9 @@ fn windows_second_ordinary_account_cannot_read_or_replace_the_namespace()
         "audit-account-stage=0 outer-script-units={}",
         ORDINARY_ACCOUNT_SCRIPT.encode_utf16().count()
     );
-    let output = std::process::Command::new("powershell.exe")
+    let mut command = std::process::Command::new("powershell.exe");
+    use_desktop_module_paths(&mut command);
+    let output = command
         .args([
             "-NoProfile",
             "-NonInteractive",
