@@ -377,6 +377,9 @@ impl Engine {
     fn begin_tool_label(&self, tool: &str, native: bool) -> Result<String> {
         if native {
             Ok("native_secret_grant".into())
+        } else if tool == "device_crypto" {
+            // Fixed public classification controls the Human Once choice floor.
+            Ok("device_crypto".into())
         } else {
             binding::text(&self.redactor()?, tool, RedactMode::Text)
         }

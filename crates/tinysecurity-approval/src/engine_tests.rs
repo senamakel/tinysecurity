@@ -1797,3 +1797,56 @@ async fn expired_native_rows_resolve_terminally_without_restoring_authority() ->
     }
     Ok(())
 }
+
+async fn redacted_device_label_requires_once(choice: u64) -> Result<()> {
+    {
+        let fixture = Arc::new(Fixture::default());
+        let redactor = RedactorConfig {
+            secrets: vec![
+                tinysecurity_bus::Secret("device_crypto".into()),
+                tinysecurity_bus::Secret("private-tool-label".into()),
+            ],
+        };
+        let owner = Engine::new(
+            config(),
+            fixture.clone(),
+            Arc::new(TestClock::default()),
+            Redactor::new(&redactor).map_err(|_| Error::Invalid)?,
+        )?;
+        let mut req = request();
+        req.request.call.tool = "device_crypto".into();
+        req.request.caller.flow = Some("registered-flow".into());
+        let row = owner.begin(req.clone()).await?;
+        fixture.choice.store(choice, Ordering::SeqCst);
+        assert_eq!(owner.decide(decision(&row)).await, Err(Error::Denied));
+        assert_eq!(row.tool_name, "device_crypto");
+        fixture.choice.store(0, Ordering::SeqCst);
+        let approved = owner.decide(decision(&row)).await?;
+        assert_eq!(approved.choice, Some(ApprovalChoice2::Once));
+        assert!(approved.decision_ticket_sha256.is_some());
+        let mut consume = action(&row, 3);
+        consume.request = req.request;
+        owner.consume(consume).await?;
+
+        let mut generic = request();
+        generic.request.call.tool = "private-tool-label".into();
+        generic.request.caller.call_id = "generic-label".into();
+        let generic_row = owner.begin(generic).await?;
+        assert_ne!(generic_row.tool_name, "private-tool-label");
+        assert!(
+            !serde_json::to_string(&generic_row)
+                .map_err(|_| Error::Invalid)?
+                .contains("private-tool-label")
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn redacted_device_labels_cannot_accept_tool_decisions() -> Result<()> {
+    redacted_device_label_requires_once(1).await
+}
+#[tokio::test]
+async fn redacted_device_labels_cannot_accept_flow_decisions() -> Result<()> {
+    redacted_device_label_requires_once(2).await
+}
