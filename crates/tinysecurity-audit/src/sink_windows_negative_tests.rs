@@ -352,7 +352,9 @@ try {
         catch [UnauthorizedAccessException] { }
         $auditOperation = 3
         $auditCallsite = 3
-        try { [IO.File]::Move((Join-Path $env:TINYSECURITY_TEST_DIRECTORY $name), (Join-Path $env:TINYSECURITY_TEST_DIRECTORY ($name + '.outsider'))); exit 88 }
+        # Framework File.Move checks InternalExists first, masking denied metadata
+        # as FileNotFound. FileInfo.MoveTo reaches native MoveFile without that check.
+        try { [IO.FileInfo]::new((Join-Path $env:TINYSECURITY_TEST_DIRECTORY $name)).MoveTo((Join-Path $env:TINYSECURITY_TEST_DIRECTORY ($name + '.outsider'))); exit 88 }
         catch [UnauthorizedAccessException] { }
     }
 } catch {
