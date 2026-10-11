@@ -52,24 +52,113 @@ fn namespace() -> std::result::Result<(tempfile::TempDir, PathBuf), Box<dyn std:
 
 #[cfg(windows)]
 fn provision(path: &Path) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let script = r"
+    let script = r#"
 $ErrorActionPreference = 'Stop'
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$acl = [Security.AccessControl.DirectorySecurity]::new()
-$acl.SetOwner($identity.User)
-$acl.SetAccessRuleProtection($true, $false)
-$rule = [Security.AccessControl.FileSystemAccessRule]::new($identity.User, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit', [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
-[void]$acl.AddAccessRule($rule)
-Set-Acl -LiteralPath $env:TINYSECURITY_NATIVE_DIRECTORY -AclObject $acl
-";
+$stage = 1
+try {
+    Write-Output "audit-native-installer stage=$stage"
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $stage = 2; Write-Output "audit-native-installer stage=$stage"
+    $stage = 3; Write-Output "audit-native-installer stage=$stage"
+    $acl = [Security.AccessControl.DirectorySecurity]::new()
+    $stage = 4; Write-Output "audit-native-installer stage=$stage"
+    $stage = 5; Write-Output "audit-native-installer stage=$stage"
+    $acl.SetOwner($identity.User)
+    $stage = 6; Write-Output "audit-native-installer stage=$stage"
+    $stage = 7; Write-Output "audit-native-installer stage=$stage"
+    $acl.SetAccessRuleProtection($true, $false)
+    $stage = 8; Write-Output "audit-native-installer stage=$stage"
+    $stage = 9; Write-Output "audit-native-installer stage=$stage"
+    $rule = [Security.AccessControl.FileSystemAccessRule]::new($identity.User, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit', [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+    $stage = 10; Write-Output "audit-native-installer stage=$stage"
+    $stage = 11; Write-Output "audit-native-installer stage=$stage"
+    [void]$acl.AddAccessRule($rule)
+    $stage = 12; Write-Output "audit-native-installer stage=$stage"
+    $stage = 13; Write-Output "audit-native-installer stage=$stage"
+    Set-Acl -LiteralPath $env:TINYSECURITY_NATIVE_DIRECTORY -AclObject $acl
+    $stage = 14; Write-Output "audit-native-installer stage=$stage"
+} catch {
+    # Never render the error record: messages may contain paths or identities.
+    $exception = $_.Exception
+    # Method/cmdlet wrappers otherwise hide the useful OS exception code.
+    for ($depth = 0; $depth -lt 8 -and $null -ne $exception.InnerException; $depth++) {
+        $exception = $exception.InnerException
+    }
+    $kind = switch ($exception.GetType().FullName) {
+        'System.UnauthorizedAccessException' { 1 }
+        'System.ArgumentException' { 2 }
+        'System.InvalidOperationException' { 3 }
+        'System.Management.Automation.CommandNotFoundException' { 4 }
+        'System.Management.Automation.MethodInvocationException' { 5 }
+        'System.Management.Automation.PSArgumentException' { 6 }
+        'System.ComponentModel.Win32Exception' { 7 }
+        default { 8 }
+    }
+    $native = 0
+    if ($exception -is [System.ComponentModel.Win32Exception]) {
+        $native = $exception.NativeErrorCode
+    }
+    $command = 0
+    if ($kind -eq 4 -and $_.CategoryInfo.TargetName -eq 'Set-Acl') {
+        $command = 1
+    }
+    $hresult = $exception.HResult
+    Write-Output "audit-native-installer stage=$stage error=$kind hresult=$hresult native=$native command=$command"
+    exit 1
+}
+"#;
     let output = std::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .env("TINYSECURITY_NATIVE_DIRECTORY", path)
         .output()?;
+    for line in installer_diagnostics(&output.stdout)? {
+        eprintln!("{line}");
+    }
     if !output.status.success() {
         return Err("native audit namespace installer failed".into());
     }
     Ok(())
+}
+
+// Validate the complete stream before displaying any child output. Even a
+// PowerShell startup error must never expose an unrecognized record.
+#[cfg(any(windows, test))]
+fn installer_diagnostics(stdout: &[u8]) -> Result<Vec<&str>, &'static str> {
+    if stdout.len() > 4096 {
+        return Err("native audit installer diagnostics invalid");
+    }
+    let text =
+        std::str::from_utf8(stdout).map_err(|_| "native audit installer diagnostics invalid")?;
+    let lines: Vec<_> = text.lines().collect();
+    if lines.is_empty() || lines.len() > 15 {
+        return Err("native audit installer diagnostics invalid");
+    }
+    for line in &lines {
+        let fields: Vec<_> = line.split(' ').collect();
+        if !matches!(fields.len(), 2 | 6) || fields[0] != "audit-native-installer" {
+            return Err("native audit installer diagnostics invalid");
+        }
+        let number = |field: &str, key: &str, min: i32, max: i32| {
+            field
+                .strip_prefix(key)
+                .and_then(|value| {
+                    value.parse::<i32>().ok().filter(|parsed| {
+                        (min..=max).contains(parsed) && parsed.to_string() == value
+                    })
+                })
+                .is_some()
+        };
+        if !number(fields[1], "stage=", 1, 14)
+            || (fields.len() == 6
+                && (!number(fields[2], "error=", 1, 8)
+                    || !number(fields[3], "hresult=", i32::MIN, i32::MAX)
+                    || !number(fields[4], "native=", 0, i32::MAX)
+                    || !number(fields[5], "command=", 0, 1)))
+        {
+            return Err("native audit installer diagnostics invalid");
+        }
+    }
+    Ok(lines)
 }
 
 fn request(tail: u64) -> AuditedRequest2<CheckRequest> {
@@ -263,3 +352,7 @@ async fn verify_rename_denial(
     );
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "native_tests.rs"]
+mod tests;
