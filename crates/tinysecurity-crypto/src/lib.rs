@@ -20,6 +20,7 @@ mod error;
 pub mod keyring;
 pub mod native_handles;
 pub mod password;
+pub mod pairing;
 pub mod secretstore;
 pub use error::{Error, Result};
 
