@@ -377,15 +377,21 @@ exit 0
     $stage = 40
     if (-not $process.WaitForExit(30000)) { throw 'ordinary account helper timeout' }
     $code = $process.ExitCode
-    # Forward only fixed numeric child phases; all raw stderr stays in memory.
-    foreach ($line in $stdout.Result.Split([char]10)) {
-        $safeLine = $line.TrimEnd([char]13)
-        if ($safeLine -cmatch '^audit-account-stage=[0-9]+( [a-z-]+=[0-9]+)*$') { Write-Output $safeLine }
+    # Require every exact child phase once; raw stdout/stderr stay in memory.
+    $requiredPhases = @('audit-account-stage=90 foreign-identity=1 nonadmin=1', 'audit-account-stage=91 exact-control-read=1', 'audit-account-stage=92 private-file-denials=6', 'audit-account-stage=93 namespace-denial=1')
+    $lines = @($stdout.Result.Split([char]10) | ForEach-Object { $_.TrimEnd([char]13) } | Where-Object { $_.Length -gt 0 })
+    foreach ($line in $lines) {
+        if ($requiredPhases -ccontains $line) { Write-Output $line }
     }
-    [void]$stderr.Result
+    $errorText = $stderr.Result
     Write-Output ('audit-account-stage=50 inner-exit=' + $code)
     $stage = 50
     if ($code -ne 0) { throw 'ordinary account isolation failed' }
+    if (($errorText.Length -ne 0) -or ($lines.Count -ne $requiredPhases.Count)) { throw 'unexpected helper output' }
+    foreach ($phase in $requiredPhases) {
+        if (@($lines | Where-Object { $_ -ceq $phase }).Count -ne 1) { throw 'required child phase missing or duplicated' }
+    }
+    Write-Output 'audit-account-stage=51 child-phases=4'
     $stage = 55
     for ($i = 0; $i -lt $protected.Count; $i++) {
         if ((Get-Acl (Join-Path $env:TINYSECURITY_TEST_DIRECTORY $protected[$i])).Sddl -cne $acls[$i]) { throw 'protected ACL changed' }
@@ -441,7 +447,10 @@ exit 0
             }
         } finally {
             if ($created) {
-                if ($terminated) { Remove-LocalUser -Name $account }
+                if ($terminated) {
+                    Remove-LocalUser -Name $account
+                    Write-Output 'audit-account-stage=72 cleanup-account-removed=1'
+                }
                 else {
                     Disable-LocalUser -Name $account
                     Write-Output 'audit-account-stage=71 cleanup-incomplete=1'
