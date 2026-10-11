@@ -19,7 +19,8 @@ computed decision and current generation. Required audit disables unbound
 `Evaluate`/`Check` permission and other unbound path/command/egress authorization;
 exact durable evidence precedes an audited allow. Scope registration and
 descriptive classification remain available.
-Windows local journal support remains unavailable at this checkpoint.
+Windows local journals require an externally preprovisioned, protected NTFS
+namespace and preexisting restricted authority; see the native journal contract.
 
 The engine denies unknown tools and unsupported effects. Argument-free `pwd`,
 `date`, `uname`, and `whoami` are its supported shell diagnostics. Paths pass

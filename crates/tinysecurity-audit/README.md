@@ -31,12 +31,25 @@ are rejected even when they have valid identifier syntax. Native worker deadline
 return without waiting indefinitely on blocked filesystem work. An already-running
 worker may still commit afterward, so a timed-out batch must be retried unchanged.
 
-The current local-storage implementation supports Unix. Windows local storage
-fails closed with `Unsupported`. Its accepted continuation requires externally
-preprovisioned restricted journal namespace, verified inherited ACLs, ancestor
-handle pins and actual Windows ACL/rotation tests. These Windows restrictions are
-not implemented in this checkpoint. Process/filesystem tests do not establish
-physical power-loss guarantees.
+Windows supports fixed local NTFS volumes with an externally preprovisioned
+directory owned by the effective current user, a protected DACL granting only
+that user full control with object/container inheritance, and a preexisting
+restricted authoritative journal. Protected SDDL flags may include the standard
+auto-inheritance tokens. Every ancestor must have a trusted owner and deny
+effective mutation rights to other ordinary principals. Reparse points and
+unsupported namespaces deny before candidate data is written. The engine never
+tightens an existing broad ACL or creates the Windows authority itself.
+
+Every ancestor remains open with directory-list access and without delete
+sharing for the writer lifetime, so its handle prevents namespace substitution.
+New views and the stable lock inherit restricted access before bytes are written;
+existing handles and ACLs are checked again before use. Rotation failure before
+journal commit denies the candidate, and releasing the blocker permits the same
+request to commit exactly once. Directory handles are not claimed as a Windows
+namespace flush barrier. Same-user and administrator processes are outside the
+ordinary-account confidentiality guarantee. Real process termination tests cover
+stable locking, incomplete-frame recovery and commit-before-acknowledgement retry;
+they do not establish physical power-loss guarantees.
 
 The module can forward exact version-two batches to the host unique connection
 bound at native initialization. Callback unavailability, malformed receipts and

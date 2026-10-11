@@ -136,9 +136,57 @@ pub(super) async fn verify(library: &Path) -> std::result::Result<(), Box<dyn st
     );
     #[cfg(windows)]
     verify_rename_denial(&proxy, &path).await?;
+    #[cfg(unix)]
+    verify_permissions_denial(&proxy, &journal).await?;
     host.shutdown(Duration::from_secs(1)).await;
     task.abort();
     println!("loaded required permission is backed by the actual restricted native journal");
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn verify_permissions_denial(
+    proxy: &tinybus::Proxy,
+    journal: &Path,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+    let before = std::fs::read(journal)?;
+    std::fs::set_permissions(journal, std::fs::Permissions::from_mode(0o644))?;
+    let result = proxy
+        .call::<CheckAuditedResponse2>(names::methods::CHECK_AUDITED2, (request(1),))
+        .await;
+    // Restore the installer fixture even when the real loaded call fails.
+    std::fs::set_permissions(journal, std::fs::Permissions::from_mode(0o600))?;
+    let denied = result?;
+    assert!(!denied.audit.permitted && !denied.audit.committed);
+    assert!(denied.audit.receipt.is_none());
+    assert!(
+        denied
+            .decision
+            .decisions
+            .iter()
+            .all(|decision| !matches!(decision.verdict, Verdict::Allow))
+    );
+    assert_eq!(std::fs::read(journal)?, before);
+    let permitted: CheckAuditedResponse2 = proxy
+        .call(names::methods::CHECK_AUDITED2, (request(1),))
+        .await?;
+    assert!(permitted.audit.permitted && permitted.audit.committed);
+    assert_eq!(
+        permitted
+            .audit
+            .receipt
+            .as_ref()
+            .ok_or("native retry receipt absent")?
+            .new_tail,
+        2
+    );
+    assert_eq!(
+        proxy
+            .call::<CheckAuditedResponse2>(names::methods::CHECK_AUDITED2, (request(1),))
+            .await?,
+        permitted
+    );
     Ok(())
 }
 

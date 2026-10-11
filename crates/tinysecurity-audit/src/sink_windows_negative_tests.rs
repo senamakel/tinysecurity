@@ -283,3 +283,70 @@ exit 0
     assert!(!root.path().with_extension("outsider").exists());
     Ok(())
 }
+
+#[test]
+fn windows_empty_or_null_directory_dacl_is_denied_before_candidate_commit()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    for flags in ["P", "NO_ACCESS_CONTROL"] {
+        let (root, path) = fixture()?;
+        // Keep an already authorized installer handle so an empty ACL cannot
+        // prevent restoring the fixture before cleanup or a failed assertion.
+        let mut installer = OpenOptions::new()
+            .access_mode(0x000e_0080)
+            .share_mode(3)
+            .custom_flags(0x0220_0000)
+            .open(root.path())?;
+        let user = identity()?;
+        let invalid: LocalBox<SecurityDescriptor> = format!("O:{user}D:{flags}").parse()?;
+        wrappers::SetSecurityInfo(
+            &mut installer,
+            SeObjectType::SE_FILE_OBJECT,
+            SecurityInformation::Dacl | SecurityInformation::ProtectedDacl,
+            None,
+            None,
+            invalid.dacl(),
+            None,
+        )?;
+        let denied = JsonlSink::open(&path, 700, 3).and_then(|sink| sink.append(&batch(0)));
+        let restored: LocalBox<SecurityDescriptor> =
+            format!("O:{user}D:P(A;OICI;FA;;;{user})").parse()?;
+        wrappers::SetSecurityInfo(
+            &mut installer,
+            SeObjectType::SE_FILE_OBJECT,
+            SecurityInformation::Dacl | SecurityInformation::ProtectedDacl,
+            None,
+            None,
+            restored.dacl(),
+            None,
+        )?;
+        assert_eq!(denied, Err(Error::Permissions));
+        assert_eq!(
+            std::fs::read(root.path().join("audit.journal"))?,
+            Vec::<u8>::new()
+        );
+        assert!(!path.exists());
+    }
+    Ok(())
+}
+
+#[test]
+fn windows_acl_changed_after_open_denies_append_without_journaling_candidate()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    for name in ["", "audit.journal", "audit", "audit.lock"] {
+        let (root, path) = fixture()?;
+        let sink = JsonlSink::open(&path, 700, 3)?;
+        sink.append(&batch(0))?;
+        let journal = root.path().join("audit.journal");
+        let before = std::fs::read(&journal)?;
+        let target = root.path().join(name);
+        let inheritance = if name.is_empty() { "OICI" } else { "" };
+        set_acl(
+            &target,
+            "P",
+            &format!("(A;{inheritance};FA;;;{})(A;;FR;;;WD)", identity()?),
+        )?;
+        assert_eq!(sink.append(&batch(1)), Err(Error::Permissions));
+        assert_eq!(std::fs::read(&journal)?, before);
+    }
+    Ok(())
+}

@@ -186,7 +186,13 @@ metadata; tail overflow or a mismatched generation denies before callback. A
 generation change during callback denies every allow while retaining committed
 receipt evidence. Terminal execution audit is a separate event. The module never
 claims an audit row committed before authoritative storage confirms it. Windows
-local storage remains fail-closed pending the preprovisioned namespace/ACL engine.
+local storage requires a preprovisioned protected current-user NTFS directory and
+restricted preexisting journal. Actual ancestor handles retain directory-list
+access without delete sharing; trusted ownership, restricted inherited ACLs and
+reparse checks precede candidate writes. Unsafe or unsupported namespaces deny.
+The stable journal supplies receipt authority; rotated files are reconstructable
+views. Process termination/recovery tests do not imply physical power-loss or
+Windows directory-creation durability guarantees.
 
 ## Sandbox and crypto
 

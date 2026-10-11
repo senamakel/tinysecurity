@@ -224,7 +224,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         config: config.clone(),
     };
     client
-        .serve_at(callback_names2::OBJECT_PATH.parse()?, callback)
+        .serve_at(callback_names2::OBJECT_PATH.parse()?, callback.clone())
         .await?;
     verify_peer_denial(&attacker, &client, &module, &proxy, &calls).await?;
     verify_unbound_authorizations(&proxy).await?;
@@ -242,14 +242,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .is_err()
     );
     client.close().await?;
-    let replacement = Connection::connect(bus.connect().await?).await?;
-    assert!(
-        replacement
-            .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
-            .call::<AuditResponse2>(names::methods::AUDIT2, (batch(2, AuditKind2::Shell),))
-            .await
-            .is_err()
-    );
+    verify_replacement_peer(&bus, &module, callback).await?;
     host.shutdown(Duration::from_secs(1)).await;
     task.abort();
     verify_process(&path, "optional")?;
@@ -606,4 +599,32 @@ async fn module_peer(
         }
     })
     .await??)
+}
+
+async fn verify_replacement_peer(
+    bus: &MemoryBus,
+    module: &BusName,
+    callback: Callback,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let replacement = Connection::connect(bus.connect().await?).await?;
+    let replacement_calls = Arc::new(AtomicUsize::new(0));
+    replacement
+        .serve_at(
+            callback_names2::OBJECT_PATH.parse()?,
+            Callback {
+                host: replacement.clone(),
+                calls: replacement_calls.clone(),
+                ..callback
+            },
+        )
+        .await?;
+    assert!(
+        replacement
+            .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
+            .call::<AuditResponse2>(names::methods::AUDIT2, (batch(2, AuditKind2::Shell),))
+            .await
+            .is_err()
+    );
+    assert_eq!(replacement_calls.load(Ordering::SeqCst), 0);
+    Ok(())
 }
