@@ -360,6 +360,11 @@ exit 0
     $start.Domain = $network.Domain
     $start.Password = $password
     $start.LoadUserProfile = $true
+    # Credentialed Framework launches otherwise build the new user's environment.
+    # Bind the fixture context explicitly; the child still verifies its exact identity.
+    $start.EnvironmentVariables['TINYSECURITY_TEST_FOREIGN'] = $env:TINYSECURITY_TEST_FOREIGN
+    $start.EnvironmentVariables['TINYSECURITY_TEST_OWNER'] = $env:TINYSECURITY_TEST_OWNER
+    $start.EnvironmentVariables['TINYSECURITY_TEST_DIRECTORY'] = $env:TINYSECURITY_TEST_DIRECTORY
     $start.WorkingDirectory = (Get-Location).ProviderPath
     $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
     $start.CreateNoWindow = $false
