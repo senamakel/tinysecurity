@@ -579,6 +579,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
+name = "hkdf"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
+dependencies = [
+ "hmac",
+]
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest",
+]
+
+[[package]]
 name = "http"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1608,6 +1626,7 @@ dependencies = [
  "aes",
  "aes-gcm",
  "argon2",
+ "async-trait",
  "aws-lc-rs",
  "base64 0.22.1",
  "chacha20 0.9.1",
@@ -1621,6 +1640,8 @@ dependencies = [
  "sha2",
  "thiserror",
  "tinysecurity-bus",
+ "tinystoragedrivers",
+ "tokio",
  "x25519-dalek",
  "zeroize",
 ]
@@ -1692,6 +1713,40 @@ dependencies = [
  "thiserror",
  "tinysecurity-bus",
  "tinysecurity-policy",
+]
+
+[[package]]
+name = "tinystoragedrivers"
+version = "0.5.0"
+dependencies = [
+ "tinystoragedrivers-core",
+ "tinystoragedrivers-secrets",
+]
+
+[[package]]
+name = "tinystoragedrivers-core"
+version = "0.5.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "tinystoragedrivers-secrets"
+version = "0.5.0"
+dependencies = [
+ "async-trait",
+ "chacha20poly1305",
+ "fs4",
+ "hkdf",
+ "serde_json",
+ "sha2",
+ "tinystoragedrivers-core",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]

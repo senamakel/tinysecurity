@@ -25,6 +25,8 @@ license = "GPL-3.0-only"
 repository = "https://github.com/tinyhumansai/tinysecurity"
 
 [workspace.dependencies]
+# Accepted driver owns secret ports and historical ChaCha formats; no native backend here.
+tinystoragedrivers = { path = "vendor/tinystoragedrivers/crates/tinystoragedrivers", default-features = false, features = ["secrets"] }
 # Private password, credential, device and pairing engines, never host-linked.
 tinysecurity-crypto = { path = "crates/tinysecurity-crypto" }
 # Safe native HKDF owns and wipes IKM/PRK/HMAC contexts for device derivation.

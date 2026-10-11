@@ -3,6 +3,12 @@
 /// Native operation failure; no input, secret or filesystem path is retained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+    /// The secret backend cannot establish the requested state.
+    #[error("keyring unavailable")]
+    KeyringUnavailable,
+    /// Stored secret bytes or master material are malformed.
+    #[error("invalid secret material")]
+    SecretInvalid,
     /// Scoped device authority is unavailable or no longer live.
     #[error("device authority denied")]
     DeviceDenied,

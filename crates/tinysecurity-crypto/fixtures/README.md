@@ -22,3 +22,12 @@ checks that the original host produced an authentic payload; TinySecurity
 compares the fixed derived key, decrypts the frozen bytes and preserves all
 three serialized payload fields. Regenerating produces a new random nonce;
 do not replace this oracle with a same-implementation round trip.
+
+## Secret storage compatibility
+
+The enc2_values.txt and secrets_enc.bin files are unchanged copies from
+OpenHuman edc2d9378a28854fece905e81b57b8bb617547bd under
+crates/openhuman-core/src/security/keyring/fixtures. They pin the historical
+enc2 hex envelope and raw nonce12/ciphertext/tag16 JSON string-map blob. The
+fixture master is 32 repeated 0x42 bytes; these are synthetic test secrets.
+Never regenerate these files to make a test pass.

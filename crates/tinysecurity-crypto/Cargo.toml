@@ -8,6 +8,8 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+# Reuse owner secret ports and encryption instead of copying implementations.
+tinystoragedrivers.workspace = true
 # Transport-free device operation vocabulary and exact binding digest.
 tinysecurity-bus.workspace = true
 sha2.workspace = true
@@ -30,6 +32,8 @@ thiserror.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
+tokio.workspace = true
 serde_json.workspace = true
 
 [lints]
