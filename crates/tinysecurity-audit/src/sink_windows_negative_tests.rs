@@ -101,18 +101,26 @@ fn windows_unprotected_leaf_or_effective_foreign_ancestor_mutation_is_denied()
         .create_new(true)
         .open(child.join("audit.journal"))?
         .sync_all()?;
+    // Establish that this valid child can commit before changing its ancestor;
+    // otherwise an unrelated journal defect could mask a broken ancestor check.
+    let child_path = child.join("audit");
+    let healthy = JsonlSink::open(&child_path, 700, 3)?;
+    let receipt = healthy.append(&batch(0))?;
+    batch(0).verify_receipt(&receipt)?;
+    drop(healthy);
+    let before = std::fs::read(child.join("audit.journal"))?;
     set_acl(
         root.path(),
         "P",
         &format!("(A;OICI;FA;;;{})(A;;0x00000002;;;WD)", identity()?),
     )?;
     assert!(matches!(
-        JsonlSink::open(&child.join("audit"), 700, 3),
+        JsonlSink::open(&child_path, 700, 3),
         Err(Error::Permissions)
     ));
     assert_eq!(
         std::fs::read(child.join("audit.journal"))?,
-        Vec::<u8>::new()
+        before
     );
     Ok(())
 }
