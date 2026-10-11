@@ -34,6 +34,7 @@ struct Fixture {
     reentrant: Mutex<Option<std::sync::Weak<Engine>>>,
     swallow_decision_audit_failure: AtomicU64,
     audits: Mutex<Vec<ApprovalRow2>>,
+    advance_source_audit: Mutex<Option<(Arc<TestClock>, u64)>>,
     audit_receipts: Mutex<std::collections::BTreeMap<(String, u64), ApprovalRow2>>,
     barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
 }
@@ -149,6 +150,15 @@ impl Ports for Fixture {
         })
     }
     async fn audit(&self, _r: ApprovalRow2) -> Result<()> {
+        if _r.decision_ticket_sha256.is_some()
+            && let Some((clock, now)) = self
+                .advance_source_audit
+                .lock()
+                .map_err(|_| Error::Unavailable)?
+                .take()
+        {
+            clock.wall.store(now, Ordering::SeqCst);
+        }
         self.order
             .lock()
             .map_err(|_| Error::Unavailable)?
@@ -1013,3 +1023,34 @@ async fn fresh_and_resumed_prompt_reconcile_a_lost_decision_audit_acknowledgemen
 
 #[path = "automatic_tests.rs"]
 mod automatic_tests;
+
+#[tokio::test]
+async fn source_expiring_during_audit_never_poison_durable_subject_rows() -> Result<()> {
+    for choice in [1, 2] {
+        let f = Arc::new(Fixture::default());
+        f.choice.store(choice, Ordering::SeqCst);
+        let clock = Arc::new(TestClock::default());
+        let owner = engine(f.clone(), clock.clone())?;
+        let mut input = request();
+        input.request.caller.flow = Some("reviewed-flow".into());
+        let pending = owner.begin(input.clone()).await?;
+        let source = owner.decide(decision(&pending)).await?;
+        *f.advance_source_audit
+            .lock()
+            .map_err(|_| Error::Unavailable)? = Some((clock, source.expires_at_ms));
+        input.request.caller.call_id = "expired-source-execution".into();
+        input.audit = audit(3);
+        assert!(owner.begin(input.clone()).await.is_err());
+        assert_eq!(
+            f.rows.lock().map_err(|_| Error::Unavailable)?.len(),
+            1,
+            "no invalid derived CAS"
+        );
+        input.request.caller.call_id = "future-independent-execution".into();
+        input.request.call.tool = "independent_tool".into();
+        let future = owner.begin(input).await?;
+        assert_eq!(future.state, ApprovalLifecycle2::Pending);
+        assert!(future.created_at_ms < future.expires_at_ms);
+    }
+    Ok(())
+}

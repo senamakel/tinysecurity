@@ -166,7 +166,8 @@ pub(crate) fn original(
 }
 pub(crate) fn envelope(row: &ApprovalRow2) -> Result<ApprovalRecord2> {
     let json = serde_json::to_string(row).map_err(|_| Error::Invalid)?;
-    if json.len() > 65536
+    if row.created_at_ms >= row.expires_at_ms
+        || json.len() > 65536
         || !hex(&row.binding.call_sha256, 64)
         || !hex(&row.binding.content_sha256, 64)
     {

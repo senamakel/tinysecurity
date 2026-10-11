@@ -508,3 +508,32 @@ async fn class_origin_thresholds_invalid_config_and_reconfiguration_cannot_reuse
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn legitimate_reconfiguration_shrinks_shared_cache_and_zero_clears_it() -> Result<()> {
+    let mut cfg = config();
+    cfg.max_requests = 10;
+    let engine = Engine::with_client(
+        cfg.clone(),
+        fake([1.0, 1.0, 0.0]),
+        Arc::new(TestClock::default()),
+    )?;
+    for call in ["a", "b", "c"] {
+        let mut request = input();
+        request.binding.caller.call_id = call.into();
+        engine
+            .evaluate(&request, &registry().map_err(|_| Error::Invalid)?)
+            .await?;
+    }
+    assert_eq!(engine.state.lock().map_err(|_| Error::Budget)?.1.len(), 3);
+    cfg.cache_entries = 1;
+    let candidate = engine.reconfigured(cfg.clone())?;
+    assert_eq!(
+        candidate.state.lock().map_err(|_| Error::Budget)?.1.len(),
+        1
+    );
+    cfg.cache_entries = 0;
+    let disabled = candidate.reconfigured(cfg)?;
+    assert_eq!(disabled.state.lock().map_err(|_| Error::Budget)?.1.len(), 0);
+    Ok(())
+}

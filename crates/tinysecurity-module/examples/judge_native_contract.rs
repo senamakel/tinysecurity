@@ -61,7 +61,7 @@ fn judge(endpoint: String) -> JudgeConfig {
         thresholds: vec![],
         timeout_ms: 1000,
         origins: vec![Origin::Operator],
-        max_requests: 2,
+        max_requests: 3,
         budget_window_ms: 60_000,
         cache_entries: 10,
         cache_ttl_ms: 1000,
@@ -120,6 +120,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     verify_fallback(&proxy, &stub, &store).await?;
     let mut invalid = configuration.clone();
     invalid.judge.as_mut().ok_or("judge")?.endpoint = "http://not-loopback.invalid/jev".into();
+    invalid.judge.as_mut().ok_or("judge")?.credential = Secret("invalid-candidate-key".into());
     assert!(
         lifecycle
             .reinitialize(&loaded.name, serde_json::to_value(invalid)?)
@@ -128,10 +129,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     );
     let info: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
     assert_eq!(info.generation, 2);
+    verify_retained_scoring(&proxy, &stub).await?;
     prompt_failure.store(true, Ordering::SeqCst);
     assert!(
         proxy
-            .call::<EvaluateApprovalResponse2>(names::methods::EVALUATE_APPROVAL2, (begin(7, 8),))
+            .call::<EvaluateApprovalResponse2>(names::methods::EVALUATE_APPROVAL2, (begin(7, 10),))
             .await
             .is_err()
     );
@@ -158,6 +160,64 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!(
         "native judge: off-default, explicit init, redacted SDK scores, durable one-shot, hard denial, budget, human fallback and audit verified"
     );
+    Ok(())
+}
+
+async fn verify_retained_scoring(
+    proxy: &tinybus::Proxy,
+    stub: &stub::Stub,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    *stub.response.lock().map_err(|_| "stub")? = (200, stub::response([1.0, 1.0, 0.0]));
+    let retained: EvaluateApprovalResponse2 = proxy
+        .call(names::methods::EVALUATE_APPROVAL2, (begin(9, 7),))
+        .await?;
+    assert_eq!(retained.decision.verdict, Verdict::Allow);
+    assert_eq!(retained.record.attribution.as_deref(), Some("auto:jev"));
+    assert!(retained.record.decision_ticket_sha256.is_none());
+    let evidence = retained
+        .record
+        .judge
+        .as_ref()
+        .ok_or("retained scorer evidence")?;
+    assert_eq!(evidence.outcome, JudgeOutcome2::Qualified);
+    assert_eq!(evidence.scores_millionths, Some([1_000_000, 1_000_000, 0]));
+    {
+        let captured = stub.requests.lock().map_err(|_| "stub")?;
+        assert_eq!(
+            captured.len(),
+            3,
+            "fresh identity must use retained SDK endpoint and credential"
+        );
+        assert_eq!(
+            captured.last().ok_or("retained SDK request")?["model"],
+            "jev-latest"
+        );
+    }
+    let consumed: ApprovalRow2 = proxy
+        .call(
+            names::methods::CONSUME_APPROVAL2,
+            (ApprovalActionRequest2 {
+                scope_id: "a".repeat(32),
+                request_id: retained.record.request_id,
+                request: begin(9, 8).request,
+                audit: audit(8),
+            },),
+        )
+        .await?;
+    assert_eq!(consumed.state, ApprovalLifecycle2::Reserved);
+    let budget: EvaluateApprovalResponse2 = proxy
+        .call(names::methods::EVALUATE_APPROVAL2, (begin(6, 9),))
+        .await?;
+    assert_eq!(
+        budget
+            .record
+            .judge
+            .as_ref()
+            .ok_or("budget evidence")?
+            .outcome,
+        JudgeOutcome2::Budget
+    );
+    assert_eq!(stub.requests.lock().map_err(|_| "stub")?.len(), 3);
     Ok(())
 }
 
@@ -297,18 +357,6 @@ async fn verify_fallback(
         .await?;
     assert_eq!(human.state, ApprovalLifecycle2::Approved);
     assert!(human.decision_ticket_sha256.is_some());
-    let budget: EvaluateApprovalResponse2 = proxy
-        .call(names::methods::EVALUATE_APPROVAL2, (begin(6, 7),))
-        .await?;
-    assert_eq!(
-        budget
-            .record
-            .judge
-            .as_ref()
-            .ok_or("budget evidence")?
-            .outcome,
-        JudgeOutcome2::Budget
-    );
     Ok(())
 }
 

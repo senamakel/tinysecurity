@@ -132,6 +132,12 @@ impl Engine {
     pub fn reconfigured(&self, config: JudgeConfig) -> Result<Self> {
         let mut candidate = Self::new(config, Arc::clone(&self.clock))?;
         candidate.state = Arc::clone(&self.state);
+        candidate
+            .state
+            .lock()
+            .map_err(|_| Error::Budget)?
+            .1
+            .resize(candidate.config.cache_entries);
         Ok(candidate)
     }
     /// Score only an already verified pending approval, with fresh policy gates outside.
@@ -175,6 +181,7 @@ impl Engine {
             {
                 return Ok(Some(self.failure(JudgeOutcome2::Budget, thresholds)));
             }
+            state.1.resize(self.config.cache_entries);
             state.1.get(&key, now)
         };
         if let Some(scores) = cached {

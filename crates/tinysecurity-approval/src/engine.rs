@@ -193,25 +193,11 @@ impl Engine {
         }
         Self::correlation(&request.audit, reg.generation)?;
         let rows = self.rows(&reg).await?;
-        // Durable identities replace retry identities once confirmed by exact
-        // load. Retain every indeterminate creation not present in this snapshot.
-        self.creations
-            .lock()
-            .map_err(|_| Error::Unavailable)?
-            .retain(|_, pending| {
-                !rows.iter().any(|row| {
-                    row.request_id == pending.request_id && row.binding == pending.binding
-                })
-            });
+        self.reconcile_creations(&rows)?;
         if let Some(row) = rows.iter().find(|r| r.binding == bound) {
             return self.resume(&reg, row, now).await;
         }
-        let reusable = reusable_grant(&rows, &bound, now);
-        if let Some(source) = reusable {
-            // A decision CAS can succeed before its required audit fails. Reuse
-            // must reconcile that exact phase before a derived permission exists.
-            self.ports.audit(source.clone()).await?;
-        }
+        let reusable = self.live_reusable(&reg, &bound, &rows, now).await?;
         let automatic = rule == tinysecurity_auto::rules::Rule::Automatic;
         let judge = if reusable.is_none() && !automatic {
             self.score(&request, &bound, external_effect).await?
@@ -226,6 +212,12 @@ impl Engine {
             return Err(Error::Denied);
         }
         let now = self.now()?;
+        if reusable
+            .as_ref()
+            .is_some_and(|source| source.expires_at_ms <= now)
+        {
+            return Err(Error::Denied);
+        }
         let approved = reusable.is_some() || automatic || qualified;
         let expiry = now.checked_add(ttl).ok_or(Error::Invalid)?;
         let row = ApprovalRow2 {
@@ -243,7 +235,9 @@ impl Engine {
             args_redacted,
             summary: binding::text(&self.redactor()?, &request.summary, RedactMode::Text)?,
             created_at_ms: now,
-            expires_at_ms: reusable.map_or(expiry, |r| expiry.min(r.expires_at_ms)),
+            expires_at_ms: reusable
+                .as_ref()
+                .map_or(expiry, |r| expiry.min(r.expires_at_ms)),
             state: if approved {
                 ApprovalLifecycle2::Approved
             } else {
@@ -275,6 +269,40 @@ impl Engine {
                 .clone()
         };
         self.finish_begin(&reg, &row, now).await
+    }
+    fn reconcile_creations(&self, rows: &[ApprovalRow2]) -> Result<()> {
+        // Durable identities replace retry identities once confirmed by exact
+        // load. Retain every indeterminate creation not present in this snapshot.
+        self.creations
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .retain(|_, pending| {
+                !rows.iter().any(|row| {
+                    row.request_id == pending.request_id && row.binding == pending.binding
+                })
+            });
+        Ok(())
+    }
+    async fn live_reusable(
+        &self,
+        reg: &ApprovalScope2,
+        bound: &tinysecurity_bus::ApprovalBinding2,
+        rows: &[ApprovalRow2],
+        now: u64,
+    ) -> Result<Option<ApprovalRow2>> {
+        let Some(source) = reusable_grant(rows, bound, now) else {
+            return Ok(None);
+        };
+        // Reconcile the exact source audit, then reload mutable state and time.
+        // No callback lock is held, and an expired source never creates a row.
+        self.ports.audit(source.clone()).await?;
+        let current = self.rows(reg).await?;
+        let now = self.now()?;
+        let live = reusable_grant(&current, bound, now)
+            .filter(|row| row.request_id == source.request_id)
+            .cloned()
+            .ok_or(Error::Denied)?;
+        Ok(Some(live))
     }
     async fn score(
         &self,
