@@ -99,3 +99,105 @@ fn invalid_shapes_and_work_limits_fail_before_cryptography()
     assert_ne!(PasswordKey::generate_salt()?, PasswordKey::generate_salt()?);
     Ok(())
 }
+
+#[test]
+fn resolved_crypto_dependencies_enable_key_material_cleanup()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn requires_key_schedule_cleanup<T: zeroize::ZeroizeOnDrop>() {}
+    requires_key_schedule_cleanup::<aes::Aes256>();
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+    let output = std::process::Command::new(env!("CARGO"))
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--offline",
+            "--locked",
+            "--all-features",
+            "--manifest-path",
+        ])
+        .arg(manifest)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "locked offline metadata must resolve"
+    );
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let packages = metadata["packages"].as_array().ok_or("missing packages")?;
+    let nodes = metadata["resolve"]["nodes"]
+        .as_array()
+        .ok_or("missing resolved nodes")?;
+    for name in ["aes", "aes-gcm", "argon2", "ghash", "polyval"] {
+        let package = packages
+            .iter()
+            .find(|p| p["name"] == name)
+            .ok_or("missing crypto dependency")?;
+        let node = nodes
+            .iter()
+            .find(|n| n["id"] == package["id"])
+            .ok_or("missing resolved dependency")?;
+        assert!(
+            node["features"]
+                .as_array()
+                .ok_or("missing features")?
+                .iter()
+                .any(|f| f == "zeroize"),
+            "{name} must resolve zeroize"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn decrypts_original_host_password_fixture_and_preserves_its_wire_bytes()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    #[derive(Deserialize)]
+    struct Fixture {
+        password: String,
+        salt: Vec<u8>,
+        derived_key: [u8; 32],
+        plaintext: Vec<u8>,
+        payload: PasswordPayload,
+    }
+    let encoded = include_str!("../fixtures/openhuman-password.json");
+    let fixture: Fixture = serde_json::from_str(encoded)?;
+    let key = PasswordKey::derive(&fixture.password, &fixture.salt)?;
+    assert_eq!(*key.0, fixture.derived_key);
+    assert_eq!(&*key.decrypt(&fixture.payload)?, &fixture.plaintext);
+    let original: serde_json::Value = serde_json::from_str(encoded)?;
+    assert_eq!(serde_json::to_value(&fixture.payload)?, original["payload"]);
+    let mut other_salt = fixture.salt.clone();
+    other_salt[0] ^= 1;
+    let other = PasswordKey::derive(&fixture.password, &other_salt)?;
+    assert_eq!(other.decrypt(&fixture.payload), Err(Error::Authentication));
+    let mut altered_tag = fixture.payload;
+    let last = altered_tag
+        .ciphertext
+        .last_mut()
+        .ok_or("fixture needs a tag")?;
+    *last ^= 1;
+    assert_eq!(key.decrypt(&altered_tag), Err(Error::Authentication));
+    Ok(())
+}
+
+#[test]
+fn accepts_empty_password_and_exact_work_limits()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let empty = PasswordKey::derive("", &[0; 16])?;
+    let payload = empty.encrypt(b"empty password")?;
+    assert_eq!(&*empty.decrypt(&payload)?, b"empty password");
+    let boundary = PasswordKey::derive(&"x".repeat(MAX_PASSWORD_BYTES), &[0; 16])?;
+    let plaintext = vec![42; MAX_PLAINTEXT_BYTES];
+    let payload = boundary.encrypt(&plaintext)?;
+    assert_eq!(payload.ciphertext.len(), MAX_PLAINTEXT_BYTES + TAG_BYTES);
+    assert_eq!(&*boundary.decrypt(&payload)?, &plaintext);
+    Ok(())
+}
+
+#[test]
+fn resolved_authentication_state_runs_cleanup_on_drop() {
+    // The accelerated POLYVAL dispatcher can suppress its inner Drop even
+    // when the selected backend and resolved dependency enable zeroize.
+    assert!(std::mem::needs_drop::<polyval::Polyval>());
+    assert!(std::mem::needs_drop::<ghash::GHash>());
+}

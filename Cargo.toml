@@ -28,9 +28,14 @@ repository = "https://github.com/tinyhumansai/tinysecurity"
 # Private password, credential, device and pairing engines, never host-linked.
 tinysecurity-crypto = { path = "crates/tinysecurity-crypto" }
 # Preserve the password payload's AES-256-GCM wire format.
-aes-gcm = "0.10"
+aes-gcm = { version = "0.10", features = ["zeroize"] }
+# AES-GCM does not forward zeroize to its expanded AES key schedule.
+aes = { version = "0.8", features = ["zeroize"] }
+# Wipe GHASH setup copies and the backing POLYVAL authentication state.
+ghash = { version = "0.5", features = ["zeroize"] }
+polyval = { version = "0.6", features = ["zeroize"] }
 # Preserve the Argon2id v0x13 password derivation parameters.
-argon2 = "0.5"
+argon2 = { version = "0.5", features = ["zeroize"] }
 # Clear native key material and decrypted buffers on drop.
 zeroize = "1"
 # Private declarative sandbox planner, never linked by a host.

@@ -5,7 +5,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit},
 };
-use argon2::{Algorithm, Argon2, Params, Version};
+use argon2::{Algorithm, Argon2, Block, Params, Version};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -15,6 +15,11 @@ pub const MAX_PASSWORD_BYTES: usize = 4096;
 pub const MAX_PLAINTEXT_BYTES: usize = 1_048_576;
 const NONCE_BYTES: usize = 12;
 const TAG_BYTES: usize = 16;
+
+// The locked POLYVAL accelerated dispatcher suppresses its inner Drop. Our
+// owner build selects the zeroizing software backend. Reject external builds
+// that override those flags rather than silently retain the GHASH subkey.
+const _: () = assert!(std::mem::needs_drop::<ghash::GHash>());
 
 /// Legacy AES payload. Salt is stored separately when encrypting a derived key.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,9 +62,17 @@ impl PasswordKey {
             return Err(Error::InvalidInput);
         }
         let params = Params::new(65536, 3, 1, Some(32)).map_err(|_| Error::Derivation)?;
+        // The allocating Argon2 API leaves its Vec<Block> unwiped. Own the
+        // complete scratch buffer so both success and error paths wipe it.
+        let mut memory = Zeroizing::new(vec![Block::default(); params.block_count()]);
         let mut bytes = Zeroizing::new([0; 32]);
         Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-            .hash_password_into(password.as_bytes(), salt, bytes.as_mut())
+            .hash_password_into_with_memory(
+                password.as_bytes(),
+                salt,
+                bytes.as_mut(),
+                memory.as_mut_slice(),
+            )
             .map_err(|_| Error::Derivation)?;
         Ok(Self(bytes))
     }
