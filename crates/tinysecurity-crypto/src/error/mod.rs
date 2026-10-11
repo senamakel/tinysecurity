@@ -12,6 +12,9 @@ pub enum Error {
     /// An authenticated ciphertext does not verify.
     #[error("authentication failed")]
     Authentication,
+    /// A frame repeats a nonce in the authenticated receive window.
+    #[error("replayed frame")]
+    Replay,
     /// The platform entropy source is unavailable.
     #[error("entropy unavailable")]
     Entropy,

@@ -11,6 +11,7 @@
 //! assert_eq!(&*key.decrypt(&encrypted)?, b"fixture bytes");
 //! # Ok::<(), tinysecurity_crypto::Error>(())
 //! ```
+pub mod device;
 mod error;
 pub mod password;
 pub use error::{Error, Result};

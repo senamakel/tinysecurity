@@ -15,8 +15,8 @@ length. Password inputs are limited to 4096 bytes and plaintext to one MiB;
 malformed nonce and tag shapes return errors before reaching the cipher.
 `encrypt` returns an empty salt, as the existing derived-key helper does.
 
-This checkpoint supplies no native bus methods, keyring backend, device session,
-or pairing capability. It is not the config-secret RPC implementation:
+The device primitives described below add no native bus methods, keyring backend,
+scoped session handles or pairing capability. It is not the config-secret RPC implementation:
 that RPC uses the existing ChaCha20-Poly1305 storage format, owned by
 TinyStorageDrivers. The native module must eventually expose only scoped opaque
 handles over these internal keys. Hosts continue to link `tinysecurity-bus`
@@ -49,3 +49,65 @@ heap-introspection proof or a guarantee about every compiler/register copy.
 Caller-owned passwords, input slices and returned serialized payloads remain
 the caller's responsibility. The independent host fixture and its provenance
 are in [fixtures](fixtures/README.md).
+
+
+## Device primitives and immutable wire
+
+The internal `device` API owns X25519 static/ephemeral keys, directional
+session keys and XChaCha20-Poly1305 frames. Public keys use exactly 32 bytes
+encoded as URL-safe base64 without padding; zero, wrong-length, noncanonical
+and noncontributory DH inputs fail closed. Private keys have no serializer or
+export method. Imports consume a `Zeroizing<[u8; 32]>` input.
+
+The v1 session schedule uses HKDF-SHA256 over static DH followed by ephemeral
+DH, with client ephemeral public followed by server ephemeral public as salt.
+The distinct `openhuman-tunnel/v1/c2s` and `openhuman-tunnel/v1/s2c` labels
+produce 32-byte keys. Both endpoints supply salts in client/server order.
+
+Frames retain the old wire layout:
+
+- v2: `02 || nonce24 || ciphertext || tag16`, empty AAD. A tunnel retains
+  exactly the last 128 authenticated receive nonces. Failed tags consume none;
+  the opposite direction's key rejects reflections. A nonce evicted from this
+  bounded window can be accepted again, matching the legacy contract.
+- v3: `03 || clientEph32 || nonce24 || ciphertext || tag16`. The first 33
+  bytes are AAD. DH uses the client's ephemeral and core static keys, salt is
+  `clientEph || corePub`, info is `openhuman-tunnel/v3/handshake`.
+- v4: `04 || nonce24 || ciphertext || tag16`. AAD is `04 || clientEph`,
+  salt is `clientEph`, info is `openhuman-tunnel/v3/handshake-ack`.
+
+Every plaintext is bounded to one MiB. Public methods reject oversize before
+DH or cipher work. Encryption uses fresh OS entropy; only private fixture
+tests inject a nonce. Bootstrap authentication does not establish pairing,
+expiry, revocation or handshake replay protection: those belong to the future
+scoped lifecycle engine. Concurrent tunnel users must serialize receive
+operations to preserve the nonce window.
+
+The independent frozen host vectors in [tests/fixtures](tests/fixtures/README.md)
+are authenticated and reencrypted byte-for-byte without regeneration. Tests
+also pin RFC7748 X25519 and RFC5869 HKDF vectors, version/AAD/tag tampering,
+directional reflection, failed-tag retry and authenticated window eviction.
+
+## Device cleanup boundary
+
+The locked AWS-LC Rust safe HKDF API copies IKM into owned zeroizing storage.
+Its native HKDF cleans its PRK and previous block; HMAC cleans its pads,
+intermediate digest and entire retained hash context. Rust outputs and the
+DH concatenation are owned `Zeroizing` values. X25519's explicit zeroize
+feature wipes retained private/DH values. The AEAD wipes its stored key;
+explicit ChaCha20 and Poly1305 zeroize features wipe retained expanded states.
+Encryption reserves the tag capacity before copying plaintext, avoiding a
+plaintext-bearing Vec reallocation. All owned plaintext buffers wipe on normal
+drop, including authentication failures. Debug and errors contain no inputs.
+
+This is a bounded owned-state guarantee. It does not promise wiping every
+compiler/register copy or arithmetic temporary: the portable AWS SHA256
+compression schedule/working words and RustCrypto's HChaCha local state/subkey
+are documented transient limits. Borrowed caller inputs and exported ciphertext
+remain the caller's responsibility; aborts do not run destructors.
+
+Build from the owner root so the existing `polyval_force_soft` password
+guard remains active. Coverage must compose that cfg with LLVM instrumentation;
+an overriding `RUSTFLAGS` that drops it fails compilation. AWS-LC adds a native
+C build requirement; actual macOS/Windows and release-target builds are separate
+acceptance gates, not established by Linux or cross-compilation.

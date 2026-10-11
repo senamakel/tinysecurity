@@ -27,6 +27,16 @@ repository = "https://github.com/tinyhumansai/tinysecurity"
 [workspace.dependencies]
 # Private password, credential, device and pairing engines, never host-linked.
 tinysecurity-crypto = { path = "crates/tinysecurity-crypto" }
+# Safe native HKDF owns and wipes IKM/PRK/HMAC contexts for device derivation.
+aws-lc-rs = { version = "=1.18.1", default-features = false, features = ["non-fips"] }
+# Preserve the device X25519 and XChaCha wire primitives with retained-state cleanup.
+x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
+chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] }
+# AEAD does not forward these expanded-state cleanup features.
+chacha20 = { version = "=0.9.1", default-features = false, features = ["zeroize"] }
+poly1305 = { version = "=0.8.0", default-features = false, features = ["zeroize"] }
+# Strict URL-safe unpadded device public-key encoding.
+base64 = "0.22"
 # Preserve the password payload's AES-256-GCM wire format.
 aes-gcm = { version = "0.10", features = ["zeroize"] }
 # AES-GCM does not forward zeroize to its expanded AES key schedule.
