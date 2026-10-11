@@ -7,7 +7,12 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tinybus::{Connection, broker::Broker, module::ModuleHost, transport::memory::MemoryBus};
+use tinybus::{
+    Connection,
+    broker::Broker,
+    module::{ModuleHost, ModuleState},
+    transport::memory::MemoryBus,
+};
 use tinysecurity_bus::{
     AccessTier, AuditCorrelation2, AuditedRequest2, CallerContext, Check, CheckAuditedResponse2,
     CheckRequest, ModuleConfig, Verdict, names,
@@ -235,6 +240,36 @@ fn request(tail: u64) -> AuditedRequest2<CheckRequest> {
     }
 }
 
+// Diagnostic categories contain no SDK reason strings or serialized identities.
+fn init_category(state: &ModuleState) -> u8 {
+    match state {
+        ModuleState::Discovered => 1,
+        ModuleState::Rejected { .. } => 2,
+        ModuleState::Unresolved { .. } => 3,
+        ModuleState::Resolved => 4,
+        ModuleState::Initializing => 5,
+        ModuleState::Ready => 6,
+        ModuleState::Serving => 7,
+        ModuleState::Faulted { .. } => 8,
+        ModuleState::Failed { .. } => 9,
+        ModuleState::Stopped => 10,
+        ModuleState::Disabled => 11,
+    }
+}
+
+#[cfg(all(windows, test))]
+fn engine_category(error: tinysecurity::audit::Error) -> u8 {
+    use tinysecurity::audit::Error;
+    match error {
+        Error::Sanitation => 1,
+        Error::Conflict => 2,
+        Error::Permissions => 3,
+        Error::Busy => 4,
+        Error::Storage => 5,
+        Error::Unsupported => 6,
+    }
+}
+
 pub(super) async fn verify(library: &Path) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (_directory, path) = namespace()?;
     let bus = MemoryBus::new();
@@ -256,7 +291,20 @@ pub(super) async fn verify(library: &Path) -> std::result::Result<(), Box<dyn st
             ..Default::default()
         })?,
     )?;
-    let module = module_peer(&client).await?;
+    let module = match module_peer(&client).await {
+        Ok(module) => module,
+        Err(error) => {
+            // The SDK faults asynchronously when setup fails. Observe only its
+            // typed state; never print the associated reason or module identity.
+            for module in host.list() {
+                println!(
+                    "audit-native-init stage=1 category={}",
+                    init_category(&module.state)
+                );
+            }
+            return Err(error);
+        }
+    };
     let proxy = client.proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?;
     assert!(proxy.attestation().await?.is_some());
     let first: CheckAuditedResponse2 = proxy

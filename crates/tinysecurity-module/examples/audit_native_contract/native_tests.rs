@@ -48,3 +48,57 @@ fn namespace_installer_succeeds_when_set_acl_cmdlet_is_unavailable() {
     );
     provision_with_script(directory.path(), &script).unwrap();
 }
+
+#[test]
+fn initialization_diagnostics_discard_reason_strings() {
+    let reason = "private path or identity".to_owned();
+    let states = [
+        ModuleState::Discovered,
+        ModuleState::Rejected {
+            reason: reason.clone(),
+        },
+        ModuleState::Unresolved {
+            reason: reason.clone(),
+        },
+        ModuleState::Resolved,
+        ModuleState::Initializing,
+        ModuleState::Ready,
+        ModuleState::Serving,
+        ModuleState::Faulted {
+            reason: reason.clone(),
+        },
+        ModuleState::Failed { reason },
+        ModuleState::Stopped,
+        ModuleState::Disabled,
+    ];
+    for (index, state) in states.iter().enumerate() {
+        assert_eq!(usize::from(init_category(state)), index + 1);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn installed_namespace_passes_actual_restricted_engine_open() {
+    use tinysecurity::audit::{Error, JsonlSink};
+    for (index, error) in [
+        Error::Sanitation,
+        Error::Conflict,
+        Error::Permissions,
+        Error::Busy,
+        Error::Storage,
+        Error::Unsupported,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(usize::from(engine_category(error)), index + 1);
+    }
+    let (_directory, path) = namespace().unwrap();
+    let result = JsonlSink::open(&path, 2048, 3);
+    let category = result.as_ref().err().copied().map_or(0, engine_category);
+    println!("audit-native-init stage=2 category={category}");
+    assert!(
+        result.is_ok(),
+        "installed namespace must pass actual restricted engine open"
+    );
+}
