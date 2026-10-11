@@ -187,10 +187,8 @@ impl Engine {
                 .map_err(|_| Error::InvalidConfig)?;
             scopes.push(Scope { facts, paths });
         }
-        Ok(Self {
-            scopes,
-            issued: crate::registry::Registry::default(),
-        })
+        let issued = crate::registry::Registry::new(scopes.len());
+        Ok(Self { scopes, issued })
     }
     /// Construct a bounded declarative plan at an injected trusted clock value.
     /// # Errors

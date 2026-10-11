@@ -842,10 +842,12 @@ impl Registry {
         state.recount();
         Ok(())
     }
-    /// Advance generation, rotate its private authorization key and wipe all retained entries.
+    /// Prepare a generation rotation while excluding concurrent authority changes.
+    /// Clock faults retain their permanent close behavior; valid preparations dropped
+    /// before publication preserve the current generation and private entries.
     /// # Errors
-    /// Rejects non-increasing generation, closed state, clock or entropy failure.
-    pub fn advance_generation(&self, generation: u64) -> Result<()> {
+    /// Rejects stale generation, closed state, clock or entropy failure.
+    pub fn prepare_generation(&self, generation: u64) -> Result<PreparedGeneration<'_>> {
         let now = self.now()?;
         let mut state = self.lock()?;
         state.check(now)?;
@@ -853,10 +855,17 @@ impl Registry {
             return Err(Error::NativeDenied);
         }
         let key = random_bytes()?;
-        state.entries.clear();
-        state.retained_bytes = 0;
-        state.authorization_key = key;
-        state.generation = generation;
+        Ok(PreparedGeneration {
+            state,
+            generation,
+            key,
+        })
+    }
+    /// Advance generation, rotate its private authorization key and wipe retained entries.
+    /// # Errors
+    /// Rejects non-increasing generation, closed state, clock or entropy failure.
+    pub fn advance_generation(&self, generation: u64) -> Result<()> {
+        self.prepare_generation(generation)?.commit();
         Ok(())
     }
     /// Permanently close even when another owner retains this registry or a pending future.
@@ -866,6 +875,26 @@ impl Registry {
             Err(poisoned) => poisoned.into_inner(),
         };
         state.close();
+    }
+}
+/// A locked generation rotation whose final activation cannot fail.
+pub struct PreparedGeneration<'a> {
+    state: MutexGuard<'a, State>,
+    generation: u64,
+    key: ConfidentialBytes,
+}
+impl std::fmt::Debug for PreparedGeneration<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PreparedGeneration([REDACTED])")
+    }
+}
+impl PreparedGeneration<'_> {
+    /// Rotate authority and release the native lock before old reservations are dropped.
+    pub fn commit(mut self) {
+        self.state.entries.clear();
+        self.state.retained_bytes = 0;
+        self.state.authorization_key = self.key;
+        self.state.generation = self.generation;
     }
 }
 impl State {

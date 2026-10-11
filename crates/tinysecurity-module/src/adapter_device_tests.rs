@@ -463,9 +463,24 @@ async fn native_device_work_requires_exact_human_receipts_and_durable_audit()
                 purpose: DeviceKeyPurpose2::Ephemeral,
             },
         );
-        let row = fixture
-            .review(request.clone(), instance * 10, choice)
-            .await?;
+        let reviewed = fixture.review(request.clone(), instance * 10, choice).await;
+        let row = if choice == ApprovalChoice2::Tool {
+            assert!(
+                reviewed.is_err(),
+                "device decisions only accept Human Once or Deny"
+            );
+            let row = fixture
+                .service
+                .evaluate_device2(EvaluateDeviceRequest2 {
+                    request: request.clone(),
+                    audit: audit(instance * 10),
+                })
+                .await?;
+            assert_eq!(row.state, ApprovalLifecycle2::Pending);
+            row
+        } else {
+            reviewed?
+        };
         assert!(
             fixture
                 .execute(request, &row, instance * 10 + 2)
@@ -666,7 +681,7 @@ fn device_configuration_preserves_immutable_subjects_and_weak_shutdown_lookup()
     verify_generation_handles(&registry, limits)?;
     assert!(configure(Some(device_configuration()), Some(&None), &next).is_err());
     assert!(configure(None, Some(&None), &next)?.0.is_none());
-    advance(None, None, 2)?;
+    transition(None, None, 2, || Ok(()))?;
     drop(registry);
     drop(retained);
     assert!(configure(None, Some(&current), &next).is_err());
@@ -761,7 +776,7 @@ async fn unpublished_worker_plaintext_is_wiped_on_clock_read_failure_and_join_ab
             clock.0.store(true, Ordering::SeqCst);
         } else if fault == 3 {
             let registry = fixture.service.device.as_ref().ok_or("registry")?;
-            advance(Some(registry), None, 2)?;
+            transition(Some(registry), None, 2, || Ok(()))?;
             fixture
                 .service
                 .policy
@@ -816,7 +831,7 @@ fn verify_generation_handles(
         .execute(&work, &request.operation, 1, now)?
         .handle
         .ok_or("key handle")?;
-    advance(Some(registry), limits, 2)?;
+    transition(Some(registry), limits, 2, || Ok(()))?;
     assert!(registry.validate(&work, 2, now).is_err());
     assert!(registry.reserve(&request, 1, now).is_err());
     let fresh = registry.reserve(&request, 2, now)?;
@@ -840,5 +855,106 @@ fn verify_generation_handles(
     drop(work);
     drop(fresh);
 
+    Ok(())
+}
+
+#[test]
+fn bootstrap_after_prevalidation_rejects_before_generation_publication()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tinysecurity::crypto::device::{KeyPair, PublicKey};
+    let reg = Arc::new(Registry::new(
+        device_configuration(),
+        &[device_registration()],
+        ":1.1",
+        1,
+        Time {
+            wall: 1000,
+            monotonic: 0,
+        },
+    )?);
+    let now = Time {
+        wall: 1000,
+        monotonic: 0,
+    };
+    let key_request = device_request(
+        1,
+        DeviceOperation2::Key {
+            purpose: DeviceKeyPurpose2::Static,
+        },
+    );
+    let work = reg.reserve(&key_request, 1, now)?;
+    let key = reg.execute(&work, &key_request.operation, 1, now)?;
+    drop(work);
+    let handle = key.handle.ok_or_else(denied)?;
+    let public = PublicKey::decode(&key.public_key.ok_or_else(denied)?)?;
+    let mut cfg = reg.configuration()?;
+    cfg.max_bootstrap_nonces = 1;
+    reg.validate_configuration(&cfg, 2)?;
+    let client = KeyPair::from_secret(zeroize::Zeroizing::new([3; 32]))?;
+    for call in 2..4 {
+        let req = device_request(
+            call,
+            DeviceOperation2::OpenHandshake {
+                handle: handle.clone(),
+                frame: client.seal_handshake(public, b"fixture-private")?,
+            },
+        );
+        let work = reg.reserve(&req, 1, now)?;
+        reg.execute(&work, &req.operation, 1, now)?;
+    }
+    let published = AtomicBool::new(false);
+    assert!(
+        transition(Some(&reg), Some(cfg), 2, || {
+            published.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .is_err()
+    );
+    assert!(
+        !published.load(Ordering::SeqCst),
+        "rejected capacity must not publish or advance other components"
+    );
+    let req = device_request(4, DeviceOperation2::Revoke { handle });
+    let work = reg.reserve(&req, 1, now)?;
+    reg.validate(&work, 1, now)?;
+    Ok(())
+}
+
+#[test]
+fn rejected_generation_publication_preserves_device_handles_and_replay()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let reg = Arc::new(Registry::new(
+        device_configuration(),
+        &[device_registration()],
+        ":1.1",
+        1,
+        Time {
+            wall: 1000,
+            monotonic: 0,
+        },
+    )?);
+    let now = Time {
+        wall: 1000,
+        monotonic: 0,
+    };
+    let req = device_request(
+        1,
+        DeviceOperation2::Key {
+            purpose: DeviceKeyPurpose2::Static,
+        },
+    );
+    let work = reg.reserve(&req, 1, now)?;
+    let key = reg.execute(&work, &req.operation, 1, now)?;
+    assert!(transition(Some(&reg), None, 2, || Err(denied())).is_err());
+    reg.validate(&work, 1, now)?;
+    drop(work);
+    let req = device_request(
+        2,
+        DeviceOperation2::Revoke {
+            handle: key.handle.ok_or_else(denied)?,
+        },
+    );
+    let work = reg.reserve(&req, 1, now)?;
+    reg.execute(&work, &req.operation, 1, now)?;
     Ok(())
 }

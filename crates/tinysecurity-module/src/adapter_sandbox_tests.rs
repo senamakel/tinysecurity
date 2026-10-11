@@ -161,6 +161,7 @@ struct Sink {
     policy: Arc<RwLock<Policy>>,
     rows: Arc<Mutex<Vec<AuditSinkRequest2>>>,
     barrier: Arc<tokio::sync::Barrier>,
+    entered: Arc<tokio::sync::Notify>,
 }
 #[tinybus::interface(name = "ai.tinyhumans.tinysecurity.AuditSink2")]
 impl Sink {
@@ -186,6 +187,10 @@ impl Sink {
             }
             4 => {
                 self.barrier.wait().await;
+            }
+            5 => {
+                self.entered.notify_one();
+                std::future::pending::<()>().await;
             }
             _ => {}
         }
@@ -235,6 +240,7 @@ async fn harness() -> std::result::Result<Harness, Box<dyn std::error::Error>> {
         policy: policy.clone(),
         rows: Arc::default(),
         barrier: Arc::new(tokio::sync::Barrier::new(2)),
+        entered: Arc::default(),
     };
     host.serve_at(callback_names2::OBJECT_PATH.parse()?, sink.clone())
         .await?;
@@ -606,3 +612,26 @@ async fn copied_artifact_cannot_authorize_changed_concrete_spawn_operation()
 #[cfg(unix)]
 #[path = "adapter_sandbox_review_tests.rs"]
 mod review_tests;
+
+#[tokio::test]
+async fn cancellation_during_plan_audit_reclaims_pending_artifact_capacity()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let h = harness().await?;
+    h.sink.mode.store(5, Ordering::SeqCst);
+    let service = h.service.clone();
+    let request = fixture::request(&h.facts, 1);
+    let task = tokio::spawn(async move { service.plan2(request).await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), h.sink.entered.notified()).await?;
+    task.abort();
+    assert!(task.await.is_err());
+    let engine = h.service.sandbox.as_ref().required()?;
+    let candidate = engine
+        .plan(&fixture::request(&h.facts, 2), 1, 1000)?
+        .artifact
+        .required()?;
+    for _ in 0..1024 {
+        engine.stage(candidate.clone(), 1000)?;
+    }
+    assert!(engine.stage(candidate, 1000).is_err());
+    Ok(())
+}

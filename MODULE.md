@@ -189,9 +189,12 @@ successfully decoded callback values and unpublished output are wiped; SDK
 serialization, frame copies and partially decoded serde values are outside that
 cleanup guarantee.
 
-Configured-secret SDK reinit currently rejects **before** events or authority
-changes, preserving the existing aliases and resolver uncertainty. A coherent
-owner transaction spanning every registry is required before successful reinit
-can be enabled. Native OS providers, physical files, passwords, encryption,
+Configured-secret SDK reinit keeps the same process owner, store brokers and
+master resolvers. Native and device transitions retain their state locks through
+policy publication; valid-clock publication rejection preserves old authority.
+Accepted generations invalidate pending native work and clear aliases, while
+persistent resolver uncertainty remains unavailable. Native clock faults still
+close authority permanently. Device replay capacity and every scope epoch are
+checked before publication; bootstrap evidence survives accepted reinit. Native OS providers, physical files, passwords, encryption,
 plaintext delivery, routine native consumers, pairing and production host
 migration remain outside this subset.

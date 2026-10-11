@@ -426,7 +426,11 @@ impl Engine {
         now: u64,
         native: bool,
     ) -> Result<(Option<ApprovalRow2>, bool)> {
-        let human_only = native || request.request.call.tool == "sandbox_host_network";
+        let human_only = native
+            || matches!(
+                request.request.call.tool.as_str(),
+                "sandbox_host_network" | "device_crypto"
+            );
         let reusable = if human_only {
             None
         } else {
@@ -495,6 +499,23 @@ impl Engine {
         } else {
             self.ports.audit(row).await
         }
+    }
+    async fn audit_resolution(&self, row: ApprovalRow2) -> Result<()> {
+        if row.binding.generation != self.generation.load(Ordering::SeqCst) {
+            return Err(Error::Denied);
+        }
+        if row.tool_name == "native_secret_grant" {
+            let ack = self.ports.native_audit(row.clone()).await?;
+            if ack.row != row {
+                return Err(Error::Denied);
+            }
+        } else {
+            self.ports.audit(row.clone()).await?;
+        }
+        if self.generation.load(Ordering::SeqCst) != row.binding.generation {
+            return Err(Error::Denied);
+        }
+        Ok(())
     }
     fn reconcile_creations(&self, rows: &[ApprovalRow2]) -> Result<()> {
         // Durable identities replace retry identities once confirmed by exact
@@ -863,10 +884,27 @@ impl Engine {
         Ok(row)
     }
     async fn persist(&self, expected: Option<u64>, row: &ApprovalRow2) -> Result<()> {
+        self.persist_mode(expected, row, false).await
+    }
+    async fn persist_mode(
+        &self,
+        expected: Option<u64>,
+        row: &ApprovalRow2,
+        terminal: bool,
+    ) -> Result<()> {
+        if terminal
+            && (expected.is_none()
+                || !matches!(
+                    row.state,
+                    ApprovalLifecycle2::Expired | ApprovalLifecycle2::Cancelled
+                ))
+        {
+            return Err(Error::Denied);
+        }
         if row.binding.generation != self.generation.load(Ordering::SeqCst) {
             return Err(Error::Denied);
         }
-        if row.tool_name == "native_secret_grant" {
+        if row.tool_name == "native_secret_grant" && !terminal {
             self.native_identity(row)?;
             self.live(row)?;
         }
@@ -888,7 +926,7 @@ impl Engine {
         let receipt = match self.ports.cas(request.clone()).await {
             Ok(receipt) => receipt,
             Err(Error::Unavailable) => {
-                if row.tool_name == "native_secret_grant" {
+                if row.tool_name == "native_secret_grant" && !terminal {
                     self.native_identity(row)?;
                     self.live(row)?;
                 }
@@ -899,7 +937,11 @@ impl Engine {
         request
             .verify_receipt(&receipt)
             .map_err(|_| Error::Invalid)?;
-        self.audit_row(row.clone()).await?;
+        if terminal {
+            self.audit_resolution(row.clone()).await?;
+        } else {
+            self.audit_row(row.clone()).await?;
+        }
         if row.binding.generation != self.generation.load(Ordering::SeqCst) {
             return Err(Error::Denied);
         }
@@ -950,11 +992,13 @@ impl Engine {
             || reviewed.ticket_sha256 != ticket
             || reviewed.actor.is_empty()
             || reviewed.actor.len() > 1024
-            || (row.tool_name == "native_secret_grant"
-                && !matches!(
-                    reviewed.choice,
-                    ApprovalChoice2::Once | ApprovalChoice2::Deny
-                ))
+            || (matches!(
+                row.tool_name.as_str(),
+                "native_secret_grant" | "device_crypto"
+            ) && !matches!(
+                reviewed.choice,
+                ApprovalChoice2::Once | ApprovalChoice2::Deny
+            ))
             || (reviewed.choice == ApprovalChoice2::Flow && row.binding.caller.flow.is_none())
             || (row.host_instance != self.instance && reviewed.choice != ApprovalChoice2::Deny)
         {
@@ -1018,7 +1062,11 @@ impl Engine {
         self.exact(&reg, &row, &request.request)?;
         self.live(&row)?;
         self.audit_row(row.clone()).await?;
-        if (native || request.request.call.tool == "sandbox_host_network")
+        if (native
+            || matches!(
+                request.request.call.tool.as_str(),
+                "sandbox_host_network" | "device_crypto"
+            ))
             && (row.choice != Some(ApprovalChoice2::Once)
                 || row.decision_ticket_sha256.is_none()
                 || row.judge.is_some())
@@ -1151,10 +1199,15 @@ impl Engine {
         state: ApprovalLifecycle2,
     ) -> Result<ApprovalRow2> {
         let reg = self.registration(&request.scope_id)?;
-        let mut row = self.row(&reg, &request.request_id).await?;
+        let mut row = self
+            .rows(&reg)
+            .await?
+            .into_iter()
+            .find(|row| row.request_id == request.request_id)
+            .ok_or(Error::Denied)?;
         Self::current(&reg, &row)?;
         if row.state == state && row.audit == request.audit {
-            self.audit_row(row.clone()).await?;
+            self.audit_resolution(row.clone()).await?;
             return Ok(row);
         }
         if !matches!(
@@ -1166,13 +1219,13 @@ impl Engine {
         if state == ApprovalLifecycle2::Expired && self.live(&row).is_ok() {
             return Err(Error::Denied);
         }
-        self.audit_row(row.clone()).await?;
+        self.audit_resolution(row.clone()).await?;
         Self::correlation(&request.audit, reg.generation)?;
         let previous = row.version;
         row.version = previous.checked_add(1).ok_or(Error::Invalid)?;
         row.state = state;
         row.audit = request.audit;
-        self.persist(Some(previous), &row).await?;
+        self.persist_mode(Some(previous), &row, true).await?;
         Ok(row)
     }
     /// Validate at most 100 already human-reviewed exact flow grants. No wildcards.

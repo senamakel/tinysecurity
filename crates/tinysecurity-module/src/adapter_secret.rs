@@ -4,7 +4,7 @@ use super::{PolicyService, approval_failure};
 use crate::secret_callbacks::{CallbackStore, GuardedMint, LiveGrant, ResolveContext, StoreBroker};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
 use tinysecurity::crypto::{
     keyring::{LegacySource, MasterResolver, MasterSlot},
@@ -376,16 +376,44 @@ impl Drop for Lifetime {
         self.0.close();
     }
 }
-/// Until the owner transaction spans all registries, deny before any publication.
-pub(super) fn deny_reinit() -> tinybus::Result<()> {
-    reinit_allowed(SECRET.get().and_then(Option::as_ref))
+pub(super) struct PreparedGeneration<'a> {
+    native: handles::PreparedGeneration<'a>,
+    pending: MutexGuard<'a, BTreeMap<(String, String), Pending>>,
+    aliases: MutexGuard<'a, BTreeMap<String, Alias>>,
 }
-fn reinit_allowed(state: Option<&Arc<SecretState>>) -> tinybus::Result<()> {
-    if state.is_some() {
-        Err(denied())
-    } else {
-        Ok(())
+impl PreparedGeneration<'_> {
+    pub(super) fn commit(self) {
+        let Self {
+            native,
+            mut pending,
+            mut aliases,
+        } = self;
+        // Reservations reacquire the native state lock when dropped.
+        native.commit();
+        pending.clear();
+        aliases.clear();
     }
+}
+pub(super) fn prepare_generation(
+    state: Option<&Arc<SecretState>>,
+    generation: u64,
+) -> tinybus::Result<Option<PreparedGeneration<'_>>> {
+    state
+        .map(|state| {
+            // Match prune and admission: facade inventories precede the native lock.
+            let pending = state.pending.lock().map_err(|_| denied())?;
+            let aliases = state.aliases.lock().map_err(|_| denied())?;
+            let native = state
+                .registry
+                .prepare_generation(generation)
+                .map_err(|_| denied())?;
+            Ok(PreparedGeneration {
+                native,
+                pending,
+                aliases,
+            })
+        })
+        .transpose()
 }
 pub(super) fn activate(state: Option<Arc<SecretState>>) -> tinybus::Result<()> {
     SECRET.set(state.clone()).map_err(|_| denied())?;
@@ -592,6 +620,18 @@ impl PolicyService {
         {
             return Err(denied());
         }
+        // A prepared generation transition also holds this alias lock. Recheck
+        // after acquiring it so an old execution cannot repopulate the new inventory.
+        state
+            .registry
+            .validate_handle(
+                &handle,
+                &request.request.registration_id,
+                purpose(reg.descriptor.purpose),
+                &state.peer,
+                generation,
+            )
+            .map_err(|_| denied())?;
         aliases.insert(
             alias,
             Alias {

@@ -818,3 +818,49 @@ fn native_consumption_preserves_independently_verified_distinct_audit_scope() ->
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn rejected_prepared_generation_preserves_live_handles_and_reservations() -> TestResult {
+    let (reg, _) = registry(Limits::default())?;
+    let work = reserve(
+        &reg,
+        Purpose::ConfigUserMaster,
+        OperationKind::RetainPlaintext,
+        b"live",
+    )?;
+    let handle = reg.retain_plaintext(
+        reg.authorize_routine(work, &Routine).await?,
+        Zeroizing::new(b"live".to_vec()),
+    )?;
+    let pending = reserve(
+        &reg,
+        Purpose::ConfigUserMaster,
+        OperationKind::RetainPlaintext,
+        b"pending",
+    )?;
+    let key = reg.lock()?.authorization_key.to_vec();
+    drop(reg.prepare_generation(2)?);
+    assert_eq!(&*reg.lock()?.authorization_key, key.as_slice());
+    pending.validate()?;
+    reg.validate_handle(&handle, "a", Purpose::ConfigUserMaster, ":1.1", 1)?;
+    reg.prepare_generation(2)?.commit();
+    assert!(pending.validate().is_err());
+    drop(pending);
+    assert!(
+        reg.validate_handle(&handle, "a", Purpose::ConfigUserMaster, ":1.1", 1)
+            .is_err()
+    );
+    Ok(())
+}
+#[test]
+fn prepared_generation_clock_rollback_permanently_closes_authority() -> TestResult {
+    let (reg, clock) = registry(Limits::default())?;
+    clock.0.store(1, Ordering::SeqCst);
+    drop(reg.prepare_generation(2)?);
+    clock.0.store(0, Ordering::SeqCst);
+    assert!(reg.prepare_generation(2).is_err());
+    clock.0.store(2, Ordering::SeqCst);
+    assert!(reg.prepare_generation(2).is_err());
+    assert!(reg.lock()?.closed);
+    Ok(())
+}

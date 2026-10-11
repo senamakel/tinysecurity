@@ -1745,3 +1745,55 @@ async fn redactor_matching_native_label_cannot_route_its_phases_to_generic_audit
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn expired_native_rows_resolve_terminally_without_restoring_authority() -> Result<()> {
+    for approved in [false, true] {
+        for cancel in [false, true] {
+            let f = Arc::new(Fixture::default());
+            let c = Arc::new(TestClock::default());
+            let owner = engine(f.clone(), c.clone())?;
+            let pending = owner.begin_native_grant(native_request(), 1000).await?;
+            let row = if approved {
+                owner.decide(decision(&pending)).await?
+            } else {
+                pending
+            };
+            c.wall.store(1000, Ordering::SeqCst);
+            owner.prune_native(1000, row.binding.generation)?;
+            let req = ApprovalRecordRequest2 {
+                scope_id: native_request().scope_id,
+                request_id: row.request_id.clone(),
+                audit: audit(9),
+            };
+            let terminal = if cancel {
+                owner.cancel(req.clone()).await?
+            } else {
+                owner.expire(req.clone()).await?
+            };
+            assert_eq!(
+                terminal.state,
+                if cancel {
+                    ApprovalLifecycle2::Cancelled
+                } else {
+                    ApprovalLifecycle2::Expired
+                }
+            );
+            assert_eq!(terminal.version, row.version + 1);
+            assert!(owner.decide(decision(&row)).await.is_err());
+            assert!(
+                owner
+                    .consume_native_grant(native_action(&row))
+                    .await
+                    .is_err()
+            );
+            let retry = if cancel {
+                owner.cancel(req).await?
+            } else {
+                owner.expire(req).await?
+            };
+            assert_eq!(retry, terminal);
+        }
+    }
+    Ok(())
+}

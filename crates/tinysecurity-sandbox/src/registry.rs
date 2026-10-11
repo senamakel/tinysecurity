@@ -6,7 +6,6 @@ use tinysecurity_bus::{SandboxArtifact2, SubjectScope};
 struct Issued {
     artifact: SandboxArtifact2,
     active: bool,
-    consumed: bool,
 }
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Registry(Arc<Mutex<State>>);
@@ -14,6 +13,7 @@ pub(crate) struct Registry(Arc<Mutex<State>>);
 struct State {
     rows: Vec<Issued>,
     high_water_ms: u64,
+    per_scope_limit: usize,
 }
 impl State {
     fn advance(&mut self, now_ms: u64) -> Result<()> {
@@ -25,6 +25,12 @@ impl State {
     }
 }
 impl Registry {
+    pub(crate) fn new(scopes: usize) -> Self {
+        Self(Arc::new(Mutex::new(State {
+            per_scope_limit: 1024 / scopes.max(1),
+            ..State::default()
+        })))
+    }
     pub(crate) fn stage(
         &self,
         mut artifact: SandboxArtifact2,
@@ -35,9 +41,16 @@ impl Registry {
         }
         let mut state = self.0.lock().map_err(|_| Error::InvalidOperation)?;
         state.advance(now_ms)?;
+        let per_scope_limit = state.per_scope_limit;
         let issued = &mut state.rows;
         issued.retain(|row| row.artifact.expires_at_ms > now_ms);
-        if issued.len() >= 1024 {
+        if issued.len() >= 1024
+            || issued
+                .iter()
+                .filter(|row| row.artifact.scope_id == artifact.scope_id)
+                .count()
+                >= per_scope_limit
+        {
             return Err(Error::InvalidOperation);
         }
         for _ in 0..4 {
@@ -59,7 +72,6 @@ impl Registry {
             issued.push(Issued {
                 artifact: artifact.clone(),
                 active: false,
-                consumed: false,
             });
             return Ok(artifact);
         }
@@ -86,7 +98,6 @@ impl Registry {
             .find(|row| {
                 row.artifact == *artifact
                     && !row.active
-                    && !row.consumed
                     && artifact.generation == generation
                     && artifact.expires_at_ms > now_ms
             })
@@ -107,7 +118,6 @@ impl Registry {
         if issued.iter().any(|row| {
             row.artifact == *artifact
                 && row.active
-                && !row.consumed
                 && &artifact.subject == subject
                 && artifact.generation == generation
                 && artifact.expires_at_ms > now_ms
@@ -127,18 +137,17 @@ impl Registry {
         let mut state = self.0.lock().map_err(|_| Error::InvalidOperation)?;
         state.advance(now_ms)?;
         let issued = &mut state.rows;
-        let row = issued
-            .iter_mut()
-            .find(|row| {
+        let index = issued
+            .iter()
+            .position(|row| {
                 row.artifact == *artifact
                     && row.active
-                    && !row.consumed
                     && &artifact.subject == subject
                     && artifact.generation == generation
                     && artifact.expires_at_ms > now_ms
             })
             .ok_or(Error::InvalidOperation)?;
-        row.consumed = true;
+        issued.remove(index);
         Ok(())
     }
 }

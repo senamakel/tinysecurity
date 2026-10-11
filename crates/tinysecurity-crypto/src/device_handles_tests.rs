@@ -722,3 +722,22 @@ fn bounded_canonical_writer_preserves_maximum_escaping_and_refuses_growth()
     assert!(canonical_request(&oversized).is_err());
     Ok(())
 }
+
+#[test]
+fn epoch_exhaustion_rejects_reconfiguration_without_partial_mutation() -> TestResult {
+    let reg = registry()?;
+    let (handle, _) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    reg.lock()?
+        .scopes
+        .get_mut(&"b".repeat(32))
+        .ok_or(Error::DeviceDenied)?
+        .epoch = u64::MAX;
+    let cfg = reg.configuration()?;
+    assert!(reg.reconfigure(cfg.clone(), 2).is_err());
+    let state = reg.lock()?;
+    assert_eq!(state.generation, 1);
+    assert_eq!(state.scopes[&"a".repeat(32)].epoch, 1);
+    assert!(state.handles.contains_key(&handle));
+    assert_eq!(state.limits, cfg);
+    Ok(())
+}

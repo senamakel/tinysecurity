@@ -112,16 +112,25 @@ pub(super) fn activate(registry: Option<&Arc<Registry>>) -> BusResult<()> {
     }
     Ok(())
 }
-pub(super) fn advance(
+pub(super) fn transition(
     registry: Option<&Arc<Registry>>,
     config: Option<DeviceConfig2>,
     generation: u64,
+    publish: impl FnOnce() -> BusResult<()>,
 ) -> BusResult<()> {
-    if let Some(registry) = registry {
-        let config = config.unwrap_or(registry.configuration().map_err(|_| denied())?);
-        registry
-            .reconfigure(config, generation)
-            .map_err(|_| denied())?;
+    let prepared = registry
+        .map(|registry| {
+            let config = config
+                .map_or_else(|| registry.configuration(), Ok)
+                .map_err(|_| denied())?;
+            registry
+                .prepare_reconfiguration(config, generation)
+                .map_err(|_| denied())
+        })
+        .transpose()?;
+    publish()?;
+    if let Some(prepared) = prepared {
+        prepared.commit();
     }
     Ok(())
 }

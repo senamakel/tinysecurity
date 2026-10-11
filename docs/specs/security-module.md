@@ -238,6 +238,9 @@ independently checked temporal expiry do not enter the durable human binding.
 Retargeting a symlink requires a fresh human decision for the new resolved plan.
 Automatic judge approval, generic reusable grants and caller approval flags do not qualify.
 Exact sanitized Sandbox audit commits before an opaque artifact becomes active.
+Pending artifacts are discarded on every failed or cancelled publication path.
+The 1024-row registry reserves an equal quota for each configured scope; consuming
+an artifact removes its row, and missing identities always deny replay.
 A fingerprint is correlation only. Consume validates the full registered
 artifact and owner, audits the exact phase, then rechecks expiry and generation
 before atomically reserving it once. Registry capacity and pending expiry are
@@ -298,7 +301,9 @@ replace TinyBox's live isolation and capability checks.
 The [contract 1.10 master subset](../../MODULE.md#confidential-injected-master-resolution)
 implements only confidential config/app master resolution through immutable injected
 callbacks, exact Human Once consumption and opaque native aliases. Per-binding
-resolver uncertainty persists for the supplied broker lifetime. Configured-secret
-reinit is rejected before publication until a coherent multi-registry transaction
-exists. It provides no native OS/file access, password/plaintext operations or
+resolver uncertainty persists for the supplied broker lifetime across accepted
+reinit. Device and native generation checks complete under retained registry locks
+before publication. A rejected publication with valid clocks preserves prior
+authority; accepted reinit clears pending native work and aliases without replacing
+brokers or resolvers. Clock faults retain their permanent native close behavior. It provides no native OS/file access, password/plaintext operations or
 production host adoption.

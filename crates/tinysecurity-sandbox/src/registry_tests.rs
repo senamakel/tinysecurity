@@ -138,3 +138,64 @@ impl<T> Required for Option<T> {
         self.ok_or_else(|| "missing test fixture".into())
     }
 }
+
+#[test]
+fn consumed_artifacts_release_capacity_without_replay_permission()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let (_dir, scope, request) = fixture()?;
+    let engine = crate::Engine::new(SandboxConfig2 {
+        scopes: vec![scope],
+    })
+    .required()?;
+    let candidate = engine
+        .plan(&request, 1, 100)
+        .required()?
+        .artifact
+        .required()?;
+    let mut consumed = None;
+    for _ in 0..1024 {
+        let artifact = engine.stage(candidate.clone(), 100).required()?;
+        engine.activate(&artifact, 1, 100).required()?;
+        engine
+            .consume(&artifact, &request.subject, 1, 100)
+            .required()?;
+        consumed = Some(artifact);
+    }
+    assert!(engine.stage(candidate, 100).is_ok());
+    let old = consumed.required()?;
+    assert!(engine.consume(&old, &request.subject, 1, 100).is_err());
+    assert!(engine.activate(&old, 1, 100).is_err());
+    Ok(())
+}
+
+#[test]
+fn one_scope_cannot_exhaust_another_registered_scopes_artifact_capacity()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let (_dir, first, request) = fixture()?;
+    let mut second = first.clone();
+    second.scope_id = "second".into();
+    second.subject.agent = "second-agent".into();
+    let engine = crate::Engine::new(SandboxConfig2 {
+        scopes: vec![first, second.clone()],
+    })
+    .required()?;
+    let candidate = engine
+        .plan(&request, 1, 100)
+        .required()?
+        .artifact
+        .required()?;
+    for _ in 0..512 {
+        engine.stage(candidate.clone(), 100).required()?;
+    }
+    assert!(engine.stage(candidate, 100).is_err());
+    let mut other = request;
+    other.scope_id = second.scope_id;
+    other.subject = second.subject;
+    let candidate = engine
+        .plan(&other, 1, 100)
+        .required()?
+        .artifact
+        .required()?;
+    assert!(engine.stage(candidate, 100).is_ok());
+    Ok(())
+}

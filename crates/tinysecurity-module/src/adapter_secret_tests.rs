@@ -393,17 +393,28 @@ impl Control {
         assert_eq!(self.state.sets.load(Ordering::SeqCst), 0);
         Ok(serde_json::json!({"loads":0,"sets":0}))
     }
-    fn verify_reinit_denial(&self) -> tinybus::Result<()> {
+    async fn verify_reinit_transition(&self) -> tinybus::Result<()> {
+        if !matches!(self.state.mode, 0 | 1 | 2 | 6 | 10 | 17) {
+            return Ok(());
+        }
         let secret = self.service.secret.as_ref().ok_or_else(denied)?;
         let prior_aliases = secret.aliases.lock().map_err(|_| denied())?.len();
-        let prior_generation = self.service.read()?.info().generation;
-        assert!(reinit_allowed(Some(secret)).is_err());
-        assert!(reinit_allowed(None).is_ok());
+        let brokers: Vec<_> = secret
+            .registered
+            .values()
+            .map(|reg| Arc::as_ptr(&reg.broker) as usize)
+            .collect();
+        // Dropping a valid preparation simulates rejected event publication.
+        let policy_before = self.service.read()?.info();
+        assert!(
+            super::super::activate_authorities(None, None, Some(secret), 2, || Err(denied()))
+                .is_err()
+        );
+        assert_eq!(self.service.read()?.info(), policy_before);
         assert_eq!(
             secret.aliases.lock().map_err(|_| denied())?.len(),
             prior_aliases
         );
-        assert_eq!(self.service.read()?.info().generation, prior_generation);
         for alias in secret.aliases.lock().map_err(|_| denied())?.values() {
             secret
                 .registry
@@ -415,6 +426,72 @@ impl Control {
                     alias.generation,
                 )
                 .map_err(|_| denied())?;
+        }
+        // Include a pending Reservation: its Drop must not deadlock on native commit.
+        let mut req = request(77);
+        if self.state.mode == 17 {
+            req.operation = SecretOperation2::ResolveAppMaster;
+        }
+        let work = secret
+            .registry
+            .reserve(handles::Request {
+                registration: &req.registration_id,
+                authenticated_peer: &secret.peer,
+                purpose: if self.state.mode == 17 {
+                    handles::Purpose::AppEncryptionMaster
+                } else {
+                    handles::Purpose::ConfigUserMaster
+                },
+                kind: handles::OperationKind::NativeMasterGrant,
+                call_id: &req.call_id,
+                input: Zeroizing::new(vec![]),
+                ttl_ms: 100,
+                generation: 1,
+            })
+            .map_err(|_| denied())?;
+        secret.pending.lock().map_err(|_| denied())?.insert(
+            (req.registration_id.clone(), req.call_id.clone()),
+            Pending {
+                request: req,
+                audit: audit(77),
+                work,
+                row: None,
+            },
+        );
+        {
+            let mut policy = self.service.policy.write().map_err(|_| denied())?;
+            super::super::activate_authorities(None, None, Some(secret), 2, || {
+                self.service
+                    .approvals
+                    .as_ref()
+                    .ok_or_else(denied)?
+                    .advance_generation(2)
+                    .map_err(approval_failure)?;
+                policy
+                    .reinitialize(ModuleConfig::default())
+                    .map_err(|_| denied())?;
+                Ok(())
+            })?;
+            assert_eq!(policy.info().generation, 2);
+        }
+        assert!(secret.pending.lock().map_err(|_| denied())?.is_empty());
+        assert!(secret.aliases.lock().map_err(|_| denied())?.is_empty());
+        assert_eq!(
+            brokers,
+            secret
+                .registered
+                .values()
+                .map(|reg| Arc::as_ptr(&reg.broker) as usize)
+                .collect::<Vec<_>>()
+        );
+        assert!(prepare_generation(Some(secret), 2).is_err());
+        if matches!(self.state.mode, 6 | 10) {
+            let prior = self.state.loads.load(Ordering::SeqCst);
+            for reg in secret.registered.values() {
+                assert!(reg.resolver.resolve().await.is_err());
+            }
+            assert_eq!(self.state.loads.load(Ordering::SeqCst), prior);
+            assert_eq!(self.state.sets.load(Ordering::SeqCst), 1);
         }
         Ok(())
     }
@@ -652,7 +729,7 @@ impl Control {
             assert_eq!(self.state.sets.load(Ordering::SeqCst), 1);
             self.state.release.notify_one();
         }
-        self.verify_reinit_denial()?;
+        self.verify_reinit_transition().await?;
         let target = self
             .state
             .target

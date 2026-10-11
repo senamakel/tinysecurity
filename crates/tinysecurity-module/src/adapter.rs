@@ -939,10 +939,51 @@ fn queue_policy_changed(connection: &Connection, generation: u64) -> BusResult<(
     );
     connection.try_send(signal)
 }
+fn activate_authorities(
+    device: Option<&Arc<tinysecurity::crypto::device_handles::Registry>>,
+    device_limits: Option<tinysecurity_bus::DeviceConfig2>,
+    secret: Option<&Arc<secret::SecretState>>,
+    generation: u64,
+    publish: impl FnOnce() -> BusResult<()>,
+) -> BusResult<()> {
+    let secret_prepared = secret::prepare_generation(secret, generation)?;
+    device::transition(device, device_limits, generation, publish)?;
+    if let Some(prepared) = secret_prepared {
+        prepared.commit();
+    }
+    Ok(())
+}
+fn publish_policy_generation(
+    connection: &Connection,
+    candidate: &Policy,
+    audit: Option<&Arc<crate::callbacks::AuditClient>>,
+    approvals: Option<&Arc<tinysecurity::approval::Engine>>,
+    judge: Option<Arc<tinysecurity::auto::Engine>>,
+) -> BusResult<()> {
+    // Queue publication under the state lock before activation.
+    // A full/closed outbox rejects reinit and leaves the old state intact.
+    queue_policy_changed(connection, candidate.info().generation)?;
+    EGRESS_SCOPES
+        .get_or_init(|| Arc::new(Mutex::new(EgressPolicyRegistry::default())))
+        .lock()
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+        .advance_generation(candidate.info().generation)
+        .map_err(|error| failure(&error))?;
+    if let Some(client) = audit {
+        client.replace_registry(candidate.redactor())?;
+    }
+    if let Some(engine) = approvals {
+        engine
+            .replace_redactor(candidate.redactor())
+            .map_err(approval_failure)?;
+        engine.replace_automatic(judge).map_err(approval_failure)?;
+        engine
+            .advance_generation(candidate.info().generation)
+            .map_err(approval_failure)?;
+    }
+    Ok(())
+}
 async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()> {
-    // Native master owner transitions require one transaction with all registries.
-    // Reject configured-secret reinit before queuing an event or changing authority.
-    secret::deny_reinit()?;
     // Validate before activation. The SDK serializes reinitializations and
     // preserves a fault latch; this adapter never provides retry RPCs.
     let mut device_config =
@@ -998,30 +1039,23 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
             .write()
             .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
 
-        // Queue publication under the state lock before activation.
-        // A full/closed outbox rejects reinit and leaves the old state intact.
-        queue_policy_changed(&connection, candidate.info().generation)?;
-        EGRESS_SCOPES
-            .get_or_init(|| Arc::new(Mutex::new(EgressPolicyRegistry::default())))
-            .lock()
-            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
-            .advance_generation(candidate.info().generation)
-            .map_err(|error| failure(&error))?;
-        if let Some(client) = &audit {
-            client.replace_registry(candidate.redactor())?;
-        }
-        if let Some((_, engine)) = &approvals {
-            engine
-                .replace_redactor(candidate.redactor())
-                .map_err(approval_failure)?;
-            engine
-                .replace_automatic(judge.clone())
-                .map_err(approval_failure)?;
-            engine
-                .advance_generation(candidate.info().generation)
-                .map_err(approval_failure)?;
-        }
-        device::advance(device.as_ref(), device_limits, candidate.info().generation)?;
+        let generation = candidate.info().generation;
+        activate_authorities(
+            device.as_ref(),
+            device_limits,
+            secret.as_ref(),
+            generation,
+            || {
+                publish_policy_generation(
+                    &connection,
+                    &candidate,
+                    audit.as_ref(),
+                    approvals.as_ref().map(|(_, engine)| engine),
+                    judge.clone(),
+                )?;
+                Ok(())
+            },
+        )?;
         *guard = candidate;
         return Ok(());
     }

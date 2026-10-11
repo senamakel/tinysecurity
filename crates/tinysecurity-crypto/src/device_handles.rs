@@ -334,29 +334,73 @@ impl Registry {
         }
         Ok(())
     }
-    /// Advance accepted SDK configuration atomically, invalidating every old handle/work item.
-    /// Credentials and registered subjects are immutable; limits may change explicitly.
+    /// Prepare reconfiguration while excluding concurrent replay and epoch changes.
+    /// Dropping the preparation leaves authority and replay evidence unchanged.
     /// # Errors
-    /// Rejects invalid limits, changed registrations/credentials or non-increasing generation.
-    pub fn reconfigure(&self, mut config: DeviceConfig2, generation: u64) -> Result<()> {
-        self.validate_configuration(&config, generation)?;
-        let mut state = self.lock()?;
+    /// Rejects invalid limits, credentials, stale generations, replay capacity or exhausted epochs.
+    pub fn prepare_reconfiguration(
+        &self,
+        config: DeviceConfig2,
+        generation: u64,
+    ) -> Result<PreparedReconfiguration<'_>> {
+        validate_config(&config)?;
+        let state = self.lock()?;
         if generation <= state.generation
-            || config.scopes.iter().any(|s| s.static_secret.is_some())
+            || config
+                .scopes
+                .iter()
+                .any(|scope| scope.static_secret.is_some())
             || config.scopes != state.limits.scopes
+            || state.bootstrap.len() > config.max_bootstrap_nonces as usize
         {
             return Err(Error::DeviceDenied);
         }
-        for scope in &mut config.scopes {
-            scope.static_secret = None;
-        }
-        state.handles.clear();
-        for scope in state.scopes.values_mut() {
-            scope.epoch = scope.epoch.checked_add(1).ok_or(Error::DeviceDenied)?;
-        }
-        state.generation = generation;
-        state.limits = config;
+        let epochs = state
+            .scopes
+            .iter()
+            .map(|(id, scope)| {
+                Ok((
+                    id.clone(),
+                    scope.epoch.checked_add(1).ok_or(Error::DeviceDenied)?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        Ok(PreparedReconfiguration {
+            state,
+            config,
+            generation,
+            epochs,
+        })
+    }
+    /// Advance accepted configuration, invalidating old handles without erasing replay evidence.
+    /// # Errors
+    /// Rejects invalid configuration, stale generation, replay capacity or exhausted epochs.
+    pub fn reconfigure(&self, config: DeviceConfig2, generation: u64) -> Result<()> {
+        self.prepare_reconfiguration(config, generation)?.commit();
         Ok(())
+    }
+}
+/// An exclusively locked, fully validated configuration transition.
+pub struct PreparedReconfiguration<'a> {
+    state: MutexGuard<'a, State>,
+    config: DeviceConfig2,
+    generation: u64,
+    epochs: BTreeMap<String, u64>,
+}
+impl std::fmt::Debug for PreparedReconfiguration<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PreparedReconfiguration([REDACTED])")
+    }
+}
+impl PreparedReconfiguration<'_> {
+    /// Commit the prepared transition without further fallible checks.
+    pub fn commit(mut self) {
+        self.state.handles.clear();
+        for (id, scope) in &mut self.state.scopes {
+            scope.epoch = self.epochs[id];
+        }
+        self.state.generation = self.generation;
+        self.state.limits = self.config;
     }
 }
 impl State {

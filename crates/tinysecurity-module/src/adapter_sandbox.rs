@@ -97,6 +97,17 @@ async fn validate_operation(
     .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
     .map_err(|_| tinybus::Error::failed("sandbox operation denied"))
 }
+struct PendingArtifact {
+    engine: Arc<tinysecurity::sandbox::Engine>,
+    artifact: Option<tinysecurity_bus::SandboxArtifact2>,
+}
+impl Drop for PendingArtifact {
+    fn drop(&mut self) {
+        if let Some(artifact) = &self.artifact {
+            self.engine.discard(artifact);
+        }
+    }
+}
 impl PolicyService {
     pub(super) async fn sandbox_approval(
         &self,
@@ -268,6 +279,10 @@ impl PolicyService {
         } else {
             None
         };
+        let _pending = PendingArtifact {
+            engine: engine.clone(),
+            artifact: staged,
+        };
         let evidence = self
             .audit_sandbox(
                 serde_json::json!([request, response]),
@@ -298,11 +313,6 @@ impl PolicyService {
             {
                 deny(&mut response, SandboxDenial2::Stale);
             }
-        }
-        if response.artifact.is_none()
-            && let Some(staged) = staged
-        {
-            engine.discard(&staged);
         }
         Ok(response)
     }
