@@ -29,6 +29,26 @@ impl fmt::Debug for JsonlSink {
         f.write_str("JsonlSink([REDACTED])")
     }
 }
+// Keep lock ownership explicit across every append exit path.
+struct AppendLock(File);
+impl AppendLock {
+    fn acquire(file: File) -> Result<Self> {
+        FileExt::try_lock(&file).map_err(|error| match error {
+            fs4::TryLockError::WouldBlock => Error::Busy,
+            fs4::TryLockError::Error(_) => Error::Storage,
+        })?;
+        Ok(Self(file))
+    }
+}
+impl Drop for AppendLock {
+    fn drop(&mut self) {
+        // A concurrently spawned child can inherit this open file description
+        // until exec applies CLOEXEC. Closing our descriptor alone would leave
+        // its flock active in that child, causing spurious Busy on the next append.
+        // Unlock only after acquisition succeeded, on success and error alike.
+        let _ = FileExt::unlock(&self.0);
+    }
+}
 impl JsonlSink {
     /// Open a sink below a trusted restricted directory; never harden broad existing files.
     ///
@@ -120,11 +140,7 @@ impl JsonlSink {
         batch.validate().map_err(|_| Error::Conflict)?;
         let clean = crate::sanitize(batch, &self.redactor)?;
         let lock = self.directory.file(&sibling(&self.name, ".lock"))?;
-        FileExt::try_lock(&lock).map_err(|error| match error {
-            fs4::TryLockError::WouldBlock => Error::Busy,
-            fs4::TryLockError::Error(_) => Error::Storage,
-        })?;
-        // File drop releases the OS lock on every error; there is no process Mutex.
+        let _lock = AppendLock::acquire(lock)?;
         self.append_locked(&clean)
     }
     fn append_locked(&self, batch: &AuditSinkRequest2) -> Result<AuditSinkResponse2> {

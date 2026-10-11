@@ -147,3 +147,45 @@ fn hard_journal_event_capacity_rejects_before_any_candidate_projection()
     assert_eq!(sink.append(&batch(0))?, first);
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn inherited_open_file_description_cannot_hold_an_append_lock_after_guard_drop()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let path = root.path().canonicalize()?.join("audit");
+    let sink = JsonlSink::open(&path, 10000, 3)?;
+    let file = sink.directory.file(&sibling(&sink.name, ".lock"))?;
+    let held = AppendLock::acquire(file)?;
+    // A duplicate shares the open file description, just as a fork does before
+    // exec closes CLOEXEC descriptors. Keep it alive past the parent's guard.
+    let inherited = held.0.try_clone()?;
+    assert_eq!(sink.append(&batch(0)), Err(Error::Busy));
+    drop(held);
+    let receipt = sink.append(&batch(0))?;
+    batch(0).verify_receipt(&receipt)?;
+    assert_eq!(sink.append(&batch(0))?, receipt);
+    assert_eq!(inherited.metadata()?.len(), 0);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_append_releases_its_lock_even_while_an_inherited_description_survives()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let path = root.path().canonicalize()?.join("audit");
+    let sink = JsonlSink::open(&path, 10000, 3)?;
+    let file = sink.directory.file(&sibling(&sink.name, ".lock"))?;
+    let held = AppendLock::acquire(file)?;
+    let inherited = held.0.try_clone()?;
+    let result = {
+        let _guard = held;
+        sink.append_locked(&batch(1))
+    };
+    assert_eq!(result, Err(Error::Conflict));
+    let reopened = JsonlSink::open(&path, 10000, 3)?;
+    batch(0).verify_receipt(&reopened.append(&batch(0))?)?;
+    assert_eq!(inherited.metadata()?.len(), 0);
+    Ok(())
+}
