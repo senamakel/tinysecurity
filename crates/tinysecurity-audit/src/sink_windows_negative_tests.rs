@@ -352,7 +352,7 @@ exit 0
     $file = Join-Path $PSHOME 'powershell.exe'
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $file
-    $start.Arguments = '-NoProfile -NonInteractive -Command "try { $o=[Console]::Out; $o.WriteLine(''audit-account-stage=94 bootstrap=1''); $s=[Console]::In.ReadToEnd(); $p=([int[]][char[]]$s.Substring(0,[Math]::Min(3,$s.Length)) -join ''-''); $e=[int]$s.StartsWith(''$ErrorActionPreference''); $o.WriteLine(''audit-account-stage=94 bootstrap=2 source-length=''+$s.Length+'' reader-codepage=''+[Console]::InputEncoding.CodePage+'' prefix=''+$p+'' expected-prefix=''+$e); $b=[ScriptBlock]::Create($s); $o.WriteLine(''audit-account-stage=94 bootstrap=3''); & $b } catch { $k=0; if($_.Exception -is [System.Management.Automation.ParseException]){$k=4}; if($_.Exception -is [System.Management.Automation.CommandNotFoundException]){$k=5}; $o.WriteLine(''audit-account-stage=95 category=''+$k+'' hresult=''+$_.Exception.HResult); if($null -ne $_.Exception.InnerException){$o.WriteLine(''audit-account-stage=95 inner-hresult=''+$_.Exception.InnerException.HResult)}; exit 89 }"'
+    $start.Arguments = '-NoProfile -NonInteractive -Command "try { [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); $s=[Console]::In.ReadToEnd(); if(-not $s.StartsWith(''$ErrorActionPreference'')){exit 89}; [Console]::WriteLine(''audit-account-stage=94 utf8-prefix=1''); & ([ScriptBlock]::Create($s)) } catch { exit 89 }"'
     $start.UseShellExecute = $false
     $start.UserName = $network.UserName
     $start.Domain = $network.Domain
@@ -374,9 +374,11 @@ exit 0
     $started = $true
     $stdout = $process.StandardOutput.ReadToEndAsync()
     $stderr = $process.StandardError.ReadToEndAsync()
-    Write-Output ('audit-account-stage=97 writer-codepage=' + $process.StandardInput.Encoding.CodePage + ' preamble-length=' + $process.StandardInput.Encoding.GetPreamble().Length)
-    $process.StandardInput.WriteLine($childScript)
-    $process.StandardInput.Close()
+    $inputWriter = [IO.StreamWriter]::new($process.StandardInput.BaseStream, [Text.UTF8Encoding]::new($false))
+    try {
+        Write-Output ('audit-account-stage=97 writer-codepage=' + $inputWriter.Encoding.CodePage + ' preamble-length=' + $inputWriter.Encoding.GetPreamble().Length)
+        $inputWriter.WriteLine($childScript)
+    } finally { $inputWriter.Dispose() }
     $stage = 40
     if (-not $process.WaitForExit(30000)) { throw 'ordinary account helper timeout' }
     $code = $process.ExitCode
@@ -384,7 +386,7 @@ exit 0
     $requiredPhases = @('audit-account-stage=90 foreign-identity=1 nonadmin=1', 'audit-account-stage=91 exact-control-read=1', 'audit-account-stage=92 private-file-denials=6', 'audit-account-stage=93 namespace-denial=1')
     $allLines = @($stdout.Result.Split([char]10) | ForEach-Object { $_.TrimEnd([char]13) } | Where-Object { $_.Length -gt 0 })
     $lines = @($allLines | Where-Object { $requiredPhases -ccontains $_ })
-    $diagnostics = @($allLines | Where-Object { $_ -cmatch '^audit-account-stage=94 bootstrap=[13]$|^audit-account-stage=94 bootstrap=2 source-length=[0-9]+ reader-codepage=[0-9]+ prefix=[0-9-]* expected-prefix=[01]$|^audit-account-stage=95 (category=[0-9]+ hresult=-?[0-9]+|inner-hresult=-?[0-9]+)$|^audit-account-stage=96 (child-entry|identity-read)=1$' })
+    $diagnostics = @($allLines | Where-Object { $_ -cmatch '^audit-account-stage=94 utf8-prefix=1$|^audit-account-stage=96 (child-entry|identity-read)=1$' })
     foreach ($line in $allLines) {
         if (($requiredPhases -ccontains $line) -or ($diagnostics -ccontains $line)) { Write-Output $line }
     }
