@@ -670,3 +670,55 @@ fn closing_retained_registry_drops_native_keys_and_denies_every_old_reservation(
     assert!(observer.lock()?.scopes.is_empty());
     Ok(())
 }
+
+#[test]
+fn canonical_secret_serialization_never_reallocates_written_plaintext()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let request = DeviceRequest2 {
+        scope_id: "a".repeat(32),
+        call_id: "call".into(),
+        ttl_ms: 100,
+        operation: DeviceOperation2::Seal {
+            handle: "f".repeat(64),
+            plaintext: vec![255; 8192],
+        },
+    };
+    let canonical = canonical_request(&request)?;
+    assert!(
+        !canonical.grew,
+        "serializer grew a buffer after confidential bytes were written"
+    );
+    assert_eq!(&*canonical.bytes, &serde_json::to_vec(&request)?);
+    Ok(())
+}
+
+#[test]
+fn bounded_canonical_writer_preserves_maximum_escaping_and_refuses_growth()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+    let request = DeviceRequest2 {
+        scope_id: "\0".repeat(128),
+        call_id: "\0".repeat(128),
+        ttl_ms: u32::MAX,
+        operation: DeviceOperation2::SealAck {
+            handle: "\0".repeat(64),
+            peer: "\0".repeat(64),
+            plaintext: vec![255; 1 << 20],
+        },
+    };
+    let canonical = canonical_request(&request)?;
+    assert!(!canonical.grew);
+    assert_eq!(&*canonical.bytes, &serde_json::to_vec(&request)?);
+    let mut full = CanonicalRequest {
+        bytes: Zeroizing::new(Vec::with_capacity(1)),
+        grew: false,
+    };
+    full.write_all(&[7])?;
+    assert!(full.write_all(&[8]).is_err());
+    assert_eq!(&*full.bytes, &[7]);
+    assert_eq!(full.bytes.capacity(), 1);
+    let mut oversized = request;
+    oversized.call_id.push('a');
+    assert!(canonical_request(&oversized).is_err());
+    Ok(())
+}

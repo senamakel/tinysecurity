@@ -204,10 +204,7 @@ fn device_request(
     }
 }
 
-#[path = "../examples/approval_native_contract/callback.rs"]
-mod callback;
-#[path = "../examples/approval_native_contract/store.rs"]
-mod store;
+use super::super::tests::approval_tests::{callback, store};
 use std::sync::{
     Mutex, RwLock,
     atomic::{AtomicBool, AtomicU8, Ordering},
@@ -229,7 +226,7 @@ struct Harness {
     store: Arc<Mutex<store::DiskStore>>,
     fault: Arc<AtomicU8>,
     broker: tokio::task::JoinHandle<tinybus::Result<()>>,
-    _directory: tempfile::TempDir,
+    directory: tempfile::TempDir,
 }
 impl Drop for Harness {
     fn drop(&mut self) {
@@ -384,7 +381,7 @@ async fn harness() -> std::result::Result<Harness, Box<dyn std::error::Error>> {
         store,
         fault,
         broker,
-        _directory: directory,
+        directory: directory,
     })
 }
 impl Harness {
@@ -481,7 +478,7 @@ async fn native_device_work_requires_exact_human_receipts_and_durable_audit()
         plaintext.push(1);
     }
     assert!(fixture.execute(request, &row, 42).await.is_err());
-    let serialized = std::fs::read(fixture._directory.path().join("ledger"))?;
+    let serialized = std::fs::read(fixture.directory.path().join("ledger"))?;
     assert!(!String::from_utf8_lossy(&serialized).contains("private-secret"));
     Ok(())
 }
@@ -664,5 +661,118 @@ fn device_configuration_preserves_immutable_subjects_and_weak_shutdown_lookup()
     drop(registry);
     drop(retained);
     assert!(configure(None, Some(&current), &next).is_err());
+    Ok(())
+}
+
+// Instrumented runtime evidence inspects still-live owned bytes before deallocation.
+// No freed allocation is read, and the synthetic fixture contains no credentials.
+const CLEANUP_PAYLOAD: &[u8] = b"device-cleanup-probe-unique-plaintext";
+struct CleanupProbe {
+    created: tokio::sync::Notify,
+    dropped: tokio::sync::Notify,
+    resume: std::sync::Barrier,
+    wiped: AtomicBool,
+}
+static CLEANUP_PROBE: Mutex<Option<Arc<CleanupProbe>>> = Mutex::new(None);
+pub(super) fn observe_created(response: &DeviceResponse2) {
+    if response.bytes == CLEANUP_PAYLOAD {
+        let probe = CLEANUP_PROBE.lock().ok().and_then(|p| p.clone());
+        if let Some(probe) = probe {
+            probe.created.notify_one();
+            probe.resume.wait();
+        }
+    }
+}
+pub(super) fn observe_dropped(response: &DeviceResponse2) {
+    if response.bytes.len() == CLEANUP_PAYLOAD.len() {
+        let probe = CLEANUP_PROBE.lock().ok().and_then(|p| p.clone());
+        if let Some(probe) = probe {
+            probe
+                .wiped
+                .store(response.bytes.iter().all(|b| *b == 0), Ordering::SeqCst);
+            probe.dropped.notify_one();
+        }
+    }
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unpublished_worker_plaintext_is_wiped_on_clock_read_failure_and_join_abort()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tinysecurity::crypto::device::{KeyPair, PublicKey};
+    let mut outcomes = Vec::new();
+    for fault in 0..3 {
+        let mut fixture = harness().await?;
+        let clock = Arc::new(ToggleClock(AtomicBool::new(false)));
+        fixture.service.sandbox_clock = clock.clone();
+        let request = device_request(
+            1,
+            DeviceOperation2::Key {
+                purpose: DeviceKeyPurpose2::Static,
+            },
+        );
+        let row = fixture
+            .review(request.clone(), 1, ApprovalChoice2::Once)
+            .await?;
+        let key = fixture.execute(request, &row, 3).await?;
+        let peer = KeyPair::generate()?;
+        let frame = peer.seal_handshake(
+            PublicKey::decode(&key.public_key.ok_or("fixture public")?)?,
+            CLEANUP_PAYLOAD,
+        )?;
+        let request = device_request(
+            2,
+            DeviceOperation2::OpenHandshake {
+                handle: key.handle.ok_or("fixture key")?,
+                frame,
+            },
+        );
+        let row = fixture
+            .review(request.clone(), 4, ApprovalChoice2::Once)
+            .await?;
+        let probe = Arc::new(CleanupProbe {
+            created: tokio::sync::Notify::new(),
+            dropped: tokio::sync::Notify::new(),
+            resume: std::sync::Barrier::new(2),
+            wiped: AtomicBool::new(false),
+        });
+        *CLEANUP_PROBE.lock().map_err(|_| "probe lock")? = Some(probe.clone());
+        let service = fixture.service.clone();
+        let execution = tokio::spawn(async move {
+            service
+                .device_execute(ExecuteDeviceRequest2 {
+                    request,
+                    request_id: row.request_id,
+                    audit: audit(6),
+                })
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), probe.created.notified()).await?;
+        if fault == 1 {
+            execution.abort();
+        } else if fault == 0 {
+            clock.0.store(true, Ordering::SeqCst);
+        } else {
+            let policy = fixture.service.policy.clone();
+            assert!(
+                std::panic::catch_unwind(move || {
+                    let _guard = policy.write().unwrap_or_else(|p| p.into_inner());
+                    panic!("synthetic publication read poison");
+                })
+                .is_err()
+            );
+        }
+        probe.resume.wait();
+        if fault == 1 {
+            assert!(execution.await.is_err());
+        } else {
+            assert!(execution.await?.is_err());
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), probe.dropped.notified()).await?;
+        *CLEANUP_PROBE.lock().map_err(|_| "probe lock")? = None;
+        outcomes.push((fault, probe.wiped.load(Ordering::SeqCst)));
+    }
+    assert!(
+        outcomes.iter().all(|(_, wiped)| *wiped),
+        "unpublished cleanup outcomes: {outcomes:?}"
+    );
     Ok(())
 }

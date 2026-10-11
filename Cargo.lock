@@ -1652,6 +1652,7 @@ dependencies = [
  "tinysecurity",
  "tinysecurity-bus",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]

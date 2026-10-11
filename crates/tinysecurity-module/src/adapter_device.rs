@@ -125,6 +125,30 @@ pub(super) fn advance(
     }
     Ok(())
 }
+// Own worker output through every fallible publication check and join cancellation.
+struct ConfidentialResponse(Option<DeviceResponse2>);
+impl ConfidentialResponse {
+    fn new(response: DeviceResponse2) -> Self {
+        #[cfg(test)]
+        tests::observe_created(&response);
+        Self(Some(response))
+    }
+    fn publish(mut self) -> BusResult<DeviceResponse2> {
+        self.0.take().ok_or_else(denied)
+    }
+}
+impl Drop for ConfidentialResponse {
+    fn drop(&mut self) {
+        if let Some(response) = &mut self.0 {
+            use zeroize::Zeroize;
+            // A slice retains its length so the test observer can inspect live wiped bytes.
+            response.bytes.as_mut_slice().zeroize();
+            #[cfg(test)]
+            tests::observe_dropped(response);
+            response.bytes.zeroize();
+        }
+    }
+}
 impl PolicyService {
     fn device_time(&self) -> BusResult<Time> {
         match time(self.sandbox_clock.as_ref()) {
@@ -214,13 +238,15 @@ impl PolicyService {
                     tinysecurity::crypto::Error::DeviceClock
                 })
                 .and_then(|now| {
-                    actual.execute(&work, &original.request().operation, generation, now)
+                    actual
+                        .execute(&work, &original.request().operation, generation, now)
+                        .map(ConfidentialResponse::new)
                 });
             (work, result)
         })
         .await
         .map_err(|_| denied())?;
-        let mut response = result.map_err(|_| denied())?;
+        let response = result.map_err(|_| denied())?;
         if registry
             .validate(&work, self.read()?.info().generation, self.device_time()?)
             .is_err()
@@ -228,11 +254,10 @@ impl PolicyService {
             // Cancellation/revocation itself intentionally fences this work's epoch.
             // Those operations return no authority; other stale results never leave the module.
             if !cancellation {
-                response.bytes.fill(0);
                 return Err(denied());
             }
         }
-        Ok(response)
+        response.publish()
     }
 }
 #[cfg(test)]

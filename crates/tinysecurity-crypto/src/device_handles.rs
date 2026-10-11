@@ -242,12 +242,11 @@ impl Registry {
             .scopes
             .get(&request.scope_id)
             .ok_or(Error::DeviceDenied)?;
-        let original =
-            Zeroizing::new(serde_json::to_vec(request).map_err(|_| Error::DeviceDenied)?);
+        let original = canonical_request(request)?;
         let mut digest = Sha256::new();
         digest.update(b"tinysecurity/device-operation/v1\0");
         digest.update(state.peer.as_bytes());
-        digest.update(&*original);
+        digest.update(&*original.bytes);
         let binding = format!("{:x}", digest.finalize());
         Ok(tinysecurity_bus::EvaluateRequest {
             caller: tinysecurity_bus::CallerContext {
@@ -753,4 +752,58 @@ impl Drop for ConfidentialConfig {
             }
         }
     }
+}
+
+// Bounded staging is zeroizing before the first confidential byte is written.
+// The writer refuses growth, including a future serde wire-format expansion.
+struct CanonicalRequest {
+    bytes: Zeroizing<Vec<u8>>,
+    #[cfg(test)]
+    grew: bool,
+}
+impl std::io::Write for CanonicalRequest {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        #[cfg(test)]
+        if self.bytes.len() + bytes.len() > self.bytes.capacity() && !self.bytes.is_empty() {
+            self.grew = true;
+        }
+        if bytes.len() > self.bytes.capacity() - self.bytes.len() {
+            return Err(std::io::Error::other("device serialization capacity"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+fn canonical_request(request: &DeviceRequest2) -> Result<CanonicalRequest> {
+    if request.scope_id.len() > 128 || request.call_id.len() > 128 {
+        return Err(Error::Limit);
+    }
+    check_operation(&request.operation, 1 << 20)?;
+    use DeviceOperation2 as Op;
+    let bytes = match &request.operation {
+        Op::Seal { plaintext, .. }
+        | Op::SealHandshake { plaintext, .. }
+        | Op::SealAck { plaintext, .. } => plaintext.len(),
+        Op::Open { frame, .. } | Op::OpenHandshake { frame, .. } | Op::OpenAck { frame, .. } => {
+            frame.len()
+        }
+        _ => 0,
+    };
+    // Each byte needs at most four JSON characters including its comma. The
+    // fixed allowance covers six-character escaping of every bounded string,
+    // operation tags, field names, punctuation and all integer digits.
+    let capacity = bytes
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(4096))
+        .ok_or(Error::Limit)?;
+    let mut writer = CanonicalRequest {
+        bytes: Zeroizing::new(Vec::with_capacity(capacity)),
+        #[cfg(test)]
+        grew: false,
+    };
+    serde_json::to_writer(&mut writer, request).map_err(|_| Error::DeviceDenied)?;
+    Ok(writer)
 }
