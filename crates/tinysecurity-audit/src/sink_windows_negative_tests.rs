@@ -352,6 +352,16 @@ exit 0
     if ($_.Exception -is [UnauthorizedAccessException]) { $category = 1 }
     elseif ($_.Exception -is [ComponentModel.Win32Exception]) { $category = 2 }
     Write-Output ('audit-account-stage=' + $stage + ' category=' + $category + ' hresult=' + $_.Exception.HResult)
+    $exception = $_.Exception
+    for ($depth = 0; ($null -ne $exception) -and ($depth -lt 8); $depth++) {
+        $native = 0
+        $kind = 0
+        if ($exception -is [ComponentModel.Win32Exception]) { $kind = 2; $native = $exception.NativeErrorCode }
+        elseif ($exception -is [UnauthorizedAccessException]) { $kind = 1 }
+        elseif ($exception -is [InvalidOperationException]) { $kind = 3 }
+        Write-Output ('audit-account-stage=' + $stage + ' depth=' + $depth + ' category=' + $kind + ' hresult=' + $exception.HResult + ' native=' + $native)
+        $exception = $exception.InnerException
+    }
     exit 1
 } finally {
     try {
