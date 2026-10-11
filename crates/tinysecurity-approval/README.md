@@ -36,7 +36,8 @@ loads retire confirmed identities; concurrent stale loads reconcile the stored
 winner before creating a new row. This bound applies to outstanding creation
 retries, not the lifetime number of completed actions. The host must keep its
 bounded load history without dropping active rows or unexpired reusable grants.
-Replayed prompt delivery reloads the durable winner after reentrant decisions.
+Fresh and replayed prompt delivery reload the durable winner and reconcile its
+exact audit phase after reentrant decisions, including a swallowed decision error.
 A failed or indeterminate acknowledgment denies execution; `Load` never guesses
 whether an unacknowledged mutation succeeded.
 

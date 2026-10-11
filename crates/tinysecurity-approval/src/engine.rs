@@ -259,12 +259,7 @@ impl Engine {
         if !approved {
             self.deliver(row.clone()).await?;
         }
-        // Reentrant decision may already have won while prompt was being delivered.
-        let current = self.row(reg, &row.request_id).await?;
-        if current.binding != row.binding {
-            return Err(Error::Denied);
-        }
-        Ok(current)
+        self.delivered_winner(reg, row).await
     }
     async fn resume(
         &self,
@@ -279,11 +274,24 @@ impl Engine {
         if row.state == ApprovalLifecycle2::Pending {
             self.deliver(row.clone()).await?;
         }
+        self.delivered_winner(reg, row).await
+    }
+    async fn delivered_winner(
+        &self,
+        reg: &ApprovalScope2,
+        row: &ApprovalRow2,
+    ) -> Result<ApprovalRow2> {
         let current = self.row(reg, &row.request_id).await?;
         if current.binding != row.binding || current.host_instance != self.instance {
             return Err(Error::Denied);
         }
         Self::current(reg, &current)?;
+        if &current != row {
+            // Delivery acknowledges the prompt only. A reentrant decision may
+            // have committed without an audit acknowledgement; replay its exact
+            // durable phase before reporting the winning permission.
+            self.ports.audit(current.clone()).await?;
+        }
         Ok(current)
     }
     /// Resolve a trusted registration to its full-digest durable scope handle.

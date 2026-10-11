@@ -32,6 +32,7 @@ struct Fixture {
     release_load: tokio::sync::Notify,
     choice: AtomicU64,
     reentrant: Mutex<Option<std::sync::Weak<Engine>>>,
+    swallow_decision_audit_failure: AtomicU64,
     audits: Mutex<Vec<ApprovalRow2>>,
     audit_receipts: Mutex<std::collections::BTreeMap<(String, u64), ApprovalRow2>>,
     barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
@@ -116,7 +117,14 @@ impl Ports for Fixture {
             .map_err(|_| Error::Unavailable)?
             .clone();
         if let Some(owner) = owner.and_then(|owner| owner.upgrade()) {
-            owner.decide(decision(&r.row)).await?;
+            let failure = self.swallow_decision_audit_failure.load(Ordering::SeqCst);
+            if failure != 0 {
+                self.fail
+                    .store(if failure == 1 { 5 } else { 6 }, Ordering::SeqCst);
+                assert!(owner.decide(decision(&r.row)).await.is_err());
+            } else {
+                owner.decide(decision(&r.row)).await?;
+            }
         }
         Ok(ApprovalDeliveryResponse2 {
             request_id: r.row.request_id,
@@ -921,5 +929,84 @@ async fn a_stale_creation_snapshot_after_memo_reclamation_uses_the_durable_winne
     assert_eq!(resumed.request_id, winner.request_id);
     assert_eq!(resumed.nonce, winner.nonce);
     assert_eq!(f.rows.lock().map_err(|_| Error::Unavailable)?.len(), 1);
+    Ok(())
+}
+
+async fn swallowed_reentrant_audit_failure(resume: bool) -> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let owner = Arc::new(engine(f.clone(), Arc::new(TestClock::default()))?);
+    if resume {
+        f.fail.store(3, Ordering::SeqCst);
+        assert!(owner.begin(request()).await.is_err());
+        f.fail.store(0, Ordering::SeqCst);
+    }
+    *f.reentrant.lock().map_err(|_| Error::Unavailable)? = Some(Arc::downgrade(&owner));
+    f.swallow_decision_audit_failure.store(1, Ordering::SeqCst);
+    assert!(
+        owner.begin(request()).await.is_err(),
+        "prompt delivery cannot acknowledge an unaudited decision phase"
+    );
+    let stored = owner.list(&request().scope_id).await?;
+    assert_eq!(stored.len(), 1);
+    assert_eq!(
+        stored[0].state,
+        ApprovalLifecycle2::Approved,
+        "audit failure does not roll back the durable human winner"
+    );
+    assert!(owner.begin(request()).await.is_err());
+    f.fail.store(0, Ordering::SeqCst);
+    let reconciled = owner.begin(request()).await?;
+    assert_eq!(reconciled, stored[0]);
+    assert_eq!(reconciled.audit, audit(2));
+    assert_eq!(
+        owner.consume(action(&reconciled, 3)).await?.state,
+        ApprovalLifecycle2::Reserved
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn fresh_prompt_cannot_return_a_swallowed_unaudited_human_decision() -> Result<()> {
+    swallowed_reentrant_audit_failure(false).await
+}
+
+#[tokio::test]
+async fn resumed_prompt_cannot_return_a_swallowed_unaudited_human_decision() -> Result<()> {
+    swallowed_reentrant_audit_failure(true).await
+}
+
+#[tokio::test]
+async fn fresh_and_resumed_prompt_reconcile_a_lost_decision_audit_acknowledgement() -> Result<()> {
+    for resume in [false, true] {
+        let f = Arc::new(Fixture::default());
+        let owner = Arc::new(engine(f.clone(), Arc::new(TestClock::default()))?);
+        if resume {
+            f.fail.store(3, Ordering::SeqCst);
+            assert!(owner.begin(request()).await.is_err());
+            f.fail.store(0, Ordering::SeqCst);
+        }
+        *f.reentrant.lock().map_err(|_| Error::Unavailable)? = Some(Arc::downgrade(&owner));
+        f.swallow_decision_audit_failure.store(2, Ordering::SeqCst);
+        let winner = owner.begin(request()).await?;
+        assert_eq!(winner.state, ApprovalLifecycle2::Approved);
+        assert_eq!(winner.version, 2);
+        assert_eq!(winner.audit, audit(2));
+        let approvals = f
+            .audits
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .iter()
+            .filter(|row| row.state == ApprovalLifecycle2::Approved)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(approvals, vec![winner.clone(), winner]);
+        assert_eq!(
+            f.audit_receipts
+                .lock()
+                .map_err(|_| Error::Unavailable)?
+                .len(),
+            2
+        );
+    }
     Ok(())
 }
