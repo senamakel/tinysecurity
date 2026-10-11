@@ -336,6 +336,31 @@ try {
     if ([Convert]::ToBase64String($control) -cne 'dGlueXNlY3VyaXR5LXJlYWQtY29udHJvbC12MQ==') { exit 85 }
 } catch { exit 85 }
 Write-Output 'audit-account-stage=91 exact-control-read=1'
+function Write-AuditFailureMetadata($failure, $auditFileOrdinal, $auditOperation, $auditCallsite) {
+    # Unexpected errors still fail. Emit only fixed file/operation ordinals and
+    # numeric exception metadata; never stringify paths, records or messages.
+    [Console]::WriteLine(('audit-account-stage=99 file={0} operation={1} callsite={2} line={3} offset={4} category={5}' -f $auditFileOrdinal,$auditOperation,$auditCallsite,$failure.InvocationInfo.ScriptLineNumber,$failure.InvocationInfo.OffsetInLine,[int]$failure.CategoryInfo.Category))
+    $exception = $failure.Exception
+    for ($depth = 0; ($null -ne $exception) -and ($depth -lt 8); $depth++) {
+        $kind = 0
+        $native = 0
+        # This fixed vocabulary distinguishes provider and .NET I/O wrappers.
+        switch -Exact ($exception.GetType().FullName) {
+            'System.UnauthorizedAccessException' { $kind = 1 }
+            'System.ComponentModel.Win32Exception' { $kind = 2; $native = $exception.NativeErrorCode }
+            'System.Management.Automation.RuntimeException' { $kind = 3 }
+            'System.Management.Automation.MethodInvocationException' { $kind = 4 }
+            'System.Management.Automation.CmdletInvocationException' { $kind = 5 }
+            'System.Management.Automation.ItemNotFoundException' { $kind = 6 }
+            'System.IO.IOException' { $kind = 7 }
+            'System.IO.FileNotFoundException' { $kind = 8 }
+            'System.IO.DirectoryNotFoundException' { $kind = 9 }
+            'System.Management.Automation.DriveNotFoundException' { $kind = 10 }
+        }
+        [Console]::WriteLine(('audit-account-stage=99 depth={0} kind={1} hresult={2} lowword={3} native={4}' -f $depth,$kind,$exception.HResult,($exception.HResult -band 65535),$native))
+        $exception = $exception.InnerException
+    }
+}
 $auditFileOrdinal = 0
 $auditOperation = 0
 $auditCallsite = 0
@@ -358,35 +383,20 @@ try {
         catch [UnauthorizedAccessException] { }
     }
 } catch {
-    # Unexpected errors still fail. Emit only fixed file/operation ordinals and
-    # numeric exception metadata; never stringify paths, records or messages.
-    $failure = $_
-    [Console]::WriteLine(('audit-account-stage=99 file={0} operation={1} callsite={2} line={3} offset={4} category={5}' -f $auditFileOrdinal,$auditOperation,$auditCallsite,$failure.InvocationInfo.ScriptLineNumber,$failure.InvocationInfo.OffsetInLine,[int]$failure.CategoryInfo.Category))
-    $exception = $failure.Exception
-    for ($depth = 0; ($null -ne $exception) -and ($depth -lt 8); $depth++) {
-        $kind = 0
-        $native = 0
-        # This fixed vocabulary distinguishes provider and .NET I/O wrappers.
-        switch -Exact ($exception.GetType().FullName) {
-            'System.UnauthorizedAccessException' { $kind = 1 }
-            'System.ComponentModel.Win32Exception' { $kind = 2; $native = $exception.NativeErrorCode }
-            'System.Management.Automation.RuntimeException' { $kind = 3 }
-            'System.Management.Automation.MethodInvocationException' { $kind = 4 }
-            'System.Management.Automation.CmdletInvocationException' { $kind = 5 }
-            'System.Management.Automation.ItemNotFoundException' { $kind = 6 }
-            'System.IO.IOException' { $kind = 7 }
-            'System.IO.FileNotFoundException' { $kind = 8 }
-            'System.IO.DirectoryNotFoundException' { $kind = 9 }
-            'System.Management.Automation.DriveNotFoundException' { $kind = 10 }
-        }
-        [Console]::WriteLine(('audit-account-stage=99 depth={0} kind={1} hresult={2} lowword={3} native={4}' -f $depth,$kind,$exception.HResult,($exception.HResult -band 65535),$native))
-        $exception = $exception.InnerException
-    }
+    Write-AuditFailureMetadata $_ $auditFileOrdinal $auditOperation $auditCallsite
     throw
 }
 Write-Output 'audit-account-stage=92 private-file-denials=6'
-try { [IO.Directory]::Move($env:TINYSECURITY_TEST_DIRECTORY, ($env:TINYSECURITY_TEST_DIRECTORY + '.outsider')); exit 84 }
-catch [UnauthorizedAccessException] { }
+$auditFileOrdinal = 7
+$auditOperation = 3
+$auditCallsite = 4
+try {
+    try { [IO.Directory]::Move($env:TINYSECURITY_TEST_DIRECTORY, ($env:TINYSECURITY_TEST_DIRECTORY + '.outsider')); exit 84 }
+    catch [UnauthorizedAccessException] { }
+} catch {
+    Write-AuditFailureMetadata $_ $auditFileOrdinal $auditOperation $auditCallsite
+    throw
+}
 Write-Output 'audit-account-stage=93 namespace-denial=1'
 exit 0
 '@
@@ -437,7 +447,7 @@ exit 0
     $requiredPhases = @('audit-account-stage=90 foreign-identity=1 nonadmin=1', 'audit-account-stage=91 exact-control-read=1', 'audit-account-stage=92 private-file-denials=6', 'audit-account-stage=93 namespace-denial=1')
     $allLines = @($stdout.Result.Split([char]10) | ForEach-Object { $_.TrimEnd([char]13) } | Where-Object { $_.Length -gt 0 })
     $lines = @($allLines | Where-Object { $requiredPhases -ccontains $_ })
-    $diagnostics = @($allLines | Where-Object { $_ -cmatch '^audit-account-stage=94 parsed=1 source-first=[0-9]+ ordinal-prefix=[01] ordinal-first=[01]$|^audit-account-stage=95 preference-extra=[0-2] codepoint=[0-9]+ length=[0-9]+ category=[0-9]+ hresult=-?[0-9]+$|^audit-account-stage=96 (child-entry|identity-read)=1$|^audit-account-stage=98 child-foreign-present=[01] child-foreign-nonempty=[01] child-owner-present=[01] child-owner-nonempty=[01] child-directory-present=[01] child-directory-nonempty=[01] identity-foreign-match=[01] identity-owner-match=[01]$|^audit-account-stage=99 file=[0-6] operation=[0-3] callsite=[0-3] line=[0-9]+ offset=[0-9]+ category=[0-9]+$|^audit-account-stage=99 depth=[0-7] kind=(10|[0-9]) hresult=-?[0-9]+ lowword=[0-9]+ native=-?[0-9]+$' })
+    $diagnostics = @($allLines | Where-Object { $_ -cmatch '^audit-account-stage=94 parsed=1 source-first=[0-9]+ ordinal-prefix=[01] ordinal-first=[01]$|^audit-account-stage=95 preference-extra=[0-2] codepoint=[0-9]+ length=[0-9]+ category=[0-9]+ hresult=-?[0-9]+$|^audit-account-stage=96 (child-entry|identity-read)=1$|^audit-account-stage=98 child-foreign-present=[01] child-foreign-nonempty=[01] child-owner-present=[01] child-owner-nonempty=[01] child-directory-present=[01] child-directory-nonempty=[01] identity-foreign-match=[01] identity-owner-match=[01]$|^audit-account-stage=99 file=[0-7] operation=[0-3] callsite=[0-4] line=[0-9]+ offset=[0-9]+ category=[0-9]+$|^audit-account-stage=99 depth=[0-7] kind=(10|[0-9]) hresult=-?[0-9]+ lowword=[0-9]+ native=-?[0-9]+$' })
     foreach ($line in $allLines) {
         if (($requiredPhases -ccontains $line) -or ($diagnostics -ccontains $line)) { Write-Output $line }
     }
