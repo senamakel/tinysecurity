@@ -236,9 +236,12 @@ $ErrorActionPreference = 'Stop'
 $account = 'tsa' + [Guid]::NewGuid().ToString('N').Substring(0, 16)
 $password = ConvertTo-SecureString ('Tsa!A1' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
 $created = $false
+$process = $null
+$stage = 10
 try {
     New-LocalUser -Name $account -Password $password | Out-Null
     $created = $true
+    $stage = 20
     Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $account
     $credential = [PSCredential]::new(($env:COMPUTERNAME + '\' + $account), $password)
     $childScript = @'
@@ -256,13 +259,34 @@ catch [UnauthorizedAccessException] { }
 exit 0
 '@
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
+    $stage = 30
     $process = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -Credential $credential -PassThru -WindowStyle Hidden
-    if (-not $process.WaitForExit(30000)) { $process.Kill(); throw 'ordinary account helper timeout' }
+    $stage = 40
+    if (-not $process.WaitForExit(30000)) { throw 'ordinary account helper timeout' }
     $code = $process.ExitCode
-    $process.Dispose()
+    Write-Output ('audit-account-stage=50 inner-exit=' + $code)
+    $stage = 50
     if ($code -ne 0) { throw 'ordinary account isolation failed' }
+    Write-Output 'audit-account-stage=60'
+} catch {
+    $category = 0
+    if ($_.Exception -is [UnauthorizedAccessException]) { $category = 1 }
+    elseif ($_.Exception -is [ComponentModel.Win32Exception]) { $category = 2 }
+    Write-Output ('audit-account-stage=' + $stage + ' category=' + $category + ' hresult=' + $_.Exception.HResult)
+    exit 1
 } finally {
-    if ($created) { Remove-LocalUser -Name $account }
+    try {
+        if ($null -ne $process) {
+            try {
+                if (-not $process.HasExited) { $process.Kill() }
+                $process.WaitForExit()
+            } finally { $process.Dispose() }
+        }
+        if ($created) { Remove-LocalUser -Name $account }
+    } catch {
+        Write-Output ('audit-account-stage=70 hresult=' + $_.Exception.HResult)
+        exit 1
+    }
 }
 ";
     let output = std::process::Command::new("powershell.exe")
@@ -274,6 +298,17 @@ exit 0
         "audit-stage=ordinary-account exit={:?}",
         output.status.code()
     );
+    // Only the helper's fixed numeric diagnostics are forwarded; raw PowerShell
+    // errors can contain account details and must never enter test logs.
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if line.starts_with("audit-account-stage=")
+            && line
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "=- ".contains(c))
+        {
+            eprintln!("{line}");
+        }
+    }
     assert!(
         output.status.success(),
         "ordinary account must be unable to read or replace the namespace"
