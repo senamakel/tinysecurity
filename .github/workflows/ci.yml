@@ -148,12 +148,17 @@ jobs:
           $verifier = (Resolve-Path 'target/debug/examples/verify_module.exe').Path
           cargo run --locked --package tinysecurity-module --example approval_native_contract -- $verifiedModule
           if ($LASTEXITCODE -ne 0) { throw 'native approval verifier failed in workspace' }
+          cargo run --locked --package tinysecurity-module --example judge_native_contract -- $verifiedModule
+          if ($LASTEXITCODE -ne 0) { throw 'native judge verifier failed in workspace' }
+          $judgeVerifier = (Resolve-Path 'target/debug/examples/judge_native_contract.exe').Path
           $approvalVerifier = (Resolve-Path 'target/debug/examples/approval_native_contract.exe').Path
           $auditVerifier = (Resolve-Path 'target/debug/examples/audit_native_contract.exe').Path
           Push-Location $env:RUNNER_TEMP
           try {
             & $verifier $verifiedModule
             if ($LASTEXITCODE -ne 0) { throw 'native verifier failed outside workspace' }
+            & $judgeVerifier $verifiedModule
+            if ($LASTEXITCODE -ne 0) { throw 'native judge verifier failed outside workspace' }
             & $approvalVerifier $verifiedModule
             if ($LASTEXITCODE -ne 0) { throw 'native approval verifier failed outside workspace' }
             & $auditVerifier $verifiedModule
@@ -186,11 +191,13 @@ jobs:
           cargo run -p tinysecurity-module --example verify_module -- "$module"
           cargo run -p tinysecurity-module --example audit_native_contract -- "$module"
           cargo run -p tinysecurity-module --example approval_native_contract -- "$module"
+          cargo run -p tinysecurity-module --example judge_native_contract -- "$module"
           # Installed examples must also work outside the workspace root.
           module="$(pwd)/$module"
           (cd target && ./debug/examples/verify_module "$module")
           (cd target && ./debug/examples/audit_native_contract "$module")
           (cd target && ./debug/examples/approval_native_contract "$module")
+          (cd target && ./debug/examples/judge_native_contract "$module")
 
       # `crates/tinysecurity-bus` exists so a host can name the payload types
       # without compiling the module. That promise is invisible in a diff,

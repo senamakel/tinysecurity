@@ -14,11 +14,11 @@ pub struct Policy {
 impl Policy {
     /// Validate and activate the first policy generation.
     /// # Errors
-    /// Rejects incompatible wire versions, unsupported judges and invalid roots.
+    /// Rejects incompatible wire versions, invalid judges and invalid roots.
     pub fn new(config: ModuleConfig) -> Result<Self> {
         validate(&config)?;
         Ok(Self {
-            redactor: tinysecurity_redact::Redactor::new(&config.redactor)?,
+            redactor: registry(&config)?,
             config,
             generation: 1,
         })
@@ -29,7 +29,7 @@ impl Policy {
     pub fn reinitialize(&mut self, config: ModuleConfig) -> Result<()> {
         validate(&config)?;
         let generation = self.generation.checked_add(1).ok_or(Error::InvalidConfig)?;
-        let redactor = tinysecurity_redact::Redactor::new(&config.redactor)?;
+        let redactor = registry(&config)?;
         self.config = config;
         self.redactor = redactor;
         self.generation = generation;
@@ -163,16 +163,8 @@ fn validate(config: &ModuleConfig) -> Result<()> {
     {
         return Err(Error::IncompatibleVersion);
     }
-    // No approval or judge engine is advertised. Do not accept inert credentials.
     if let Some(judge) = &config.judge {
-        if judge.threshold_millis > 1000
-            || judge.timeout_ms == 0
-            || judge.timeout_ms > 600_000
-            || judge.credential.0.is_empty()
-        {
-            return Err(Error::InvalidConfig);
-        }
-        return Err(Error::Unavailable);
+        tinysecurity_auto::Engine::validate_config(judge).map_err(|_| Error::InvalidConfig)?;
     }
     let p = &config.policy;
     if p.enabled && (!path::valid_root(&p.action_dir) || !path::valid_root(&p.workspace_dir)) {
@@ -188,6 +180,18 @@ fn validate(config: &ModuleConfig) -> Result<()> {
         return Err(Error::InvalidConfig);
     }
     Ok(())
+}
+
+fn registry(config: &ModuleConfig) -> Result<tinysecurity_redact::Redactor> {
+    let mut registry = config.redactor.clone();
+    if let Some(judge) = &config.judge {
+        for secret in [&judge.credential, &crate::Secret(judge.endpoint.clone())] {
+            if !registry.secrets.contains(secret) {
+                registry.secrets.push(secret.clone());
+            }
+        }
+    }
+    tinysecurity_redact::Redactor::new(&registry)
 }
 
 fn scan_denial(verdict: &crate::ScanVerdict) -> Option<DenialReason> {

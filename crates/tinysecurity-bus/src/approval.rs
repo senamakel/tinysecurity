@@ -148,6 +148,9 @@ pub struct ApprovalRow2 {
     /// Sanitized legacy history only; never grants exact new authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy_history_json: Option<String>,
+    /// Sanitized immutable judge evidence; omitted for legacy approvals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge: Option<crate::JudgeEvidence2>,
     /// Immutable audit correlation of this version.
     pub audit: AuditCorrelation2,
 }

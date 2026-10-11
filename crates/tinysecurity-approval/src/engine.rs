@@ -71,6 +71,8 @@ pub struct Engine {
     ports: Arc<dyn Ports>,
     clock: Arc<dyn Clock>,
     redactor: RwLock<Redactor>,
+    automatic: RwLock<Option<Arc<tinysecurity_auto::Engine>>>,
+    previous_automatic: RwLock<Option<Arc<tinysecurity_auto::Engine>>>,
     instance: String,
     generation: AtomicU64,
     time: Mutex<(u64, u64, u64, bool)>,
@@ -127,11 +129,47 @@ impl Engine {
             ports,
             clock,
             redactor: RwLock::new(redactor),
+            automatic: RwLock::new(None),
+            previous_automatic: RwLock::new(None),
             instance: binding::opaque()?,
             generation: AtomicU64::new(generation),
             time: Mutex::new(time),
             creations: Mutex::new(std::collections::BTreeMap::new()),
         })
+    }
+    /// Replace the fully validated native scorer through trusted SDK setup only.
+    /// No invocation can create or replace this capability.
+    /// # Errors
+    /// Fails closed when the internal configuration lock is poisoned.
+    pub fn replace_automatic(&self, engine: Option<Arc<tinysecurity_auto::Engine>>) -> Result<()> {
+        let mut active = self.automatic.write().map_err(|_| Error::Unavailable)?;
+        let mut previous = self
+            .previous_automatic
+            .write()
+            .map_err(|_| Error::Unavailable)?;
+        if engine.is_some() {
+            previous.clone_from(&engine);
+        }
+        *active = engine;
+        Ok(())
+    }
+    /// Clone the active scorer without retaining a lock across an await.
+    /// # Errors
+    /// Fails closed when the internal configuration lock is poisoned.
+    pub fn automatic(&self) -> Result<Option<Arc<tinysecurity_auto::Engine>>> {
+        self.automatic
+            .read()
+            .map(|engine| engine.clone())
+            .map_err(|_| Error::Unavailable)
+    }
+    /// Retain the shared reservation ledger while a scorer is temporarily disabled.
+    /// # Errors
+    /// Fails closed when the internal history lock is poisoned.
+    pub fn previous_automatic(&self) -> Result<Option<Arc<tinysecurity_auto::Engine>>> {
+        self.previous_automatic
+            .read()
+            .map(|engine| engine.clone())
+            .map_err(|_| Error::Unavailable)
     }
     /// Persist a real pending request before prompting or returning its identity.
     /// # Errors
@@ -140,7 +178,8 @@ impl Engine {
         let reg = self.registration(&request.scope_id)?;
         let (bound, args_redacted, external_effect) =
             binding::original(&reg, &request.request, &self.redactor()?)?;
-        if external_effect && bound.origin == Origin::Cron {
+        let rule = tinysecurity_auto::rules::evaluate(&reg, &bound.origin, external_effect);
+        if rule == tinysecurity_auto::rules::Rule::Deny {
             return Err(Error::Denied);
         }
         let now = self.now()?;
@@ -167,30 +206,27 @@ impl Engine {
         if let Some(row) = rows.iter().find(|r| r.binding == bound) {
             return self.resume(&reg, row, now).await;
         }
-        let reusable = rows.iter().find(|r| {
-            r.binding.content_sha256 == bound.content_sha256
-                && r.binding.generation == reg.generation
-                && r.binding.scope == bound.scope
-                && r.binding.origin == bound.origin
-                && r.expires_at_ms > now
-                && matches!(
-                    r.state,
-                    ApprovalLifecycle2::Approved
-                        | ApprovalLifecycle2::Reserved
-                        | ApprovalLifecycle2::Executed
-                )
-                && (r.choice == Some(ApprovalChoice2::Tool)
-                    || (r.choice == Some(ApprovalChoice2::Flow) && bound.caller.flow.is_some()))
-        });
+        let reusable = reusable_grant(&rows, &bound, now);
         if let Some(source) = reusable {
             // A decision CAS can succeed before its required audit fails. Reuse
             // must reconcile that exact phase before a derived permission exists.
             self.ports.audit(source.clone()).await?;
         }
-        let automatic =
-            (reg.auto_approve_all || !reg.require_approval || bound.origin == Origin::Cron)
-                && bound.origin != Origin::Saas;
-        let approved = reusable.is_some() || automatic;
+        let automatic = rule == tinysecurity_auto::rules::Rule::Automatic;
+        let judge = if reusable.is_none() && !automatic {
+            self.score(&request, &bound, external_effect).await?
+        } else {
+            None
+        };
+        let qualified = judge
+            .as_ref()
+            .is_some_and(|e| e.outcome == tinysecurity_bus::JudgeOutcome2::Qualified);
+        // Validate generation and expiry again after every external await, even cache hits.
+        if reg.generation != self.generation.load(Ordering::SeqCst) {
+            return Err(Error::Denied);
+        }
+        let now = self.now()?;
+        let approved = reusable.is_some() || automatic || qualified;
         let expiry = now.checked_add(ttl).ok_or(Error::Invalid)?;
         let row = ApprovalRow2 {
             request_id: binding::opaque()?,
@@ -216,6 +252,8 @@ impl Engine {
             choice: approved.then_some(ApprovalChoice2::Once),
             attribution: if reusable.is_some() {
                 Some("exact-reviewed-grant".into())
+            } else if qualified {
+                Some("auto:jev".into())
             } else {
                 automatic.then(|| "auto:host-policy".into())
             },
@@ -223,6 +261,7 @@ impl Engine {
             outcome: None,
             reservation_id: None,
             legacy_history_json: None,
+            judge,
             audit: request.audit,
         };
         let row = {
@@ -235,13 +274,34 @@ impl Engine {
                 .or_insert(row)
                 .clone()
         };
-        self.finish_begin(&reg, &row, approved, now).await
+        self.finish_begin(&reg, &row, now).await
+    }
+    async fn score(
+        &self,
+        request: &EvaluateApprovalRequest2,
+        bound: &tinysecurity_bus::ApprovalBinding2,
+        external_effect: bool,
+    ) -> Result<Option<tinysecurity_bus::JudgeEvidence2>> {
+        let Some(engine) = self.automatic()? else {
+            return Ok(None);
+        };
+        let input = tinysecurity_auto::Input {
+            binding: bound.clone(), external_effect,
+            intent: request.summary.clone(),
+            context_json: serde_json::to_string(&serde_json::json!({"tool":request.request.call.tool,"checks":request.request.call.checks})).map_err(|_| Error::Invalid)?,
+            arguments_json: request.request.call.arguments_json.clone(),
+        };
+        // No lock crosses the outbound await; scoring errors keep human approval.
+        Ok(engine
+            .evaluate(&input, &self.redactor()?)
+            .await
+            .ok()
+            .flatten())
     }
     async fn finish_begin(
         &self,
         reg: &ApprovalScope2,
         row: &ApprovalRow2,
-        approved: bool,
         now: u64,
     ) -> Result<ApprovalRow2> {
         // A concurrent begin may have committed while this call loaded an older
@@ -256,7 +316,7 @@ impl Engine {
             return self.resume(reg, current, now).await;
         }
         self.persist(None, row).await?;
-        if !approved {
+        if row.state == ApprovalLifecycle2::Pending {
             self.deliver(row.clone()).await?;
         }
         self.delivered_winner(reg, row).await
@@ -374,6 +434,7 @@ impl Engine {
                 std::str::from_utf8(&encoded).map_err(|_| Error::Invalid)?,
                 RedactMode::StructuredLogArguments,
             )?),
+            judge: None,
             audit: request.audit,
         };
         self.persist(None, &row).await?;
@@ -728,6 +789,28 @@ impl Engine {
         Ok(result)
     }
 }
+fn reusable_grant<'a>(
+    rows: &'a [ApprovalRow2],
+    bound: &tinysecurity_bus::ApprovalBinding2,
+    now: u64,
+) -> Option<&'a ApprovalRow2> {
+    rows.iter().find(|r| {
+        r.binding.content_sha256 == bound.content_sha256
+            && r.binding.generation == bound.generation
+            && r.binding.scope == bound.scope
+            && r.binding.origin == bound.origin
+            && r.expires_at_ms > now
+            && matches!(
+                r.state,
+                ApprovalLifecycle2::Approved
+                    | ApprovalLifecycle2::Reserved
+                    | ApprovalLifecycle2::Executed
+            )
+            && (r.choice == Some(ApprovalChoice2::Tool)
+                || (r.choice == Some(ApprovalChoice2::Flow) && bound.caller.flow.is_some()))
+    })
+}
+
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 mod tests;

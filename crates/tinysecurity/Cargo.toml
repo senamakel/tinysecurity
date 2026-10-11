@@ -11,6 +11,8 @@ categories = ["authentication"]
 publish = false
 
 [dependencies]
+# Native judge and bounded approval rules.
+tinysecurity-auto.workspace = true
 # Durable exact approvals remain inside the native module.
 tinysecurity-approval.workspace = true
 # Ordered sanitized durable audit engine, never host-linked.

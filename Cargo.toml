@@ -25,6 +25,10 @@ license = "GPL-3.0-only"
 repository = "https://github.com/tinyhumansai/tinysecurity"
 
 [workspace.dependencies]
+# Optional probabilistic approval engine remains native and host-inaccessible.
+tinysecurity-auto = { path = "crates/tinysecurity-auto" }
+# Validated typed Jev HTTP client, pinned by the owner submodule gitlink.
+tinyinference-decisions = { path = "vendor/tinyinference/crates/tinyinference-decisions", version = "0.3.1", default-features = false }
 # Internal durable exact approval engine, never host-linked.
 tinysecurity-approval = { path = "crates/tinysecurity-approval" }
 # Object-safe authenticated asynchronous callback ports.
@@ -73,7 +77,7 @@ serde = { version = "1", features = ["derive"] }
 # Positional argument arrays and the module configuration blob.
 serde_json = "1"
 # Module integration tests exercise the real asynchronous in-memory TinyBus.
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "io-util", "sync"] }
 
 # Disposable filesystem fixtures for native path policy tests.
 [workspace.dependencies.tempfile]

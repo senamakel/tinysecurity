@@ -198,6 +198,7 @@ pub(crate) fn parse(record: &ApprovalRecord2, scope: &SubjectScope) -> Result<Ap
         || !hex(&row.host_instance, 32)
         || !hex(&row.nonce, 32)
         || !hex(&row.audit.event_id, 32)
+        || row.judge.as_ref().is_some_and(|e| !e.is_valid())
         || !lifecycle_valid(&row)
         || row.version == 0
         || row.created_at_ms >= row.expires_at_ms
@@ -244,7 +245,12 @@ fn lifecycle_valid(row: &ApprovalRow2) -> bool {
                     || matches!(
                         row.attribution.as_deref(),
                         Some("auto:host-policy" | "exact-reviewed-grant")
-                    ))
+                    )
+                    || (row.attribution.as_deref() == Some("auto:jev")
+                        && row.choice == Some(ApprovalChoice2::Once)
+                        && row.judge.as_ref().is_some_and(|e| {
+                            e.outcome == tinysecurity_bus::JudgeOutcome2::Qualified
+                        })))
                 && row.legacy_history_json.is_none()
         }
         ApprovalLifecycle2::Denied => {

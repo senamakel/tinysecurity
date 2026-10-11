@@ -285,12 +285,20 @@ fn unknown_commands_and_shell_expansion_are_denied_without_trusting_read_claims(
     Ok(())
 }
 #[test]
-fn unavailable_judge_and_invalid_configuration_do_not_activate()
+fn invalid_judge_and_policy_configuration_do_not_activate()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut policy = Policy::new(ModuleConfig::default())?;
     let old = policy.info();
     let judge = JudgeConfig {
         credential: Secret("fixture-secret".into()),
+        endpoint: "http://not-loopback.invalid/judge".into(),
+        provider: JudgeProvider::TypeSafe,
+        exfiltrate_millis: 100,
+        thresholds: vec![],
+        max_requests: 10,
+        budget_window_ms: 60_000,
+        cache_entries: 10,
+        cache_ttl_ms: 1000,
         threshold_millis: 800,
         timeout_ms: 1000,
         origins: vec![Origin::Operator],
@@ -300,7 +308,7 @@ fn unavailable_judge_and_invalid_configuration_do_not_activate()
             judge: Some(judge.clone()),
             ..Default::default()
         }),
-        Err(Error::Unavailable)
+        Err(Error::InvalidConfig)
     );
     let invalid = JudgeConfig {
         threshold_millis: 1001,

@@ -7,6 +7,8 @@ license.workspace = true
 repository.workspace = true
 publish = false
 [dependencies]
+# Judge results join the existing exact durable approval lifecycle.
+tinysecurity-auto.workspace = true
 tinysecurity-bus.workspace = true
 tinysecurity-redact.workspace = true
 serde_json.workspace = true
@@ -15,6 +17,8 @@ getrandom.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
 [dev-dependencies]
+# Typed fake judge responses test durable approval integration without HTTP.
+tinyinference-decisions.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 [lints]
 workspace = true

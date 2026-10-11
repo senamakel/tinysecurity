@@ -512,7 +512,17 @@ impl PolicyService {
         {
             return Err(tinybus::Error::failed("approval denied"));
         }
+        let request_for_recheck = request.request.clone();
         let row = engine.begin(request).await.map_err(approval_failure)?;
+        let fresh = self
+            .read()?
+            .evaluate(&request_for_recheck)
+            .map_err(|_| tinybus::Error::failed("approval denied"))?;
+        if fresh.generation != row.binding.generation
+            || matches!(fresh.verdict,tinysecurity_bus::Verdict::Deny{ref reason} if *reason != tinysecurity_bus::DenialReason::ApprovalUnavailable)
+        {
+            return Err(tinybus::Error::failed("approval denied"));
+        }
         let verdict = match row.state {
             tinysecurity_bus::ApprovalLifecycle2::Pending => {
                 tinysecurity_bus::Verdict::RequireApproval {
@@ -548,6 +558,14 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::ApprovalActionRequest2,
     ) -> BusResult<tinysecurity_bus::ApprovalRow2> {
+        let policy = self.read()?.clone();
+        let decision = policy
+            .evaluate(&request.request)
+            .map_err(|_| tinybus::Error::failed("approval denied"))?;
+        if matches!(decision.verdict,tinysecurity_bus::Verdict::Deny{ref reason} if *reason != tinysecurity_bus::DenialReason::ApprovalUnavailable)
+        {
+            return Err(tinybus::Error::failed("approval denied"));
+        }
         self.approvals
             .as_ref()
             .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?
@@ -772,18 +790,28 @@ fn configured_audit(
             .transpose()?
     })
 }
-async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
-    // Validate before activation. The SDK serializes reinitializations and
-    // preserves a fault latch; this adapter never provides retry RPCs.
-    let audit_config = config.audit.clone();
-    let approval_config = config.approvals.clone();
-    let requested_host = config.trusted_host.clone();
-    let binding = if let Some(binding) = HOST_BINDING.get() {
-        binding.verify_reinit(requested_host.as_deref())?;
-        binding.clone()
-    } else {
-        crate::callbacks::PeerBinding::new(requested_host.as_deref())?
+fn configured_automatic(
+    config: Option<tinysecurity_bus::JudgeConfig>,
+    approvals: Option<&Arc<tinysecurity::approval::Engine>>,
+) -> BusResult<Option<Arc<tinysecurity::auto::Engine>>> {
+    let Some(config) = config else {
+        return Ok(None);
     };
+    let engine =
+        approvals.ok_or_else(|| tinybus::Error::failed("judge approval authority unavailable"))?;
+    let previous = engine.previous_automatic().map_err(approval_failure)?;
+    let candidate = if let Some(previous) = previous {
+        previous.reconfigured(config)
+    } else {
+        tinysecurity::auto::Engine::new(
+            config,
+            Arc::new(tinysecurity::auto::SystemClock::default()),
+        )
+    }
+    .map_err(|_| tinybus::Error::failed("invalid judge initialization"))?;
+    Ok(Some(Arc::new(candidate)))
+}
+async fn configured_policy(config: ModuleConfig) -> BusResult<Policy> {
     let previous = ACTIVE
         .get()
         .map(|active| {
@@ -793,7 +821,7 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
                 .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))
         })
         .transpose()?;
-    let candidate = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         if let Some(mut candidate) = previous {
             candidate
                 .reinitialize(config)
@@ -804,7 +832,22 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
         }
     })
     .await
-    .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
+    .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+}
+async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
+    // Validate before activation. The SDK serializes reinitializations and
+    // preserves a fault latch; this adapter never provides retry RPCs.
+    let judge_config = config.judge.clone();
+    let audit_config = config.audit.clone();
+    let approval_config = config.approvals.clone();
+    let requested_host = config.trusted_host.clone();
+    let binding = if let Some(binding) = HOST_BINDING.get() {
+        binding.verify_reinit(requested_host.as_deref())?;
+        binding.clone()
+    } else {
+        crate::callbacks::PeerBinding::new(requested_host.as_deref())?
+    };
+    let candidate = configured_policy(config).await?;
     let audit = configured_audit(&connection, &binding, audit_config.clone(), &candidate)?;
     let approvals = configured_approvals(
         &connection,
@@ -814,6 +857,7 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
         &candidate,
         APPROVALS.get(),
     )?;
+    let judge = configured_automatic(judge_config, approvals.as_ref().map(|(_, e)| e))?;
     if let Some(active) = ACTIVE.get() {
         let mut guard = active
             .write()
@@ -845,6 +889,9 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
                 .replace_redactor(candidate.redactor())
                 .map_err(approval_failure)?;
             engine
+                .replace_automatic(judge.clone())
+                .map_err(approval_failure)?;
+            engine
                 .advance_generation(candidate.info().generation)
                 .map_err(approval_failure)?;
         }
@@ -854,6 +901,9 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
     let policy = Arc::new(RwLock::new(candidate));
     let mut service = service_for(Arc::clone(&policy), audit.clone());
     service.approvals = approvals.as_ref().map(|(_, engine)| Arc::clone(engine));
+    if let Some(engine) = &service.approvals {
+        engine.replace_automatic(judge).map_err(approval_failure)?;
+    }
     connection
         .serve_at(
             names::OBJECT_PATH.try_into()?,

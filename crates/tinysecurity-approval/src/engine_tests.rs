@@ -1010,3 +1010,6 @@ async fn fresh_and_resumed_prompt_reconcile_a_lost_decision_audit_acknowledgemen
     }
     Ok(())
 }
+
+#[path = "automatic_tests.rs"]
+mod automatic_tests;

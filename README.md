@@ -32,7 +32,7 @@ diagnostics work with disabled autonomy, which is the default.
 This is bootstrap infrastructure for [OpenHuman #7328](https://github.com/tinyhumansai/openhuman/issues/7328)
 and [TinySecurity #1](https://github.com/tinyhumansai/tinysecurity/issues/1).
 It does **not** complete the migration. Network connection pinning,
-sandbox planning, judge and crypto engines
+sandbox planning and crypto engines
 remain unavailable. Reserved wire types do not advertise callable handlers.
 There is no production host migration until an upstream release and checksum
 manifest exist.
@@ -42,6 +42,12 @@ with authenticated store/CAS, delivery and human-ticket callbacks. Approval
 configuration disables older permission shortcuts. Pending rows and audits
 precede prompts; exact original-call bindings and CAS reservations govern execution.
 
+Contract 1.8 enables optional [native Jev scoring](crates/tinysecurity-auto/README.md)
+through explicit endpoint/key initialization and per-origin opt-in. Redacted
+scores meet local thresholds before durable `auto:jev` one-shot approval;
+all uncertain/error/budget paths keep the authenticated human flow. Required
+CAS/audit receipts and fresh policy floors still gate permission.
+
 ## Workspace
 
 | Crate | Role |
@@ -49,6 +55,7 @@ precede prompts; exact original-call bindings and CAS reservations govern execut
 | `tinysecurity-bus` | Wire types, errors, names and compatibility; normal dependencies only serde and thiserror |
 | `tinysecurity-policy` | Native conservative policy engine |
 | `tinysecurity-redact` | Internal immutable redaction registry and semantic intent scanner |
+| `tinysecurity-auto` | Internal optional Jev, approval rules, shared request budget and exact-score cache |
 | `tinysecurity-approval` | Internal durable exact approval, expiry and reservation engine |
 | `tinysecurity-audit` | Internal bounded authoritative journal and sanitized exact receipts |
 | `tinysecurity` | Internal implementation re-export |
@@ -63,6 +70,7 @@ cargo build --all-targets --all-features
 cargo test --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 cargo run -p tinysecurity-module --example verify_module -- target/debug/libtinysecurity_module.so
+cargo run -p tinysecurity-module --example judge_native_contract -- target/debug/libtinysecurity_module.so
 ```
 
 Use `.dylib` on macOS and `tinysecurity_module.dll` on Windows. The loader

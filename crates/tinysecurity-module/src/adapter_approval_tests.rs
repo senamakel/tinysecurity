@@ -23,10 +23,15 @@ fn audit(sequence: u64) -> AuditCorrelation2 {
     }
 }
 #[derive(Clone)]
-struct Sink;
+struct Sink {
+    fail: Arc<AtomicBool>,
+}
 #[tinybus::interface(name = "ai.tinyhumans.tinysecurity.AuditSink2")]
 impl Sink {
     async fn append(&self, request: AuditSinkRequest2) -> tinybus::Result<AuditSinkResponse2> {
+        if self.fail.load(Ordering::SeqCst) {
+            return Err(tinybus::Error::failed("fixture audit unavailable"));
+        }
         std::future::ready(Ok(AuditSinkResponse2 {
             scope: request.scope,
             stream_id: request.stream_id,
@@ -94,7 +99,7 @@ async fn authenticated_module_routes_persistent_decisions_reservation_history_an
     let store = Arc::new(Mutex::new(store::DiskStore::open(&path)?));
     let clock = Arc::new(TestClock(AtomicU64::new(1000)));
     let failure = Arc::new(AtomicBool::new(false));
-    serve_approvals(&host, &module, &clock, &store, &failure).await?;
+    serve_approvals(&host, &module, &clock, &store, &failure, None).await?;
     let module_peer = module.unique_name().ok_or("module peer")?;
     let proxy = host.proxy(module_peer.as_str(), names::OBJECT_PATH, names::INTERFACE)?;
     execute_once(&proxy).await?;
@@ -189,12 +194,15 @@ async fn serve_approvals(
     clock: &Arc<TestClock>,
     store: &Arc<Mutex<store::DiskStore>>,
     failure: &Arc<AtomicBool>,
+    automatic: Option<Arc<tinysecurity::auto::Engine>>,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let host_peer = host.unique_name().ok_or("host peer")?;
     let module_peer = module.unique_name().ok_or("module peer")?;
     let (config, audit_config) = settings();
     let subject = audit_config.scope.clone();
-    let redactor = tinysecurity::Redactor::new(&RedactorConfig::default())?;
+    let redactor = tinysecurity::Redactor::new(&RedactorConfig {
+        secrets: vec![Secret("fake-judge-key".into())],
+    })?;
     let clients = crate::approval_callbacks::ApprovalClients::new(
         module,
         Some(host_peer.as_str()),
@@ -208,6 +216,7 @@ async fn serve_approvals(
         clock.clone(),
         redactor,
     )?);
+    engine.replace_automatic(automatic)?;
     let mut service = service_for(
         Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
         None,
@@ -245,7 +254,9 @@ async fn serve_approvals(
     host.serve_at(
         callback_names2::OBJECT_PATH.parse()?,
         crate::callbacks::Authenticated::new(
-            Sink,
+            Sink {
+                fail: Arc::clone(failure),
+            },
             crate::callbacks::PeerBinding::new(Some(module_peer.as_str()))?,
         ),
     )
@@ -405,4 +416,198 @@ fn settings() -> (ApprovalConfig2, AuditConfig2) {
         journal_max_events: 10_000,
     };
     (config, audit_config)
+}
+
+fn judge_settings() -> JudgeConfig {
+    JudgeConfig {
+        credential: Secret("fake-judge-key".into()),
+        endpoint: "http://127.0.0.1:1/jev".into(),
+        provider: JudgeProvider::TypeSafe,
+        threshold_millis: 900,
+        exfiltrate_millis: 100,
+        thresholds: vec![],
+        timeout_ms: 1000,
+        origins: vec![Origin::Operator],
+        max_requests: 10,
+        budget_window_ms: 60_000,
+        cache_entries: 10,
+        cache_ttl_ms: 1000,
+    }
+}
+#[tokio::test]
+async fn explicit_judge_initialization_activates_the_native_engine()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let connection = Connection::connect(bus.connect().await?).await?;
+    let peer = connection.unique_name().ok_or("peer")?;
+    let judge = judge_settings();
+    let candidate = Policy::new(ModuleConfig {
+        judge: Some(judge.clone()),
+        ..Default::default()
+    })?;
+    let (config, audit) = settings();
+    let approvals = configured_approvals(
+        &connection,
+        Some(peer.as_str()),
+        Some(config),
+        Some(&audit),
+        &candidate,
+        None,
+    )?;
+    let (_, approvals) = approvals.as_ref().ok_or("approvals")?;
+    let engine = configured_automatic(Some(judge.clone()), Some(approvals))?;
+    assert!(engine.is_some());
+    approvals.replace_automatic(engine)?;
+    let mut invalid = judge.clone();
+    invalid.endpoint = "http://not-loopback.invalid/jev".into();
+    assert!(configured_automatic(Some(invalid), Some(approvals)).is_err());
+    assert!(approvals.automatic()?.is_some());
+    approvals.replace_automatic(None)?;
+    assert!(approvals.automatic()?.is_none());
+    assert!(approvals.previous_automatic()?.is_some());
+    let restored = configured_automatic(Some(judge.clone()), Some(approvals))?;
+    assert!(restored.is_some());
+    approvals.replace_automatic(restored)?;
+    assert!(configured_automatic(Some(judge), None).is_err());
+    assert!(configured_automatic(None, None)?.is_none());
+    assert!(!serde_json::to_string(&candidate.info())?.contains("fake-judge-key"));
+    let redacted = candidate.redactor().redact(&RedactRequest {
+        text: "fake-judge-key http://127.0.0.1:1/jev".into(),
+        mode: RedactMode::Text,
+    })?;
+    assert!(!redacted.text.contains("fake-judge-key"));
+    assert!(!redacted.text.contains("127.0.0.1"));
+    broker.abort();
+    Ok(())
+}
+#[path = "../examples/judge_native_contract/stub.rs"]
+mod stub;
+#[tokio::test]
+async fn authenticated_judge_uses_sdk_http_before_audited_one_shot_and_real_human_fallback()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let stub = stub::Stub::start().await?;
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = Connection::connect(bus.connect().await?).await?;
+    let module = Connection::connect(bus.connect().await?).await?;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("ledger");
+    std::fs::write(&path, [])?;
+    let store = Arc::new(Mutex::new(store::DiskStore::open(&path)?));
+    let clock = Arc::new(TestClock(AtomicU64::new(1000)));
+    let failure = Arc::new(AtomicBool::new(false));
+    let mut cfg = judge_settings();
+    cfg.endpoint = stub.endpoint.clone();
+    let automatic = Arc::new(tinysecurity::auto::Engine::new(
+        cfg,
+        Arc::new(tinysecurity::auto::SystemClock::default()),
+    )?);
+    serve_approvals(&host, &module, &clock, &store, &failure, Some(automatic)).await?;
+    let peer = module.unique_name().ok_or("module")?;
+    let proxy = host.proxy(peer.as_str(), names::OBJECT_PATH, names::INTERFACE)?;
+    verify_judge_one_shot(&proxy).await?;
+    *stub.response.lock().map_err(|_| "stub")? = (200, stub::response([0.5, 1.0, 0.0]));
+    // Fixture's reentrant verified human callback approves this uncertain verdict.
+    let human: EvaluateApprovalResponse2 = proxy
+        .call(names::methods::EVALUATE_APPROVAL2, (begin(21, 3),))
+        .await?;
+    assert_eq!(human.decision.verdict, Verdict::Allow);
+    assert!(human.record.decision_ticket_sha256.is_some());
+    assert_ne!(human.record.attribution.as_deref(), Some("auto:jev"));
+    assert_eq!(
+        human
+            .record
+            .judge
+            .as_ref()
+            .ok_or("uncertain evidence")?
+            .outcome,
+        JudgeOutcome2::Uncertain
+    );
+    let before = stub.requests.lock().map_err(|_| "stub")?.len();
+    let mut forbidden = begin(22, 5);
+    forbidden.request.call.checks = vec![Check::Unknown {
+        description: "forbidden".into(),
+    }];
+    assert!(
+        proxy
+            .call::<EvaluateApprovalResponse2>(names::methods::EVALUATE_APPROVAL2, (forbidden,))
+            .await
+            .is_err()
+    );
+    assert_eq!(stub.requests.lock().map_err(|_| "stub")?.len(), before);
+    *stub.response.lock().map_err(|_| "stub")? = (503, "unavailable".into());
+    let pending: EvaluateApprovalResponse2 = proxy
+        .call(names::methods::EVALUATE_APPROVAL2, (begin(23, 5),))
+        .await?;
+    assert!(matches!(
+        pending.decision.verdict,
+        Verdict::RequireApproval { .. }
+    ));
+    assert_eq!(
+        pending
+            .record
+            .judge
+            .as_ref()
+            .ok_or("failure evidence")?
+            .outcome,
+        JudgeOutcome2::Unavailable
+    );
+    assert_eq!(
+        stub.requests.lock().map_err(|_| "stub")?.len(),
+        before + 1,
+        "SDK retries must be disabled"
+    );
+    *stub.response.lock().map_err(|_| "stub")? = (200, stub::response([1.0, 1.0, 0.0]));
+    failure.store(true, Ordering::SeqCst);
+    assert!(
+        proxy
+            .call::<EvaluateApprovalResponse2>(names::methods::EVALUATE_APPROVAL2, (begin(24, 6),))
+            .await
+            .is_err()
+    );
+    let requests = serde_json::to_string(&*stub.requests.lock().map_err(|_| "stub")?)?;
+    assert!(!requests.contains("private-secret"));
+    assert!(!requests.contains("fake-judge-key"));
+    assert!(!String::from_utf8_lossy(&std::fs::read(path)?).contains("private-secret"));
+    broker.abort();
+    stub.shutdown().await?;
+    Ok(())
+}
+
+async fn verify_judge_one_shot(
+    proxy: &tinybus::Proxy,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let qualified: EvaluateApprovalResponse2 = proxy
+        .call(names::methods::EVALUATE_APPROVAL2, (begin(20, 1),))
+        .await?;
+    assert_eq!(qualified.decision.verdict, Verdict::Allow);
+    assert_eq!(qualified.record.attribution.as_deref(), Some("auto:jev"));
+    assert!(qualified.record.decision_ticket_sha256.is_none());
+    assert_eq!(
+        qualified
+            .record
+            .judge
+            .as_ref()
+            .ok_or("judge evidence")?
+            .outcome,
+        JudgeOutcome2::Qualified
+    );
+    let reserved: ApprovalRow2 = proxy
+        .call(
+            names::methods::CONSUME_APPROVAL2,
+            (action(&qualified.record, 20, 2),),
+        )
+        .await?;
+    assert_eq!(reserved.state, ApprovalLifecycle2::Reserved);
+    assert!(
+        proxy
+            .call::<ApprovalRow2>(
+                names::methods::CONSUME_APPROVAL2,
+                (action(&qualified.record, 20, 2),)
+            )
+            .await
+            .is_err()
+    );
+    Ok(())
 }

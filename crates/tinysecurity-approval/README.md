@@ -75,7 +75,12 @@ instance cannot resume another instance's pending or once-only execution.
 Legacy imports preserve sanitized history in denied rows and never revive broad
 grants. Cron external effects deny before automatic or reusable shortcuts.
 SaaS has no automatic bypass and needs a verified prompt when approval is due.
-No judge is implemented; a parsed reply or claimed judge verdict grants nothing.
+An optional [native Jev scorer](../tinysecurity-auto/README.md) can qualify a
+verified pending request before prompt delivery. Its sanitized evidence is stored
+in the exact row, with `auto:jev` attribution and once-only choice. It never
+creates a human ticket or reusable tool/flow grant. Caller-provided judge verdicts
+and parsed replies still grant nothing. Memoized indeterminate creations retain
+their original lifecycle and evidence even if newer scores differ.
 When approvals are configured, unbound permission methods and the older audited
 permission methods cannot bypass the durable lifecycle.
 

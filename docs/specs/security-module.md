@@ -217,6 +217,14 @@ pairing have one implementation with consent callbacks. Authentication,
 credential ownership, sockets and consent UX stay host-side. Existing encrypted
 data compatibility and migration are acceptance requirements.
 
+Contract 1.8 adds bounded init-only judge settings and optional typed judge
+evidence on durable approval rows. Older init payloads retain their wire shape;
+a legacy judge payload without explicit endpoint and bounded budget cannot activate.
+The native scorer shares request reservations across caller scopes and reinit,
+including disabled periods. Scores bind the original canonical call, generation,
+origin, scope and fresh question/configuration version. See the
+[native scoring contract](../../crates/tinysecurity-auto/README.md).
+
 ## Verification and completion
 
 Each moved behavior first receives a characterization test in OpenHuman and a

@@ -1,0 +1,160 @@
+use super::*;
+use tinyinference_decisions::{Answer, EvaluationRequest, EvaluationResponse, NoulAnswer, Usage};
+use tinysecurity_bus::{JudgeConfig, JudgeOutcome2, JudgeProvider, Secret};
+#[derive(Debug)]
+struct Judge {
+    qualified: AtomicU64,
+    calls: AtomicU64,
+    advance: Mutex<Option<std::sync::Weak<Engine>>>,
+}
+#[async_trait::async_trait]
+impl tinysecurity_auto::JudgeClient for Judge {
+    async fn evaluate(
+        &self,
+        _: &EvaluationRequest,
+    ) -> tinysecurity_auto::Result<EvaluationResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(engine) = self
+            .advance
+            .lock()
+            .map_err(|_| tinysecurity_auto::Error::Unavailable)?
+            .take()
+            .and_then(|engine| engine.upgrade())
+        {
+            engine
+                .advance_generation(2)
+                .map_err(|_| tinysecurity_auto::Error::Unavailable)?;
+        }
+        let intent = if self.qualified.load(Ordering::SeqCst) == 0 {
+            0.1
+        } else {
+            1.0
+        };
+        Ok(EvaluationResponse {
+            model: "jev-latest".into(),
+            answers: [("intent", intent), ("reversible", 1.0), ("exfiltrate", 0.0)]
+                .into_iter()
+                .map(|(id, noul)| (id.into(), Answer::Noul(NoulAnswer { noul })))
+                .collect(),
+            usage: Usage::default(),
+        })
+    }
+}
+impl tinysecurity_auto::Clock for TestClock {
+    fn milliseconds(&self) -> u64 {
+        self.mono.load(Ordering::SeqCst)
+    }
+}
+fn judge_config() -> JudgeConfig {
+    JudgeConfig {
+        credential: Secret("fake-judge-key".into()),
+        endpoint: "http://127.0.0.1:1/jev".into(),
+        provider: JudgeProvider::TypeSafe,
+        threshold_millis: 900,
+        exfiltrate_millis: 100,
+        thresholds: vec![],
+        timeout_ms: 1000,
+        origins: vec![Origin::Operator],
+        max_requests: 10,
+        budget_window_ms: 60_000,
+        cache_entries: 0,
+        cache_ttl_ms: 0,
+    }
+}
+fn scorer(owner: &Engine, judge: Arc<Judge>, clock: Arc<TestClock>) -> Result<()> {
+    let scorer = tinysecurity_auto::Engine::with_client(judge_config(), judge, clock)
+        .map_err(|_| Error::Invalid)?;
+    owner.replace_automatic(Some(Arc::new(scorer)))
+}
+fn judge(qualified: bool) -> Arc<Judge> {
+    Arc::new(Judge {
+        qualified: AtomicU64::new(u64::from(qualified)),
+        calls: AtomicU64::new(0),
+        advance: Mutex::new(None),
+    })
+}
+#[tokio::test]
+async fn retried_pending_creation_cannot_skip_human_delivery_when_new_scores_qualify() -> Result<()>
+{
+    let fixture = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    let owner = engine(fixture.clone(), clock.clone())?;
+    let judge = judge(false);
+    scorer(&owner, judge.clone(), clock)?;
+    fixture.fail.store(1, Ordering::SeqCst);
+    assert_eq!(owner.begin(request()).await, Err(Error::Unavailable));
+    judge.qualified.store(1, Ordering::SeqCst);
+    fixture.fail.store(3, Ordering::SeqCst);
+    assert_eq!(
+        owner.begin(request()).await,
+        Err(Error::Unavailable),
+        "original pending memo must still deliver a real prompt"
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn qualified_judge_requires_exact_durable_audit_before_one_shot_permission() -> Result<()> {
+    let fixture = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    let owner = engine(fixture.clone(), clock.clone())?;
+    let judge = judge(true);
+    scorer(&owner, judge.clone(), clock)?;
+    fixture.fail.store(4, Ordering::SeqCst);
+    assert_eq!(owner.begin(request()).await, Err(Error::Unavailable));
+    assert!(
+        !fixture
+            .order
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .contains(&"prompt")
+    );
+    fixture.fail.store(0, Ordering::SeqCst);
+    let row = owner.begin(request()).await?;
+    assert_eq!(row.state, ApprovalLifecycle2::Approved);
+    assert_eq!(row.attribution.as_deref(), Some("auto:jev"));
+    assert!(row.decision_ticket_sha256.is_none());
+    assert_eq!(row.choice, Some(ApprovalChoice2::Once));
+    let reserved = owner.consume(action(&row, 2)).await?;
+    assert_eq!(reserved.state, ApprovalLifecycle2::Reserved);
+    assert!(owner.consume(action(&row, 2)).await.is_err());
+    assert_eq!(judge.calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+#[tokio::test]
+async fn generation_changes_during_judge_evaluation_never_persist_old_allow() -> Result<()> {
+    let fixture = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    let owner = Arc::new(engine(fixture.clone(), clock.clone())?);
+    let judge = judge(true);
+    *judge.advance.lock().map_err(|_| Error::Unavailable)? = Some(Arc::downgrade(&owner));
+    scorer(&owner, judge, clock)?;
+    assert_eq!(owner.begin(request()).await, Err(Error::Denied));
+    assert!(
+        fixture
+            .rows
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .is_empty()
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn uncertain_judge_preserves_authenticated_human_and_unavailable_channel_denies() -> Result<()>
+{
+    let fixture = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    let owner = Arc::new(engine(fixture.clone(), clock.clone())?);
+    scorer(&owner, judge(false), clock)?;
+    fixture.fail.store(3, Ordering::SeqCst);
+    assert_eq!(owner.begin(request()).await, Err(Error::Unavailable));
+    fixture.fail.store(0, Ordering::SeqCst);
+    *fixture.reentrant.lock().map_err(|_| Error::Unavailable)? = Some(Arc::downgrade(&owner));
+    let row = owner.begin(request()).await?;
+    assert_eq!(row.state, ApprovalLifecycle2::Approved);
+    assert!(row.decision_ticket_sha256.is_some());
+    assert_eq!(
+        row.judge.as_ref().ok_or(Error::Invalid)?.outcome,
+        JudgeOutcome2::Uncertain
+    );
+    Ok(())
+}
