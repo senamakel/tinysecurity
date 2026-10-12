@@ -1183,6 +1183,8 @@ struct PhaseGuard<'a> {
     shared: &'a Shared,
     pending: &'a AppStorePending,
     publishing: &'a AtomicBool,
+    #[cfg(all(test, windows))]
+    last_phase: std::cell::Cell<Option<FileTransactionPhase>>,
 }
 struct PhaseLease<'a> {
     _gate: MutexGuard<'a, ()>,
@@ -1193,6 +1195,8 @@ impl FileTransactionGuard for PhaseGuard<'_> {
         &self,
         phase: FileTransactionPhase,
     ) -> tinystoragedrivers::Result<Box<dyn FileTransactionLease + '_>> {
+        #[cfg(all(test, windows))]
+        self.last_phase.set(Some(phase));
         #[cfg(test)]
         {
             let hook = self
@@ -1251,6 +1255,8 @@ fn run(
         shared,
         pending,
         publishing: &publishing,
+        #[cfg(all(test, windows))]
+        last_phase: std::cell::Cell::new(None),
     };
     let name = pending
         .physical
@@ -1269,12 +1275,55 @@ fn run(
                 .ok_or(Error::NativeDenied)?,
         ),
     };
+    #[cfg(all(test, windows))]
+    let physical_started = Instant::now();
+    #[cfg(all(test, windows))]
+    let deadline_remaining_ms = pending
+        .deadline
+        .saturating_duration_since(physical_started)
+        .as_millis();
     let result = resource.execute(
         pending.physical.key.as_ref().ok_or(Error::NativeDenied)?,
         operation,
         budget,
         &guard,
     );
+    #[cfg(all(test, windows))]
+    if let Err(error) = &result {
+        use std::error::Error as _;
+        // Only typed classes and scalars cross this test-only boundary. Never
+        // format StorageError or its source: they can contain private data.
+        let class = match error.kind() {
+            tinystoragedrivers::ErrorKind::NotFound => "not_found",
+            tinystoragedrivers::ErrorKind::Conflict => "conflict",
+            tinystoragedrivers::ErrorKind::AlreadyExists => "already_exists",
+            tinystoragedrivers::ErrorKind::Unsupported(_) => "unsupported",
+            tinystoragedrivers::ErrorKind::InvalidInput => "invalid_input",
+            tinystoragedrivers::ErrorKind::Serialization => "serialization",
+            tinystoragedrivers::ErrorKind::Crypto => "crypto",
+            tinystoragedrivers::ErrorKind::Unavailable => "unavailable",
+            tinystoragedrivers::ErrorKind::Backend => "backend",
+            tinystoragedrivers::ErrorKind::Fenced => "fenced",
+            _ => "other",
+        };
+        let io = error
+            .source()
+            .and_then(|source| source.downcast_ref::<std::io::Error>());
+        // This exact static marker comes from the driver's deadline checkpoint;
+        // Unavailable alone and expiry at return do not prove that cause.
+        let driver_deadline = error.kind() == tinystoragedrivers::ErrorKind::Unavailable
+            && error.message() == "secret transaction deadline expired";
+        eprintln!(
+            "app_store_physical_error class={class} io_kind={:?} os_code={:?} driver_deadline={driver_deadline} deadline_expired={} deadline_remaining_ms_at_physical_start={deadline_remaining_ms} physical_elapsed_ms={} publish_phase_admitted={} operation={:?} last_phase={:?}",
+            io.map(std::io::Error::kind),
+            io.and_then(std::io::Error::raw_os_error),
+            Instant::now() >= pending.deadline,
+            physical_started.elapsed().as_millis(),
+            publishing.load(Ordering::Acquire),
+            pending.physical.kind,
+            guard.last_phase.get(),
+        );
+    }
     #[cfg(test)]
     {
         let hook = shared
