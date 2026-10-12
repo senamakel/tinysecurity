@@ -235,6 +235,25 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # aws-lc-sys needs NASM for native Windows x64 assembly; ARM64 does not.
+      - name: Install NASM for Windows x64
+        if: ${{ runner.os == 'Windows' && matrix.target == 'x86_64-pc-windows-msvc' }}
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
+        with:
+          version: 2.16.01
+
+      - name: Verify NASM version
+        if: ${{ runner.os == 'Windows' && matrix.target == 'x86_64-pc-windows-msvc' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(nasm -v)"
+          echo "$version"
+          if [[ ! "$version" =~ ^NASM\ version\ 2\.16\.01([[:space:]]|$) ]]; then
+            echo 'expected NASM 2.16.01' >&2
+            exit 1
+          fi
+
       - name: Verify native Rust target
         shell: bash
         env:
