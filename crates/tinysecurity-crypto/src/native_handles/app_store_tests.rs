@@ -760,6 +760,8 @@ async fn actual_phase_leases_exclude_authority_transition_and_recheck_after_rele
             shared: &fixture.owner.shared,
             pending: &pending,
             publishing: &publishing,
+            #[cfg(windows)]
+            last_phase: std::cell::Cell::new(None),
         };
         let lease = guard.enter(FileTransactionPhase::Publish)?;
         assert!(fixture.registry.physical_gate.try_lock().is_err(), "P01");
@@ -788,6 +790,8 @@ async fn phase_clock_rollback_closes_without_recursive_gate_acquisition() -> Tes
         shared: &fixture.owner.shared,
         pending: &pending,
         publishing: &publishing,
+        #[cfg(windows)]
+        last_phase: std::cell::Cell::new(None),
     };
     assert!(guard.enter(FileTransactionPhase::Publish).is_err(), "P01");
     assert!(
