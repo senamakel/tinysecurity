@@ -188,3 +188,61 @@ receipt constructor or raw master accessor is added. `CipherDelivery` exposes
 only keyed exact-output correlation in addition to its existing trusted port
 metadata. This supersedes the earlier immediate-completion API's narrower
 final-audit lifetime; `execute` remains a immediate-publication convenience.
+
+## Internal App file consumer
+
+The App-store owner captures one exact driver-owned encrypted file and fixed
+native consent, required audit and receiver ports. Get/Set/Delete consume distinct
+typed App I/O Human Once authority against an independently generated keyed
+wrapper. Config cipher remains Config-only. This internal slice has no bus member
+or actual provider/SDK delivery provenance.
+
+Preparation counts the exact length-delimited encoding and serialized original
+context without creating a confidential copy. Aggregate backing capacity and an
+in-flight slot are reserved before allocating the bounded encoding. Driver scratch,
+output, copied key and incoming name/value capacities remain charged together.
+Initialization bounds each driver ceiling independently; the driver still admits
+its own complete map/ciphertext budget. Encoding has no intermediate context buffer.
+Rejected work wipes its actual confidential backing before admission is refunded.
+
+One dedicated finite worker owns key copies and driver scratch reservations.
+Caller cancellation retains queued/running physical charge until completion.
+After final actual audit, Get moves a charged delivery to the fixed synchronous
+bounded memory receiver. Retention keeps the whole delivery and its reservation;
+its buffers physically drop before the final refund. The receiver must not make
+uncharged copies, perform I/O, await or reenter the registry under the phase gate.
+
+All clock samples and registry state checks happen after acquiring the shared
+physical gate. A delayed caller cannot close healthy authority by comparing an
+old pre-gate sample with newer gated time. Genuine rollback and clock failure
+still permanently close authority without recursive gate acquisition.
+
+All registry state checks share the physical gate before state locking. Driver
+publication holds the gate through rename, flush and exact readback; authority
+transition waits for lease drop. Original deadline/cancellation still deny normal
+acknowledgment after a visible mutation. Any unacknowledged published mutation,
+including cancellation during final audit, permanently fences App storage in the
+live registry across generation and new-owner attempts. Joining this internal
+worker does not establish SDK callee/module unload lifetime safety.
+
+An ordinary Rust worker unwind is caught while the job still owns its physical
+buffers. After driver leases and scratch unwind, the shared registry is fenced
+immediately; the current and queued waiters receive content-free denial and wake.
+The resource is never resumed. A poisoned gate is recovered only to write this
+permanent denial. No global panic hook is changed: the ordinary hook runs before
+catching a panic, and arbitrary provider payload redaction is not claimed.
+Caught notification/run payloads remain alive until the shared fence and all
+current/queued owned completion and backing cleanup finish. A fixed private
+33-slot collection covers at most 32 admitted jobs plus one worker-run fault;
+receiver teardown disconnects its finite queue before dropping jobs. Each opaque
+primary payload gets one guarded disposal attempt. A secondary destructor panic
+payload is conservatively retained without recursive disposal; defensive slot
+overflow also retains the fault. This bounds fault counts, not unknown foreign
+payload bytes or zeroization. A reservation retained by such a payload remains
+charged because its backing has not actually dropped. Arbitrary blocking payload
+destructors and their eventual quiescence are not guaranteed.
+This fence requires unwind-enabled Rust execution. Abort panics, allocator abort,
+process termination, foreign exceptions and panics escaping an FFI boundary can
+prevent Rust cleanup; this is not durable crash recovery.
+
+See [accepted constraints](../../../../docs/specs/native-app-store.md).

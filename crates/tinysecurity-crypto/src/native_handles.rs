@@ -41,6 +41,8 @@ pub enum OperationKind {
     RetainPlaintext,
     /// Exact owner-created config cipher work, never external routine receipt authority.
     ConfigCipher,
+    /// Exact native App file-store work; requires distinct consumed Human Once consent.
+    AppStore,
 }
 /// Immutable trusted owner registration. No field grants live authority.
 pub struct Registration {
@@ -154,6 +156,7 @@ struct State {
     retained_bytes: usize,
     pending_bytes: usize,
     limits: Limits,
+    app_uncertain: bool,
 }
 enum Material {
     Master(MasterKey),
@@ -186,6 +189,7 @@ struct Entry {
 pub struct Registry {
     state: Arc<Mutex<State>>,
     clock: Arc<dyn NativeClock>,
+    physical_gate: Arc<Mutex<()>>,
 }
 /// Exact private authorization binding. Only safe keyed correlation is public.
 pub struct Binding {
@@ -272,11 +276,20 @@ impl Reservation {
 }
 impl Drop for Reservation {
     fn drop(&mut self) {
+        let charged = self
+            .binding
+            .input
+            .capacity()
+            .saturating_add(32)
+            .saturating_add(self.extra_bytes);
+        // Confidential backing allocations must physically disappear before
+        // capacity becomes available to another admitted operation.
+        let empty = || ConfidentialBytes(Zeroizing::new(Vec::new()));
+        drop(std::mem::replace(&mut self.binding.input, empty()));
+        drop(std::mem::replace(&mut self.binding.challenge, empty()));
         if let Ok(mut state) = self.registry.state.lock() {
             state.budget.release();
-            state.pending_bytes = state
-                .pending_bytes
-                .saturating_sub(self.binding.input.capacity() + 32 + self.extra_bytes);
+            state.pending_bytes = state.pending_bytes.saturating_sub(charged);
         }
     }
 }
@@ -403,7 +416,9 @@ impl RoutineReceipt {
     pub fn from_consumed_pending(binding: &Binding, pending: &str, consumer: &str) -> Result<Self> {
         if matches!(
             binding.kind,
-            OperationKind::NativeMasterGrant | OperationKind::ConfigCipher
+            OperationKind::NativeMasterGrant
+                | OperationKind::ConfigCipher
+                | OperationKind::AppStore
         ) || !text(pending)
             || !text(consumer)
         {
@@ -418,7 +433,9 @@ impl RoutineReceipt {
     fn verify(&self, binding: &Binding) -> Result<()> {
         if matches!(
             binding.kind,
-            OperationKind::NativeMasterGrant | OperationKind::ConfigCipher
+            OperationKind::NativeMasterGrant
+                | OperationKind::ConfigCipher
+                | OperationKind::AppStore
         ) || !text(&self.pending)
             || !text(&self.consumer)
         {
@@ -487,6 +504,8 @@ impl<T> std::fmt::Debug for OpaqueHandle<T> {
         f.write_str("OpaqueHandle([REDACTED])")
     }
 }
+/// Internal bounded native App encrypted-file consumer.
+pub mod app_store;
 /// Bounded internal config-master cipher consumers.
 pub mod cipher;
 
@@ -556,73 +575,70 @@ impl Registry {
                 retained_bytes: 0,
                 pending_bytes: 0,
                 limits,
+                app_uncertain: false,
             })),
             clock,
+            physical_gate: Arc::new(Mutex::new(())),
         })
     }
-    fn lock(&self) -> Result<MutexGuard<'_, State>> {
-        self.state.lock().map_err(|_| Error::NativeDenied)
+    fn lock(&self) -> Result<StateGuard<'_>> {
+        let gate = self.physical_gate.lock().map_err(|_| Error::NativeDenied)?;
+        let state = self.state.lock().map_err(|_| Error::NativeDenied)?;
+        Ok(StateGuard { state, _gate: gate })
     }
-    fn now(&self) -> Result<Time> {
-        if let Ok(now) = self.clock.now() {
-            Ok(now)
-        } else {
-            self.close();
-            Err(Error::NativeClock)
-        }
+    fn sample(&self, state: &mut State) -> Result<Time> {
+        let Ok(now) = self.clock.now() else {
+            state.close();
+            return Err(Error::NativeClock);
+        };
+        state.check(now)?;
+        Ok(now)
     }
+    fn checked_lock(&self) -> Result<(StateGuard<'_>, Time)> {
+        let mut state = self.lock()?;
+        let now = self.sample(&mut state)?;
+        Ok((state, now))
+    }
+
     /// Reserve bounded exact private input before any callback or native work.
     /// # Errors
     /// Denies substituted peer/purpose, stale generation, rollback, invalid lifetime or exhausted bounds.
     pub fn reserve(&self, request: Request<'_>) -> Result<Reservation> {
-        self.reserve_internal(request, None)
+        self.reserve_internal(request, None, false, None)
     }
     fn reserve_internal(
         &self,
-        request: Request<'_>,
+        mut request: Request<'_>,
         cipher: Option<cipher::CipherBinding>,
+        app: bool,
+        mut backing: Option<&mut app_store::BackingAdmission>,
     ) -> Result<Reservation> {
-        let input = ConfidentialBytes(request.input);
-        let now = self.now()?;
-        let mut state = self.lock()?;
-        state.check(now)?;
-        if request.authenticated_peer != state.peer
-            || request.generation != state.generation
-            || !text(request.call_id)
-            || request.ttl_ms == 0
-            || request.ttl_ms > state.limits.max_ttl_ms
-            || input.len()
-                > cipher
-                    .as_ref()
-                    .map_or(state.limits.max_input_bytes, |binding| {
-                        binding.input_limit(state.limits.max_input_bytes, &input)
-                    })
-            || (request.kind == OperationKind::ConfigCipher) != cipher.is_some()
-            || (request.kind == OperationKind::NativeMasterGrant
-                && request.purpose == Purpose::PasswordEncryption)
-            || (request.kind == OperationKind::RetainPassword
-                && request.purpose != Purpose::PasswordEncryption)
-        {
-            return Err(Error::NativeDenied);
-        }
-        let mut expires = Time {
-            wall: now
-                .wall
-                .checked_add(u64::from(request.ttl_ms))
-                .ok_or(Error::NativeDenied)?,
-            monotonic: now
-                .monotonic
-                .checked_add(u64::from(request.ttl_ms))
-                .ok_or(Error::NativeDenied)?,
-        };
-        if let Some(cipher) = &cipher {
-            cipher.cap_deadline(&mut expires, now)?;
-        }
-        let pending = state
-            .pending_bytes
-            .checked_add(input.capacity())
-            .and_then(|v| v.checked_add(32))
+        let input = ConfidentialBytes(std::mem::take(&mut request.input));
+        let (mut state, now) = self.checked_lock()?;
+        let expires = request_deadline(&state, &request, &input, cipher.as_ref(), app, now)?;
+        let ordinary_bytes = input
+            .capacity()
+            .checked_add(32)
             .ok_or(Error::NativeCapacity)?;
+        let extra_bytes = if let Some(backing) = &backing {
+            if !app || !Arc::ptr_eq(&self.state, &backing.registry.state) {
+                return Err(Error::NativeDenied);
+            }
+            backing
+                .bytes
+                .checked_sub(ordinary_bytes)
+                .ok_or(Error::NativeCapacity)?
+        } else {
+            0
+        };
+        let pending = if backing.is_some() {
+            state.pending_bytes
+        } else {
+            state
+                .pending_bytes
+                .checked_add(ordinary_bytes)
+                .ok_or(Error::NativeCapacity)?
+        };
         if pending > state.limits.max_pending_bytes
             || pending
                 .checked_add(state.retained_bytes)
@@ -661,31 +677,34 @@ impl Registry {
         binding.commitment = commitment(&state.authorization_key, &binding);
         let limits = state.limits;
         let State { scopes, budget, .. } = &mut *state;
-        budget
-            .reserve(
-                &mut scopes
-                    .get_mut(request.registration)
-                    .ok_or(Error::NativeDenied)?
-                    .rate,
-                now.monotonic,
-                limits.max_in_flight,
-                limits.operations_per_minute,
-            )
-            .map_err(|e| match e {
-                BudgetError::Capacity => Error::NativeCapacity,
-                BudgetError::Rate => Error::NativeRate,
-            })?;
+        if backing.is_none() {
+            budget
+                .reserve(
+                    &mut scopes
+                        .get_mut(request.registration)
+                        .ok_or(Error::NativeDenied)?
+                        .rate,
+                    now.monotonic,
+                    limits.max_in_flight,
+                    limits.operations_per_minute,
+                )
+                .map_err(|e| match e {
+                    BudgetError::Capacity => Error::NativeCapacity,
+                    BudgetError::Rate => Error::NativeRate,
+                })?;
+        }
+        if let Some(backing) = backing.as_mut() {
+            backing.active = false;
+        }
         state.pending_bytes = pending;
         Ok(Reservation {
             registry: self.clone(),
             binding,
-            extra_bytes: 0,
+            extra_bytes,
         })
     }
     fn validate(&self, work: &Reservation) -> Result<()> {
-        let now = self.now()?;
-        let mut state = self.lock()?;
-        state.check(now)?;
+        let (state, now) = self.checked_lock()?;
         state.live(self, work, now)
     }
     /// Consume a trusted completed human receipt without holding a lock across its future.
@@ -716,7 +735,9 @@ impl Registry {
         self.validate(&work)?;
         if matches!(
             work.binding.kind,
-            OperationKind::NativeMasterGrant | OperationKind::ConfigCipher
+            OperationKind::NativeMasterGrant
+                | OperationKind::ConfigCipher
+                | OperationKind::AppStore
         ) {
             return Err(Error::NativeDenied);
         }
@@ -780,9 +801,7 @@ impl Registry {
         material: Material,
         kind: OperationKind,
     ) -> Result<OpaqueHandle<T>> {
-        let now = self.now()?;
-        let mut state = self.lock()?;
-        state.check(now)?;
+        let (mut state, now) = self.checked_lock()?;
         state.live(self, &work, now)?;
         if work.binding.kind != kind {
             return Err(Error::NativeDenied);
@@ -839,9 +858,7 @@ impl Registry {
         authenticated_peer: &str,
         generation: u64,
     ) -> Result<()> {
-        let now = self.now()?;
-        let mut state = self.lock()?;
-        state.check(now)?;
+        let (state, _) = self.checked_lock()?;
         let identity = handle_identity(&state.authorization_key, &handle.bytes);
         let entry = state.entries.get(&identity).ok_or(Error::NativeDenied)?;
         if authenticated_peer != state.peer
@@ -863,9 +880,7 @@ impl Registry {
     /// # Errors
     /// Rejects unknown/closed registrations and epoch exhaustion.
     pub fn revoke_scope(&self, registration: &str) -> Result<()> {
-        let now = self.now()?;
-        let mut state = self.lock()?;
-        state.check(now)?;
+        let (mut state, _) = self.checked_lock()?;
         let scope = state
             .scopes
             .get_mut(registration)
@@ -883,9 +898,7 @@ impl Registry {
     /// # Errors
     /// Rejects stale generation, closed state, clock or entropy failure.
     pub fn prepare_generation(&self, generation: u64) -> Result<PreparedGeneration<'_>> {
-        let now = self.now()?;
-        let mut state = self.lock()?;
-        state.check(now)?;
+        let (state, _) = self.checked_lock()?;
         if generation <= state.generation {
             return Err(Error::NativeDenied);
         }
@@ -905,6 +918,10 @@ impl Registry {
     }
     /// Permanently close even when another owner retains this registry or a pending future.
     pub fn close(&self) {
+        let _gate = match self.physical_gate.lock() {
+            Ok(gate) => gate,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         let mut state = match self.state.lock() {
             Ok(state) => state,
             Err(poisoned) => poisoned.into_inner(),
@@ -912,9 +929,26 @@ impl Registry {
         state.close();
     }
 }
+// State checks can expire or permanently close authority. They share the
+// physical phase gate even when called from ordinary handle validation.
+struct StateGuard<'a> {
+    state: MutexGuard<'a, State>,
+    _gate: MutexGuard<'a, ()>,
+}
+impl std::ops::Deref for StateGuard<'_> {
+    type Target = State;
+    fn deref(&self) -> &State {
+        &self.state
+    }
+}
+impl std::ops::DerefMut for StateGuard<'_> {
+    fn deref_mut(&mut self) -> &mut State {
+        &mut self.state
+    }
+}
 /// A locked generation rotation whose final activation cannot fail.
 pub struct PreparedGeneration<'a> {
-    state: MutexGuard<'a, State>,
+    state: StateGuard<'a>,
     generation: u64,
     key: ConfidentialBytes,
 }
@@ -980,6 +1014,48 @@ impl State {
         }
         Ok(())
     }
+}
+fn request_deadline(
+    state: &State,
+    request: &Request<'_>,
+    input: &ConfidentialBytes,
+    cipher: Option<&cipher::CipherBinding>,
+    app: bool,
+    now: Time,
+) -> Result<Time> {
+    if request.authenticated_peer != state.peer
+        || request.generation != state.generation
+        || !text(request.call_id)
+        || request.ttl_ms == 0
+        || request.ttl_ms > state.limits.max_ttl_ms
+        || input.len()
+            > cipher.map_or(state.limits.max_input_bytes, |binding| {
+                binding.input_limit(state.limits.max_input_bytes, input)
+            })
+        || (request.kind == OperationKind::AppStore) != app
+        || (app && request.purpose != Purpose::AppEncryptionMaster)
+        || (request.kind == OperationKind::ConfigCipher) != cipher.is_some()
+        || (request.kind == OperationKind::NativeMasterGrant
+            && request.purpose == Purpose::PasswordEncryption)
+        || (request.kind == OperationKind::RetainPassword
+            && request.purpose != Purpose::PasswordEncryption)
+    {
+        return Err(Error::NativeDenied);
+    }
+    let mut expires = Time {
+        wall: now
+            .wall
+            .checked_add(u64::from(request.ttl_ms))
+            .ok_or(Error::NativeDenied)?,
+        monotonic: now
+            .monotonic
+            .checked_add(u64::from(request.ttl_ms))
+            .ok_or(Error::NativeDenied)?,
+    };
+    if let Some(cipher) = cipher {
+        cipher.cap_deadline(&mut expires, now)?;
+    }
+    Ok(expires)
 }
 fn random_bytes() -> Result<ConfidentialBytes> {
     let mut bytes = Zeroizing::new(vec![0; 32]);

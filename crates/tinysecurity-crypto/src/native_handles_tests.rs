@@ -592,7 +592,17 @@ fn pending_and_combined_resident_bounds_do_not_rely_on_handle_count() -> TestRes
 thread_local! {
     static WIPES: std::cell::RefCell<(usize, bool)> = const { std::cell::RefCell::new((0, true)) };
 }
+thread_local! {
+    static REFUND_PROBE: std::cell::RefCell<Option<Arc<Mutex<State>>>> = const { std::cell::RefCell::new(None) };
+    static REFUND_SAMPLES: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 pub(super) fn observe_wiped(bytes: &[u8]) {
+    REFUND_PROBE.with(|probe| {
+        if let Some(state) = probe.borrow().as_ref().filter(|_| !bytes.is_empty()) {
+            let pending = state.lock().map_or(usize::MAX, |state| state.pending_bytes);
+            REFUND_SAMPLES.with(|samples| samples.borrow_mut().push(pending));
+        }
+    });
     WIPES.with(|observed| {
         let mut observed = observed.borrow_mut();
         observed.0 += 1;
@@ -862,5 +872,117 @@ fn prepared_generation_clock_rollback_permanently_closes_authority() -> TestResu
     clock.0.store(2, Ordering::SeqCst);
     assert!(reg.prepare_generation(2).is_err());
     assert!(reg.lock()?.closed);
+    Ok(())
+}
+
+#[test]
+fn reservation_keeps_capacity_charged_until_confidential_buffer_teardown() -> TestResult {
+    let (registry, _) = registry(Limits::default())?;
+    let work = reserve(
+        &registry,
+        Purpose::AppEncryptionMaster,
+        OperationKind::NativeMasterGrant,
+        b"synthetic",
+    )?;
+    REFUND_SAMPLES.with(|samples| samples.borrow_mut().clear());
+    REFUND_PROBE.with(|probe| *probe.borrow_mut() = Some(registry.state.clone()));
+    drop(work);
+    REFUND_PROBE.with(|probe| *probe.borrow_mut() = None);
+    REFUND_SAMPLES.with(|samples| {
+        let samples = samples.borrow();
+        assert!(samples.len() >= 2, "P01");
+        assert!(samples.iter().all(|pending| *pending > 0), "P02");
+    });
+    assert_eq!(
+        registry
+            .state
+            .lock()
+            .map_err(|_| Error::NativeDenied)?
+            .pending_bytes,
+        0,
+        "P03"
+    );
+    Ok(())
+}
+
+#[test]
+fn app_store_cannot_enter_generic_routine_or_master_admission() -> TestResult {
+    let (registry, _) = registry(Limits::default())?;
+    assert!(
+        reserve(
+            &registry,
+            Purpose::AppEncryptionMaster,
+            OperationKind::AppStore,
+            b"synthetic"
+        )
+        .is_err(),
+        "P01"
+    );
+    Ok(())
+}
+
+struct AdvancingGatedClock {
+    registry: Mutex<Option<Registry>>,
+    armed: std::sync::atomic::AtomicBool,
+}
+impl NativeClock for AdvancingGatedClock {
+    fn now(&self) -> Result<Time> {
+        let initial = Time {
+            wall: 1_000,
+            monotonic: 0,
+        };
+        if !self.armed.load(Ordering::SeqCst) {
+            return Ok(initial);
+        }
+        let registry = self
+            .registry
+            .lock()
+            .map_err(|_| Error::NativeDenied)?
+            .clone()
+            .ok_or(Error::NativeDenied)?;
+        let advanced = Time {
+            wall: 1_002,
+            monotonic: 2,
+        };
+        if let Ok(_gate) = registry.physical_gate.try_lock() {
+            // Deterministically advance healthy authority after this sample,
+            // before the caller obtains its physical gate (the reported race).
+            registry
+                .state
+                .lock()
+                .map_err(|_| Error::NativeDenied)?
+                .check(advanced)?;
+            return Ok(initial);
+        }
+        // Gate-owned sampling sees current time, never the earlier sample.
+        Ok(advanced)
+    }
+}
+#[test]
+fn ordinary_authority_samples_current_clock_only_inside_physical_gate() -> TestResult {
+    let clock = Arc::new(AdvancingGatedClock {
+        registry: Mutex::new(None),
+        armed: std::sync::atomic::AtomicBool::new(false),
+    });
+    let reg = Registry::new(
+        vec![registration("a")],
+        ":1.1",
+        1,
+        Limits::default(),
+        clock.clone(),
+    )?;
+    *clock.registry.lock().map_err(|_| "P01")? = Some(reg.clone());
+    clock.armed.store(true, Ordering::SeqCst);
+    assert!(
+        reserve(
+            &reg,
+            Purpose::ConfigUserMaster,
+            OperationKind::RetainPlaintext,
+            b"synthetic"
+        )
+        .is_ok(),
+        "P02"
+    );
+    assert!(!reg.state.lock().map_err(|_| "P03")?.closed, "P04");
     Ok(())
 }

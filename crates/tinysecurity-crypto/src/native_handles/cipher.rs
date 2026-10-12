@@ -309,8 +309,7 @@ impl CipherOwner {
         if !text(&config.consumer) {
             return Err(Error::NativeDenied);
         }
-        let now = registry.now()?;
-        registry.lock()?.check(now)?;
+        drop(registry.checked_lock()?);
         let mut identity = [0; 32];
         getrandom::fill(&mut identity).map_err(|_| Error::Entropy)?;
         Ok(Self {
@@ -327,10 +326,8 @@ impl CipherOwner {
     /// # Errors
     /// Denies missing, expired, substituted or exhausted authority and oversized input.
     pub fn prepare(&self, request: CipherRequest<'_>) -> Result<CipherPending> {
-        let now = self.registry.now()?;
-        let binding = {
-            let mut state = self.registry.lock()?;
-            state.check(now)?;
+        let (now, binding) = {
+            let (state, now) = self.registry.checked_lock()?;
             let identity = handle_identity(&state.authorization_key, &request.master.bytes);
             let entry = state.entries.get(&identity).ok_or(Error::NativeDenied)?;
             if request.authenticated_peer != state.peer
@@ -348,15 +345,18 @@ impl CipherOwner {
             {
                 return Err(Error::NativeDenied);
             }
-            CipherBinding {
-                owner: self.identity,
-                master: identity,
-                master_epoch: entry.epoch,
-                master_expires: entry.expires,
-                consumer: self.config.consumer.clone(),
-                kind: request.kind,
-                enabled: self.config.enabled,
-            }
+            (
+                now,
+                CipherBinding {
+                    owner: self.identity,
+                    master: identity,
+                    master_epoch: entry.epoch,
+                    master_expires: entry.expires,
+                    consumer: self.config.consumer.clone(),
+                    kind: request.kind,
+                    enabled: self.config.enabled,
+                },
+            )
         };
         // Both clocks must preserve the master's lifetime. No rounding or renewal.
         let remaining = binding.master_expires.wall.saturating_sub(now.wall).min(
@@ -379,6 +379,8 @@ impl CipherOwner {
                 ttl_ms,
             },
             Some(binding),
+            false,
+            None,
         )?;
         // Charge conservative simultaneous primitive scratch and outputs before
         // running the driver. Output backing capacity is verified against this
@@ -403,9 +405,7 @@ impl CipherOwner {
         })
     }
     fn charge(&self, work: &mut Reservation, bytes: usize) -> Result<()> {
-        let now = self.registry.now()?;
-        let mut state = self.registry.lock()?;
-        state.check(now)?;
+        let (mut state, now) = self.registry.checked_lock()?;
         state.live(&self.registry, work, now)?;
         let pending = state
             .pending_bytes
@@ -465,9 +465,7 @@ impl CipherOwner {
         }
     }
     fn validate(&self, work: &Reservation) -> Result<()> {
-        let now = self.registry.now()?;
-        let mut state = self.registry.lock()?;
-        state.check(now)?;
+        let (state, now) = self.registry.checked_lock()?;
         self.validate_locked(&state, work, now)?;
         Ok(())
     }
@@ -511,9 +509,7 @@ impl CipherOwner {
         let work = self.consume(pending)?;
         let binding = work.binding.cipher.as_ref().ok_or(Error::NativeDenied)?;
         let (plain, replacement) = {
-            let now = self.registry.now()?;
-            let mut state = self.registry.lock()?;
-            state.check(now)?;
+            let (state, now) = self.registry.checked_lock()?;
             let master = self.validate_locked(&state, &work, now)?;
             // Bounded synchronous work remains under the owner lock, preventing
             // concurrent revocation between the live check and cipher dispatch.
@@ -537,9 +533,7 @@ impl CipherOwner {
         }
         self.validate(&work)?;
         let output = {
-            let now = self.registry.now()?;
-            let mut state = self.registry.lock()?;
-            state.check(now)?;
+            let (state, now) = self.registry.checked_lock()?;
             self.validate_locked(&state, &work, now)?;
             output_commitment(
                 &state.authorization_key,

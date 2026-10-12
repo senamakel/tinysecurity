@@ -116,13 +116,17 @@ fn clock_failure_invalidates_existing_device_authority_permanently()
     service.sandbox_clock = clock.clone();
     assert!(service.device_time().is_err());
     clock.0.store(false, std::sync::atomic::Ordering::SeqCst);
-    let req = DeviceRequest2 {
+    let operation_request = DeviceRequest2 {
         scope_id: "a".repeat(32),
         call_id: "call".into(),
         ttl_ms: 1,
         operation: DeviceOperation2::Cancel,
     };
-    assert!(registry.reserve(&req, 1, service.device_time()?).is_err());
+    assert!(
+        registry
+            .reserve(&operation_request, 1, service.device_time()?)
+            .is_err()
+    );
     Ok(())
 }
 
@@ -847,11 +851,11 @@ fn verify_generation_handles(
             )
             .is_err()
     );
-    let new = registry
+    let replacement = registry
         .execute(&fresh, &request.operation, 2, now)?
         .handle
         .ok_or("new key handle")?;
-    assert_ne!(new, old);
+    assert_ne!(replacement, old);
     drop(work);
     drop(fresh);
 
@@ -892,15 +896,15 @@ fn bootstrap_after_prevalidation_rejects_before_generation_publication()
     reg.validate_configuration(&cfg, 2)?;
     let client = KeyPair::from_secret(zeroize::Zeroizing::new([3; 32]))?;
     for call in 2..4 {
-        let req = device_request(
+        let operation_request = device_request(
             call,
             DeviceOperation2::OpenHandshake {
                 handle: handle.clone(),
                 frame: client.seal_handshake(public, b"fixture-private")?,
             },
         );
-        let work = reg.reserve(&req, 1, now)?;
-        reg.execute(&work, &req.operation, 1, now)?;
+        let work = reg.reserve(&operation_request, 1, now)?;
+        reg.execute(&work, &operation_request.operation, 1, now)?;
     }
     let published = AtomicBool::new(false);
     assert!(
@@ -914,8 +918,8 @@ fn bootstrap_after_prevalidation_rejects_before_generation_publication()
         !published.load(Ordering::SeqCst),
         "rejected capacity must not publish or advance other components"
     );
-    let req = device_request(4, DeviceOperation2::Revoke { handle });
-    let work = reg.reserve(&req, 1, now)?;
+    let operation_request = device_request(4, DeviceOperation2::Revoke { handle });
+    let work = reg.reserve(&operation_request, 1, now)?;
     reg.validate(&work, 1, now)?;
     Ok(())
 }
@@ -937,24 +941,24 @@ fn rejected_generation_publication_preserves_device_handles_and_replay()
         wall: 1000,
         monotonic: 0,
     };
-    let req = device_request(
+    let operation_request = device_request(
         1,
         DeviceOperation2::Key {
             purpose: DeviceKeyPurpose2::Static,
         },
     );
-    let work = reg.reserve(&req, 1, now)?;
-    let key = reg.execute(&work, &req.operation, 1, now)?;
+    let work = reg.reserve(&operation_request, 1, now)?;
+    let key = reg.execute(&work, &operation_request.operation, 1, now)?;
     assert!(transition(Some(&reg), None, 2, || Err(denied())).is_err());
     reg.validate(&work, 1, now)?;
     drop(work);
-    let req = device_request(
+    let operation_request = device_request(
         2,
         DeviceOperation2::Revoke {
             handle: key.handle.ok_or_else(denied)?,
         },
     );
-    let work = reg.reserve(&req, 1, now)?;
-    reg.execute(&work, &req.operation, 1, now)?;
+    let work = reg.reserve(&operation_request, 1, now)?;
+    reg.execute(&work, &operation_request.operation, 1, now)?;
     Ok(())
 }
