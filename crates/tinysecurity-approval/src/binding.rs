@@ -76,16 +76,23 @@ fn depth(value: &serde_json::Value, level: usize) -> Result<()> {
     }
     Ok(())
 }
+pub(crate) fn is_native(tool: &str) -> bool {
+    matches!(tool, "native_secret_grant" | "native_app_io_grant")
+}
 pub(crate) fn native_safe_call(request: &EvaluateRequest) -> Result<String> {
+    let (argument, prefix) = match request.call.tool.as_str() {
+        "native_secret_grant" => ("native_authorization_v1", "native-"),
+        "native_app_io_grant" => ("native_app_io_authorization_v1", "native-app-io-"),
+        _ => return Err(Error::Denied),
+    };
     let args: serde_json::Value =
         serde_json::from_str(&request.call.arguments_json).map_err(|_| Error::Invalid)?;
     let commitment = args
-        .get("native_authorization_v1")
+        .get(argument)
         .and_then(serde_json::Value::as_str)
         .ok_or(Error::Denied)?;
-    let safe_call = format!("native-{commitment}");
-    if request.call.tool != "native_secret_grant"
-        || args.as_object().is_none_or(|a| a.len() != 1)
+    let safe_call = format!("{prefix}{commitment}");
+    if args.as_object().is_none_or(|a| a.len() != 1)
         || !hex(commitment, 64)
         || request.caller.call_id != safe_call
     {
@@ -152,7 +159,7 @@ pub(crate) fn original(
     );
     let mut caller = request.caller.clone();
     caller.agent = text(redactor, &caller.agent, RedactMode::IdentifierHash)?;
-    caller.call_id = if request.call.tool == "native_secret_grant" {
+    caller.call_id = if is_native(&request.call.tool) {
         native_safe_call(request)?
     } else {
         text(redactor, &caller.call_id, RedactMode::IdentifierHash)?

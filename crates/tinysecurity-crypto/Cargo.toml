@@ -12,6 +12,8 @@ publish = false
 tinystoragedrivers.workspace = true
 # Transport-free device operation vocabulary and exact binding digest.
 tinysecurity-bus.workspace = true
+# Consume move-only native Human Once App I/O authority inside the owner.
+tinysecurity-approval.workspace = true
 sha2.workspace = true
 serde_json.workspace = true
 aws-lc-rs.workspace = true
@@ -32,9 +34,15 @@ thiserror.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+# Real approval engine integration fixtures require its configured redactor.
+tinysecurity-redact.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+# App-store fixtures need protected private ACLs at directory and file creation.
+clack-private-fs = "1"
 
 [lints]
 workspace = true

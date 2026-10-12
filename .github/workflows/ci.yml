@@ -44,6 +44,25 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
+      # aws-lc-sys needs NASM for native Windows x64 assembly; ARM64 does not.
+      - name: Install NASM for Windows x64
+        if: ${{ runner.os == 'Windows' && runner.arch == 'X64' }}
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
+        with:
+          version: 2.16.01
+
+      - name: Verify NASM version
+        if: ${{ runner.os == 'Windows' && runner.arch == 'X64' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(nasm -v)"
+          echo "$version"
+          if [[ ! "$version" =~ ^NASM\ version\ 2\.16\.01([[:space:]]|$) ]]; then
+            echo 'expected NASM 2.16.01' >&2
+            exit 1
+          fi
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Test native coverage gate
@@ -313,6 +332,54 @@ jobs:
           name: coverage-json-${{ matrix.os }}
           path: coverage.json
           if-no-files-found: ignore
+
+  windows-release-build:
+    name: Windows 2022 release module build
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # aws-lc-sys needs NASM for native Windows x64 assembly; ARM64 does not.
+      - name: Install NASM for Windows x64
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
+        with:
+          version: 2.16.01
+
+      - name: Verify NASM version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(nasm -v)"
+          echo "$version"
+          if [[ ! "$version" =~ ^NASM\ version\ 2\.16\.01([[:space:]]|$) ]]; then
+            echo 'expected NASM 2.16.01' >&2
+            exit 1
+          fi
+
+      - name: Verify native Rust target
+        run: |
+          set -euo pipefail
+          actual_target="$(rustc -vV | sed -n 's/^host: //p')"
+          if [[ "$actual_target" != 'x86_64-pc-windows-msvc' ]]; then
+            echo "expected x86_64-pc-windows-msvc, got ${actual_target}" >&2
+            exit 1
+          fi
+
+      # Match release packaging's locked, default-feature cdylib build. Keep
+      # this job uncached so a previous aws-lc build cannot hide missing NASM.
+      - name: Build installable release module
+        run: cargo build --locked --release --lib --package tinysecurity-module
+
+      - name: Require release module artifact
+        run: test -f target/release/tinysecurity_module.dll
 
   docs:
     name: Docs

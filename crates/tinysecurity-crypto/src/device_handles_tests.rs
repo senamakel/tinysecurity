@@ -134,11 +134,11 @@ fn failed_deadline_reservation_does_not_consume_work_capacity() -> TestResult {
             monotonic: 0,
         },
     )?;
-    let mut req = request('a', DeviceOperation2::Cancel);
-    req.ttl_ms = 2;
+    let mut operation_request = request('a', DeviceOperation2::Cancel);
+    operation_request.ttl_ms = 2;
     assert!(
         reg.reserve(
-            &req,
+            &operation_request,
             1,
             Time {
                 wall: u64::MAX - 1,
@@ -147,10 +147,10 @@ fn failed_deadline_reservation_does_not_consume_work_capacity() -> TestResult {
         )
         .is_err()
     );
-    req.ttl_ms = 1;
+    operation_request.ttl_ms = 1;
     assert!(
         reg.reserve(
-            &req,
+            &operation_request,
             1,
             Time {
                 wall: u64::MAX - 1,
@@ -186,16 +186,16 @@ fn tunnel(
 #[test]
 fn tunnel_authority_ends_when_its_parent_key_expires() -> TestResult {
     let reg = registry()?;
-    let mut req = request(
+    let mut operation_request = request(
         'a',
         DeviceOperation2::Key {
             purpose: DeviceKeyPurpose2::Static,
         },
     );
-    req.ttl_ms = 1;
-    let work = reg.reserve(&req, 1, time(0))?;
+    operation_request.ttl_ms = 1;
+    let work = reg.reserve(&operation_request, 1, time(0))?;
     let own = reg
-        .execute(&work, &req.operation, 1, time(0))?
+        .execute(&work, &operation_request.operation, 1, time(0))?
         .handle
         .ok_or(Error::DeviceDenied)?;
     drop(work);
@@ -210,15 +210,18 @@ fn tunnel_authority_ends_when_its_parent_key_expires() -> TestResult {
         &peer_eph.public_key().encode(),
         DeviceRole2::Client,
     )?;
-    let req = request(
+    let operation_request = request(
         'a',
         DeviceOperation2::Seal {
             handle,
             plaintext: vec![],
         },
     );
-    let work = reg.reserve(&req, 1, time(1))?;
-    assert!(reg.execute(&work, &req.operation, 1, time(1)).is_err());
+    let work = reg.reserve(&operation_request, 1, time(1))?;
+    assert!(
+        reg.execute(&work, &operation_request.operation, 1, time(1))
+            .is_err()
+    );
     Ok(())
 }
 #[test]
@@ -250,14 +253,18 @@ fn revocation_fences_pending_work_but_preserves_unrelated_handles() -> TestResul
 fn a_reservation_cannot_transfer_authority_to_another_registry() -> TestResult {
     let first = registry()?;
     let other = registry()?;
-    let req = request(
+    let operation_request = request(
         'a',
         DeviceOperation2::Key {
             purpose: DeviceKeyPurpose2::Static,
         },
     );
-    let work = first.reserve(&req, 1, time(0))?;
-    assert!(other.execute(&work, &req.operation, 1, time(0)).is_err());
+    let work = first.reserve(&operation_request, 1, time(0))?;
+    assert!(
+        other
+            .execute(&work, &operation_request.operation, 1, time(0))
+            .is_err()
+    );
     assert!(other.validate(&work, 1, time(0)).is_err());
     Ok(())
 }
@@ -306,23 +313,23 @@ fn scopes_purposes_and_exact_secret_operation_binding_are_immutable() -> TestRes
         )
         .is_err()
     );
-    let mut req = request(
+    let mut operation_request = request(
         'a',
         DeviceOperation2::Seal {
             handle: "c".repeat(64),
             plaintext: b"private-secret".to_vec(),
         },
     );
-    req.call_id = "private-secret".into();
-    let first = reg.approval_call(&req)?;
+    operation_request.call_id = "private-secret".into();
+    let first = reg.approval_call(&operation_request)?;
     let serialized = serde_json::to_string(&first)?;
     assert!(!serialized.contains("private-secret"));
     assert_eq!(first.caller.agent, format!("agent-{}", "a".repeat(32)));
     assert_eq!(public.len(), 43);
-    if let DeviceOperation2::Seal { plaintext, .. } = &mut req.operation {
+    if let DeviceOperation2::Seal { plaintext, .. } = &mut operation_request.operation {
         plaintext.push(1);
     }
-    assert_ne!(first, reg.approval_call(&req)?);
+    assert_ne!(first, reg.approval_call(&operation_request)?);
     let other = Registry::new(
         config(),
         &[registration(&"a".repeat(32)), registration(&"b".repeat(32))],
@@ -330,8 +337,11 @@ fn scopes_purposes_and_exact_secret_operation_binding_are_immutable() -> TestRes
         1,
         time(0),
     )?;
-    assert_ne!(reg.approval_call(&req)?, other.approval_call(&req)?);
-    let wrapped = ConfidentialRequest::new(req);
+    assert_ne!(
+        reg.approval_call(&operation_request)?,
+        other.approval_call(&operation_request)?
+    );
+    let wrapped = ConfidentialRequest::new(operation_request);
     assert_eq!(format!("{wrapped:?}"), "ConfidentialRequest([REDACTED])");
     assert_eq!(format!("{reg:?}"), "Registry([REDACTED])");
     Ok(())
@@ -340,11 +350,11 @@ fn scopes_purposes_and_exact_secret_operation_binding_are_immutable() -> TestRes
 fn exact_expiry_cancellation_and_reinit_invalidate_old_work_and_handles() -> TestResult {
     let reg = registry()?;
     let (handle, _) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
-    let req = request('a', DeviceOperation2::Cancel);
-    let work = reg.reserve(&req, 1, time(0))?;
+    let operation_request = request('a', DeviceOperation2::Cancel);
+    let work = reg.reserve(&operation_request, 1, time(0))?;
     assert!(reg.validate(&work, 1, time(100)).is_err());
     drop(work);
-    let new = reg.reserve(&req, 1, time(100))?;
+    let new = reg.reserve(&operation_request, 1, time(100))?;
     assert!(
         reg.execute(&new, &DeviceOperation2::Revoke { handle }, 1, time(100))
             .is_err()
@@ -353,17 +363,17 @@ fn exact_expiry_cancellation_and_reinit_invalidate_old_work_and_handles() -> Tes
     let cfg = reg.configuration()?;
     assert!(cfg.scopes.iter().all(|s| s.static_secret.is_none()));
     reg.reconfigure(cfg, 2)?;
-    let mut req = request(
+    let mut operation_request = request(
         'a',
         DeviceOperation2::Key {
             purpose: DeviceKeyPurpose2::Static,
         },
     );
-    assert!(reg.reserve(&req, 1, time(100)).is_err());
-    let pending = reg.reserve(&req, 2, time(100))?;
-    req.operation = DeviceOperation2::Cancel;
-    let cancel = reg.reserve(&req, 2, time(100))?;
-    reg.execute(&cancel, &req.operation, 2, time(100))?;
+    assert!(reg.reserve(&operation_request, 1, time(100)).is_err());
+    let pending = reg.reserve(&operation_request, 2, time(100))?;
+    operation_request.operation = DeviceOperation2::Cancel;
+    let cancel = reg.reserve(&operation_request, 2, time(100))?;
+    reg.execute(&cancel, &operation_request.operation, 2, time(100))?;
     assert!(reg.validate(&pending, 2, time(100)).is_err());
     Ok(())
 }
@@ -379,32 +389,32 @@ fn rate_capacity_and_rollback_are_bounded_without_cross_scope_starvation() -> Te
         1,
         time(0),
     )?;
-    let req = request('a', DeviceOperation2::Cancel);
-    let work = reg.reserve(&req, 1, time(0))?;
+    let operation_request = request('a', DeviceOperation2::Cancel);
+    let work = reg.reserve(&operation_request, 1, time(0))?;
     assert!(matches!(
         reg.reserve(&request('b', DeviceOperation2::Cancel), 1, time(0)),
         Err(Error::DeviceCapacity)
     ));
     drop(work);
     assert!(matches!(
-        reg.reserve(&req, 1, time(0)),
+        reg.reserve(&operation_request, 1, time(0)),
         Err(Error::DeviceRate)
     ));
     drop(reg.reserve(&request('b', DeviceOperation2::Cancel), 1, time(0))?);
-    drop(reg.reserve(&req, 1, time(60_000))?);
+    drop(reg.reserve(&operation_request, 1, time(60_000))?);
     assert!(matches!(
-        reg.reserve(&req, 1, time(59_999)),
+        reg.reserve(&operation_request, 1, time(59_999)),
         Err(Error::DeviceClock)
     ));
     assert!(matches!(
-        reg.reserve(&req, 1, time(60_001)),
+        reg.reserve(&operation_request, 1, time(60_001)),
         Err(Error::DeviceClock)
     ));
     assert!(reg.reconfigure(reg.configuration()?, 2).is_ok());
-    assert!(reg.reserve(&req, 2, time(60_002)).is_err());
+    assert!(reg.reserve(&operation_request, 2, time(60_002)).is_err());
     let other = registry()?;
     other.fail_clock()?;
-    assert!(other.reserve(&req, 1, time(0)).is_err());
+    assert!(other.reserve(&operation_request, 1, time(0)).is_err());
     Ok(())
 }
 #[test]
@@ -615,14 +625,14 @@ fn invalid_initialization_inputs_and_every_operation_shape_fail_closed() -> Test
     cfg.scopes[0].static_secret = Some([0; 32]);
     assert!(init(cfg, &regs, ":1.1", 1).is_err());
     let reg = registry()?;
-    let mut req = request('a', DeviceOperation2::Cancel);
-    req.call_id.clear();
-    assert!(reg.reserve(&req, 1, time(0)).is_err());
-    req.call_id = "call".into();
-    req.ttl_ms = 0;
-    assert!(reg.reserve(&req, 1, time(0)).is_err());
-    req.ttl_ms = 101;
-    assert!(reg.reserve(&req, 1, time(0)).is_err());
+    let mut operation_request = request('a', DeviceOperation2::Cancel);
+    operation_request.call_id.clear();
+    assert!(reg.reserve(&operation_request, 1, time(0)).is_err());
+    operation_request.call_id = "call".into();
+    operation_request.ttl_ms = 0;
+    assert!(reg.reserve(&operation_request, 1, time(0)).is_err());
+    operation_request.ttl_ms = 101;
+    assert!(reg.reserve(&operation_request, 1, time(0)).is_err());
     for op in [
         DeviceOperation2::Seal {
             handle: "a".repeat(65),
@@ -660,13 +670,17 @@ fn closing_retained_registry_drops_native_keys_and_denies_every_old_reservation(
     let reg = registry()?;
     let weak = Arc::downgrade(&reg.lock()?.scopes[&"a".repeat(32)].key);
     let (handle, _) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
-    let req = request('a', DeviceOperation2::Revoke { handle });
-    let work = reg.reserve(&req, 1, time(0))?;
+    let operation_request = request('a', DeviceOperation2::Revoke { handle });
+    let work = reg.reserve(&operation_request, 1, time(0))?;
     let observer = reg.clone();
     reg.close();
     assert!(weak.upgrade().is_none());
-    assert!(observer.execute(&work, &req.operation, 1, time(0)).is_err());
-    assert!(observer.reserve(&req, 1, time(0)).is_err());
+    assert!(
+        observer
+            .execute(&work, &operation_request.operation, 1, time(0))
+            .is_err()
+    );
+    assert!(observer.reserve(&operation_request, 1, time(0)).is_err());
     assert!(observer.lock()?.scopes.is_empty());
     Ok(())
 }
