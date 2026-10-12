@@ -69,6 +69,46 @@ impl NativeAuditAcknowledgement {
         self.receipt
     }
 }
+/// Move-only App I/O consumption proof, never reconstructed from serialized rows.
+/// This proves exact native Human Once consent and required audit acknowledgement.
+/// It does not prove that a file or master is currently live: the trusted crypto
+/// owner must verify its independently keyed operation/material/resource binding.
+/// No public constructor, serialization or clone can recreate this authority.
+pub struct NativeAppIoGrant {
+    scope_id: String,
+    original: EvaluateRequest,
+    acknowledgement: NativeAuditAcknowledgement,
+}
+impl std::fmt::Debug for NativeAppIoGrant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NativeAppIoGrant([REDACTED])")
+    }
+}
+impl NativeAppIoGrant {
+    /// Verify and consume against the trusted owner's independently computed wrapper.
+    /// The owner must also check live master epoch, resource, cancellation and both
+    /// clocks; supplying this proof's old fields does not establish current authority.
+    /// Returns the immutable consumed row and the actual sink acknowledgement unchanged.
+    /// # Errors
+    /// Denies changed scope, original action/context/commitment, generation or deadline.
+    pub fn into_verified_consumption(
+        self,
+        scope_id: &str,
+        request: &EvaluateRequest,
+        generation: u64,
+        expires_at_ms: u64,
+    ) -> Result<(ApprovalRow2, NativeAuditAcknowledgement)> {
+        let row = &self.acknowledgement.row;
+        if self.scope_id != scope_id
+            || &self.original != request
+            || row.binding.generation != generation
+            || row.expires_at_ms != expires_at_ms
+        {
+            return Err(Error::Denied);
+        }
+        Ok((row.clone(), self.acknowledgement))
+    }
+}
 /// Trusted authenticated host storage, prompt and audit ports.
 #[async_trait::async_trait]
 pub trait Ports: Send + Sync + std::fmt::Debug {
@@ -246,7 +286,7 @@ impl Engine {
     /// # Errors
     /// Rejects mismatches, unavailable callbacks and expired clocks.
     pub async fn begin(&self, request: EvaluateApprovalRequest2) -> Result<ApprovalRow2> {
-        if request.request.call.tool == "native_secret_grant" {
+        if binding::is_native(&request.request.call.tool) {
             return Err(Error::Denied);
         }
         self.begin_inner(request, None).await
@@ -262,15 +302,47 @@ impl Engine {
         request: EvaluateApprovalRequest2,
         expires_at_ms: u64,
     ) -> Result<ApprovalRow2> {
-        Self::native_request(&request.request)?;
+        Self::native_request(&request.request, "native_secret_grant")?;
         if request.ttl_ms.is_some() {
             return Err(Error::Denied);
         }
         self.begin_inner(request, Some(expires_at_ms)).await
     }
-    fn native_request(request: &EvaluateRequest) -> Result<()> {
+    /// Begin one App I/O operation through a trusted native owner only.
+    /// The owner supplies its independently computed keyed operation commitment;
+    /// names, paths, input, resource and master epoch never enter this wrapper.
+    /// The commitment must include those fields and the original absolute deadline.
+    /// Approval binds the wrapper; it does not attest live material or file authority.
+    /// # Errors
+    /// Denies generic or master wrappers, refreshed TTLs, malformed commitments,
+    /// hard-denied origins and expired or over-ceiling original deadlines.
+    pub async fn begin_native_app_io(
+        &self,
+        mut request: EvaluateApprovalRequest2,
+        expires_at_ms: u64,
+    ) -> Result<ApprovalRow2> {
+        Self::app_io_request(&request.request)?;
+        if request.ttl_ms.is_some() {
+            return Err(Error::Denied);
+        }
+        // This fixed description carries no owner operation data into public prompts.
+        request.summary = "native app io grant".into();
+        self.begin_inner(request, Some(expires_at_ms)).await
+    }
+    fn app_io_request(request: &EvaluateRequest) -> Result<()> {
+        Self::native_request(request, "native_app_io_grant")?;
+        if request.call.checks
+            != [Check::Unknown {
+                description: "native-app-io-authority".into(),
+            }]
+        {
+            return Err(Error::Denied);
+        }
+        Ok(())
+    }
+    fn native_request(request: &EvaluateRequest, tool: &str) -> Result<()> {
         binding::native_safe_call(request)?;
-        if request.caller.origin == Origin::Cron {
+        if request.call.tool != tool || request.caller.origin == Origin::Cron {
             return Err(Error::Denied);
         }
         Ok(())
@@ -376,7 +448,7 @@ impl Engine {
     }
     fn begin_tool_label(&self, tool: &str, native: bool) -> Result<String> {
         if native {
-            Ok("native_secret_grant".into())
+            Ok(tool.into())
         } else if tool == "device_crypto" {
             // Fixed public classification controls the Human Once choice floor.
             Ok("device_crypto".into())
@@ -490,7 +562,7 @@ impl Engine {
         Ok(row)
     }
     async fn audit_row(&self, row: ApprovalRow2) -> Result<()> {
-        if row.tool_name == "native_secret_grant" {
+        if binding::is_native(&row.tool_name) {
             self.native_identity(&row)?;
             let acknowledgement = self.ports.native_audit(row.clone()).await?;
             if acknowledgement.row != row {
@@ -507,7 +579,7 @@ impl Engine {
         if row.binding.generation != self.generation.load(Ordering::SeqCst) {
             return Err(Error::Denied);
         }
-        if row.tool_name == "native_secret_grant" {
+        if binding::is_native(&row.tool_name) {
             let ack = self.ports.native_audit(row.clone()).await?;
             if ack.row != row {
                 return Err(Error::Denied);
@@ -586,7 +658,7 @@ impl Engine {
         // snapshot and its memo was reclaimed. Use the durable winner rather
         // than creating a second request with a fresh random identity.
         let rows = self.rows(reg).await?;
-        if row.tool_name == "native_secret_grant" {
+        if binding::is_native(&row.tool_name) {
             // The load may outlive the private intent. Validate the prepared
             // original again before resuming or creating any durable row.
             self.native_row(row)?;
@@ -607,7 +679,7 @@ impl Engine {
         row: &ApprovalRow2,
         now: u64,
     ) -> Result<ApprovalRow2> {
-        if row.tool_name == "native_secret_grant" {
+        if binding::is_native(&row.tool_name) {
             self.native_row(row)?;
         }
         if row.host_instance != self.instance || row.expires_at_ms <= now {
@@ -629,7 +701,7 @@ impl Engine {
             return Err(Error::Denied);
         }
         Self::current(reg, &current)?;
-        if current.tool_name == "native_secret_grant" {
+        if binding::is_native(&current.tool_name) {
             self.native_row(&current)?;
         }
         if &current != row {
@@ -731,7 +803,7 @@ impl Engine {
             .lock()
             .map_err(|_| Error::Unavailable)?
             .retain(|_, row| {
-                row.tool_name != "native_secret_grant"
+                !binding::is_native(&row.tool_name)
                     || (row.expires_at_ms > now && row.binding.generation == generation)
             });
         self.native_intents
@@ -792,7 +864,7 @@ impl Engine {
         Ok(())
     }
     fn native_ack(&self, row: &ApprovalRow2, consumed: bool) -> Result<()> {
-        if row.tool_name != "native_secret_grant" {
+        if !binding::is_native(&row.tool_name) {
             return Ok(());
         }
         let mut intents = self.native_intents.lock().map_err(|_| Error::Unavailable)?;
@@ -881,7 +953,7 @@ impl Engine {
             .into_iter()
             .find(|r| r.request_id == id)
             .ok_or(Error::Denied)?;
-        if row.tool_name == "native_secret_grant" {
+        if binding::is_native(&row.tool_name) {
             self.native_row(&row)?;
         }
         Ok(row)
@@ -907,7 +979,7 @@ impl Engine {
         if row.binding.generation != self.generation.load(Ordering::SeqCst) {
             return Err(Error::Denied);
         }
-        if row.tool_name == "native_secret_grant" && !terminal {
+        if binding::is_native(&row.tool_name) && !terminal {
             self.native_identity(row)?;
             self.live(row)?;
         }
@@ -929,7 +1001,7 @@ impl Engine {
         let receipt = match self.ports.cas(request.clone()).await {
             Ok(receipt) => receipt,
             Err(Error::Unavailable) => {
-                if row.tool_name == "native_secret_grant" && !terminal {
+                if binding::is_native(&row.tool_name) && !terminal {
                     self.native_identity(row)?;
                     self.live(row)?;
                 }
@@ -997,7 +1069,7 @@ impl Engine {
             || reviewed.actor.len() > 1024
             || (matches!(
                 row.tool_name.as_str(),
-                "native_secret_grant" | "device_crypto"
+                "native_secret_grant" | "native_app_io_grant" | "device_crypto"
             ) && !matches!(
                 reviewed.choice,
                 ApprovalChoice2::Once | ApprovalChoice2::Deny
@@ -1032,7 +1104,7 @@ impl Engine {
     /// # Errors
     /// Denies any changed call, stale grant, orphan, or repeat reservation.
     pub async fn consume(&self, request: ApprovalActionRequest2) -> Result<ApprovalRow2> {
-        if request.request.call.tool == "native_secret_grant" {
+        if binding::is_native(&request.request.call.tool) {
             return Err(Error::Denied);
         }
         self.consume_inner(request, false).await
@@ -1045,7 +1117,7 @@ impl Engine {
         &self,
         request: ApprovalActionRequest2,
     ) -> Result<(ApprovalRow2, NativeAuditAcknowledgement)> {
-        Self::native_request(&request.request)?;
+        Self::native_request(&request.request, "native_secret_grant")?;
         let row = self.consume_inner(request, true).await?;
         let receipt = self.ports.native_audit(row.clone()).await?;
         if receipt.row != row {
@@ -1054,6 +1126,32 @@ impl Engine {
         self.native_row(&row)?;
         self.live(&row)?;
         Ok((row, receipt))
+    }
+    /// Consume exact live App I/O Human Once authority with actual required audit.
+    /// Only this Engine's native begin and authenticated human decision can create it.
+    /// The returned move-only authority still requires independent owner verification.
+    /// # Errors
+    /// Denies generic/master wrappers, reused rows, changed operations, orphaned
+    /// provenance, non-human decisions, expired authority and failed native audit.
+    pub async fn consume_native_app_io(
+        &self,
+        request: ApprovalActionRequest2,
+    ) -> Result<NativeAppIoGrant> {
+        Self::app_io_request(&request.request)?;
+        let scope_id = request.scope_id.clone();
+        let original = request.request.clone();
+        let row = self.consume_inner(request, true).await?;
+        let acknowledgement = self.ports.native_audit(row.clone()).await?;
+        if acknowledgement.row != row {
+            return Err(Error::Denied);
+        }
+        self.native_row(&row)?;
+        self.live(&row)?;
+        Ok(NativeAppIoGrant {
+            scope_id,
+            original,
+            acknowledgement,
+        })
     }
     async fn consume_inner(
         &self,
@@ -1096,7 +1194,7 @@ impl Engine {
     /// # Errors
     /// Denies pending, denied, unreserved or mismatched executions.
     pub async fn record_execution(&self, request: RecordExecutionRequest2) -> Result<ApprovalRow2> {
-        if request.action.request.call.tool == "native_secret_grant" {
+        if binding::is_native(&request.action.request.call.tool) {
             return Err(Error::Denied);
         }
         let reg = self.registration(&request.action.scope_id)?;
@@ -1173,9 +1271,8 @@ impl Engine {
             .compare_exchange(previous, next, Ordering::SeqCst, Ordering::SeqCst)
             .map_err(|_| Error::Conflict)?;
         intents.retain(|_, intent| intent.original.binding.generation == next);
-        creations.retain(|_, row| {
-            row.tool_name != "native_secret_grant" || row.binding.generation == next
-        });
+        creations
+            .retain(|_, row| !binding::is_native(&row.tool_name) || row.binding.generation == next);
         Ok(())
     }
     /// Read scoped durable rows without promoting imported legacy broad grants.
@@ -1260,7 +1357,7 @@ impl Engine {
             let row = self.row(&reg, &id).await?;
             Self::current(&reg, &row)?;
             self.live(&row)?;
-            if row.tool_name == "native_secret_grant"
+            if binding::is_native(&row.tool_name)
                 || row.choice != Some(ApprovalChoice2::Flow)
                 || row.binding.caller.flow.as_ref() != Some(&flow)
                 || row.decision_ticket_sha256.is_none()
@@ -1285,7 +1382,7 @@ fn reusable_grant<'a>(
     now: u64,
 ) -> Option<&'a ApprovalRow2> {
     rows.iter().find(|r| {
-        r.tool_name != "native_secret_grant"
+        !binding::is_native(&r.tool_name)
             && r.binding.content_sha256 == bound.content_sha256
             && r.binding.generation == bound.generation
             && r.binding.scope == bound.scope

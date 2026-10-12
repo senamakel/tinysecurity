@@ -265,3 +265,46 @@ async fn device_crypto_ignores_auto_approve_and_reusable_grants() -> Result<()> 
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn app_io_grant_never_uses_qualified_judge_or_reusable_reviewed_authority() -> Result<()> {
+    let fixture = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    let owner = engine(fixture.clone(), clock.clone())?;
+    let judge = judge(true);
+    scorer(&owner, judge.clone(), clock)?;
+    let mut generic = app_io_request();
+    generic.request.call.tool = "generic_reviewed_action".into();
+    generic.request.caller.call_id = "generic-action".into();
+    let source = owner.begin(generic).await?;
+    assert_eq!(source.state, ApprovalLifecycle2::Approved);
+    assert_eq!(judge.calls.load(Ordering::SeqCst), 1);
+    let io = owner.begin_native_app_io(app_io_request(), 1000).await?;
+    assert_eq!(io.state, ApprovalLifecycle2::Pending);
+    assert!(io.judge.is_none());
+    assert_eq!(judge.calls.load(Ordering::SeqCst), 1);
+    assert!(
+        owner
+            .consume_native_app_io(app_io_action(&io))
+            .await
+            .is_err()
+    );
+    let mut forged = io.clone();
+    forged.version += 1;
+    forged.state = ApprovalLifecycle2::Approved;
+    forged.choice = Some(ApprovalChoice2::Once);
+    forged.attribution = Some("auto:jev".into());
+    forged.judge = source.judge;
+    fixture
+        .rows
+        .lock()
+        .map_err(|_| Error::Unavailable)?
+        .insert(forged.request_id.clone(), binding::envelope(&forged)?);
+    assert!(
+        owner
+            .consume_native_app_io(app_io_action(&io))
+            .await
+            .is_err()
+    );
+    Ok(())
+}

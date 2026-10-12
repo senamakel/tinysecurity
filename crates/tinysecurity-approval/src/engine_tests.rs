@@ -1850,3 +1850,475 @@ async fn redacted_device_labels_cannot_accept_tool_decisions() -> Result<()> {
 async fn redacted_device_labels_cannot_accept_flow_decisions() -> Result<()> {
     redacted_device_label_requires_once(2).await
 }
+
+fn app_io_request() -> EvaluateApprovalRequest2 {
+    let mut req = native_request();
+    req.request.call.tool = "native_app_io_grant".into();
+    req.request.caller.call_id = format!("native-app-io-{}", "c".repeat(64));
+    req.request.call.arguments_json = format!(
+        "{{\"native_app_io_authorization_v1\":\"{}\"}}",
+        "c".repeat(64)
+    );
+    req.request.call.checks = vec![Check::Unknown {
+        description: "native-app-io-authority".into(),
+    }];
+    req.summary = "native app io grant".into();
+    req
+}
+
+#[tokio::test]
+async fn app_io_authority_cannot_begin_through_generic_auto_policy() -> Result<()> {
+    let fixture = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    clock.wall.store(1000, Ordering::SeqCst);
+    let mut cfg = config();
+    cfg.scopes[0].auto_approve_all = true;
+    let owner = Engine::new(
+        cfg,
+        fixture.clone(),
+        clock,
+        Redactor::new(&RedactorConfig::default()).map_err(|_| Error::Invalid)?,
+    )?;
+    assert!(owner.begin(app_io_request()).await.is_err());
+    assert!(
+        fixture
+            .rows
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .is_empty()
+    );
+    Ok(())
+}
+
+fn app_io_action(row: &ApprovalRow2) -> ApprovalActionRequest2 {
+    let mut req = action(row, 3);
+    req.request = app_io_request().request;
+    req
+}
+
+#[tokio::test]
+async fn app_io_requires_native_human_once_despite_automatic_policy() -> Result<()> {
+    for automatic in [false, true] {
+        let fixture = Arc::new(Fixture::default());
+        let clock = Arc::new(TestClock::default());
+        let mut cfg = config();
+        cfg.scopes[0].auto_approve_all = automatic;
+        cfg.scopes[0].require_approval = false;
+        let owner = Engine::new(
+            cfg,
+            fixture.clone(),
+            clock,
+            Redactor::new(&RedactorConfig::default()).map_err(|_| Error::Invalid)?,
+        )?;
+        let mut req = app_io_request();
+        req.summary = "private-name /private/resource plaintext-value".into();
+        let pending = owner.begin_native_app_io(req, 1000).await?;
+        assert_eq!(pending.state, ApprovalLifecycle2::Pending);
+        assert_eq!(pending.tool_name, "native_app_io_grant");
+        assert_eq!(pending.summary, "native app io grant");
+        assert_eq!(pending.expires_at_ms, 1000);
+        assert!(pending.judge.is_none());
+        assert!(
+            owner
+                .consume_native_app_io(app_io_action(&pending))
+                .await
+                .is_err()
+        );
+        assert!(
+            owner
+                .begin_native_grant(app_io_request(), 1000)
+                .await
+                .is_err()
+        );
+        assert!(
+            owner
+                .begin_native_app_io(native_request(), 1000)
+                .await
+                .is_err()
+        );
+        for choice in [1, 2] {
+            fixture.choice.store(choice, Ordering::SeqCst);
+            assert!(owner.decide(decision(&pending)).await.is_err());
+        }
+        fixture.choice.store(0, Ordering::SeqCst);
+        owner.decide(decision(&pending)).await?;
+        assert!(owner.consume(app_io_action(&pending)).await.is_err());
+        assert!(
+            owner
+                .consume_native_grant(app_io_action(&pending))
+                .await
+                .is_err()
+        );
+        let grant = owner.consume_native_app_io(app_io_action(&pending)).await?;
+        assert_eq!(format!("{grant:?}"), "NativeAppIoGrant([REDACTED])");
+        let (reserved, acknowledgement) = grant.into_verified_consumption(
+            &app_io_request().scope_id,
+            &app_io_request().request,
+            1,
+            1000,
+        )?;
+        assert_eq!(reserved.state, ApprovalLifecycle2::Reserved);
+        assert_eq!(reserved.choice, Some(ApprovalChoice2::Once));
+        assert!(reserved.decision_ticket_sha256.is_some());
+        let scope = acknowledgement.expected_scope().clone();
+        let receipt = acknowledgement.into_receipt();
+        assert_eq!(receipt.scope, scope);
+        assert_eq!(receipt.events[0].event_id, reserved.audit.event_id);
+        assert_eq!(receipt.new_tail, 3);
+        assert!(
+            owner
+                .consume_native_app_io(app_io_action(&pending))
+                .await
+                .is_err()
+        );
+        assert!(
+            owner
+                .record_execution(RecordExecutionRequest2 {
+                    action: app_io_action(&pending),
+                    outcome: ExecutionOutcome::Succeeded
+                })
+                .await
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn app_io_consumed_authority_verifies_exact_original_owner_binding() -> Result<()> {
+    for field in 0..12 {
+        let owner = engine(Arc::new(Fixture::default()), Arc::new(TestClock::default()))?;
+        let row = owner.begin_native_app_io(app_io_request(), 1000).await?;
+        owner.decide(decision(&row)).await?;
+        let grant = owner.consume_native_app_io(app_io_action(&row)).await?;
+        let mut expected = app_io_request();
+        let mut generation = 1;
+        let mut deadline = 1000;
+        match field {
+            0 => expected.scope_id = "f".repeat(32),
+            1 => generation = 2,
+            2 => deadline = 1001,
+            3 => expected.request.caller.call_id = "substituted-action".into(),
+            4 => expected.request.caller.origin = Origin::Copilot,
+            5 => {
+                expected.request.call.arguments_json = format!(
+                    "{{\"native_app_io_authorization_v1\":\"{}\"}}",
+                    "d".repeat(64)
+                );
+                expected.request.caller.call_id = format!("native-app-io-{}", "d".repeat(64));
+            }
+            6 => expected.request = native_request().request,
+            7 => expected.request.caller.agent = "different-agent".into(),
+            8 => expected.request.caller.thread = Some("different-thread".into()),
+            9 => expected.request.caller.flow = Some("different-flow".into()),
+            10 => expected.request.caller.tier = AccessTier::Read,
+            _ => expected.request.call.checks = vec![Check::LocalDiagnostic {}],
+        }
+        assert!(
+            grant
+                .into_verified_consumption(
+                    &expected.scope_id,
+                    &expected.request,
+                    generation,
+                    deadline
+                )
+                .is_err(),
+            "changed field {field}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn app_io_safe_wrapper_rejects_substitutions_before_persistence() -> Result<()> {
+    let fixture = Arc::new(Fixture::default());
+    let owner = engine(fixture.clone(), Arc::new(TestClock::default()))?;
+    for field in 0..11 {
+        let mut req = app_io_request();
+        match field {
+            0 => req.request.caller.call_id = "native-app-io-unkeyed".into(),
+            1 => req.request.call.arguments_json = "{}".into(),
+            2 => {
+                req.request.call.arguments_json =
+                    format!("{{\"native_authorization_v1\":\"{}\"}}", "c".repeat(64));
+            }
+            3 => {
+                req.request.call.arguments_json = format!(
+                    "{{\"native_app_io_authorization_v1\":\"{}\",\"name\":\"private\"}}",
+                    "c".repeat(64)
+                );
+            }
+            4 => {
+                req.request.call.arguments_json = format!(
+                    "{{\"native_app_io_authorization_v1\":\"{}\"}}",
+                    "x".repeat(64)
+                );
+            }
+            5 => req.scope_id = "f".repeat(32),
+            6 => req.request.caller.agent = "other-agent".into(),
+            7 => req.request.caller.origin = Origin::Cron,
+            8 => req.ttl_ms = Some(1000),
+            9 => {
+                req.request.call.checks = vec![Check::Path {
+                    path: "/private/name".into(),
+                    write: true,
+                }];
+            }
+            _ => req.request.call.tool = "arbitrary-native-grant".into(),
+        }
+        assert!(owner.begin_native_app_io(req, 1000).await.is_err());
+    }
+    assert!(
+        owner
+            .begin_native_app_io(app_io_request(), 0)
+            .await
+            .is_err()
+    );
+    assert!(
+        owner
+            .begin_native_app_io(app_io_request(), 300_001)
+            .await
+            .is_err()
+    );
+    assert!(
+        fixture
+            .rows
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .is_empty()
+    );
+    assert!(
+        fixture
+            .order
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn app_io_native_deadline_cannot_renew_and_consumption_rechecks_context() -> Result<()> {
+    let fixture = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    let owner = engine(fixture.clone(), clock.clone())?;
+    let row = owner.begin_native_app_io(app_io_request(), 1000).await?;
+    assert_eq!(
+        owner.begin_native_app_io(app_io_request(), 1000).await?,
+        row
+    );
+    assert!(
+        owner
+            .begin_native_app_io(app_io_request(), 1001)
+            .await
+            .is_err()
+    );
+    owner.decide(decision(&row)).await?;
+    for field in 0..6 {
+        let mut req = app_io_action(&row);
+        match field {
+            0 => req.scope_id = "f".repeat(32),
+            1 => req.request.caller.origin = Origin::Copilot,
+            2 => req.request.caller.thread = Some("different-thread".into()),
+            3 => {
+                req.request.call.arguments_json = format!(
+                    "{{\"native_app_io_authorization_v1\":\"{}\"}}",
+                    "d".repeat(64)
+                );
+                req.request.caller.call_id = format!("native-app-io-{}", "d".repeat(64));
+            }
+            4 => req.request_id = "f".repeat(32),
+            _ => req.audit.generation = 2,
+        }
+        assert!(owner.consume_native_app_io(req).await.is_err());
+    }
+    clock.mono.store(1000, Ordering::SeqCst);
+    assert!(
+        owner
+            .consume_native_app_io(app_io_action(&row))
+            .await
+            .is_err()
+    );
+    assert!(
+        owner
+            .begin_native_app_io(app_io_request(), 2000)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn app_io_requires_actual_native_ack_and_retains_once_after_audit_failure() -> Result<()> {
+    let fixture = Arc::new(Fixture::default());
+    let generic = Engine::new(
+        config(),
+        Arc::new(GenericOnlyPorts(fixture)),
+        Arc::new(TestClock::default()),
+        Redactor::new(&RedactorConfig::default()).map_err(|_| Error::Invalid)?,
+    )?;
+    assert!(
+        generic
+            .begin_native_app_io(app_io_request(), 1000)
+            .await
+            .is_err()
+    );
+    for mode in [1, 2] {
+        let fixture = Arc::new(Fixture::default());
+        let owner = engine(fixture.clone(), Arc::new(TestClock::default()))?;
+        let row = owner.begin_native_app_io(app_io_request(), 1000).await?;
+        owner.decide(decision(&row)).await?;
+        fixture.native_receipt_mode.store(mode, Ordering::SeqCst);
+        assert!(
+            owner
+                .consume_native_app_io(app_io_action(&row))
+                .await
+                .is_err()
+        );
+        fixture.native_receipt_mode.store(0, Ordering::SeqCst);
+        assert!(
+            owner
+                .consume_native_app_io(app_io_action(&row))
+                .await
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn app_io_provenance_is_not_recreated_by_restart_generation_or_serialized_rows() -> Result<()>
+{
+    for generation_change in [false, true] {
+        let fixture = Arc::new(Fixture::default());
+        let clock = Arc::new(TestClock::default());
+        let owner = engine(fixture.clone(), clock.clone())?;
+        let row = owner.begin_native_app_io(app_io_request(), 1000).await?;
+        owner.decide(decision(&row)).await?;
+        if generation_change {
+            owner.advance_generation(2)?;
+            assert!(
+                owner
+                    .consume_native_app_io(app_io_action(&row))
+                    .await
+                    .is_err()
+            );
+        } else {
+            let restarted = engine(fixture, clock)?;
+            assert!(
+                restarted
+                    .begin_native_app_io(app_io_request(), 1000)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                restarted
+                    .consume_native_app_io(app_io_action(&row))
+                    .await
+                    .is_err()
+            );
+        }
+    }
+    let fixture = Arc::new(Fixture::default());
+    let owner = engine(fixture.clone(), Arc::new(TestClock::default()))?;
+    let row = owner.begin_native_app_io(app_io_request(), 1000).await?;
+    let mut forged = row.clone();
+    forged.state = ApprovalLifecycle2::Approved;
+    forged.version += 1;
+    forged.choice = Some(ApprovalChoice2::Once);
+    forged.attribution = Some("auto:host-policy".into());
+    fixture
+        .rows
+        .lock()
+        .map_err(|_| Error::Unavailable)?
+        .insert(forged.request_id.clone(), binding::envelope(&forged)?);
+    assert!(
+        owner
+            .consume_native_app_io(app_io_action(&row))
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn app_io_master_consent_cannot_supply_io_authority() -> Result<()> {
+    let owner = engine(Arc::new(Fixture::default()), Arc::new(TestClock::default()))?;
+    let master = owner.begin_native_grant(native_request(), 1000).await?;
+    owner.decide(decision(&master)).await?;
+    assert!(
+        owner
+            .consume_native_app_io(native_action(&master))
+            .await
+            .is_err()
+    );
+    assert!(
+        owner
+            .consume_native_app_io(app_io_action(&master))
+            .await
+            .is_err()
+    );
+    assert!(
+        owner
+            .consume_native_grant(native_action(&master))
+            .await
+            .is_ok()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn app_io_rechecks_native_authority_after_actual_audit_await() -> Result<()> {
+    let fixture = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    let owner = engine(fixture.clone(), clock.clone())?;
+    let row = owner.begin_native_app_io(app_io_request(), 1000).await?;
+    owner.decide(decision(&row)).await?;
+    *fixture
+        .advance_source_audit
+        .lock()
+        .map_err(|_| Error::Unavailable)? = Some((clock, 1000));
+    assert!(
+        owner
+            .consume_native_app_io(app_io_action(&row))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        fixture
+            .rows
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .get(&row.request_id)
+            .ok_or(Error::Invalid)?
+            .version,
+        2,
+        "audit expiry must prevent reservation CAS"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn app_io_rows_cannot_supply_reusable_or_flow_authority() -> Result<()> {
+    let owner = engine(Arc::new(Fixture::default()), Arc::new(TestClock::default()))?;
+    let pending = owner.begin_native_app_io(app_io_request(), 1000).await?;
+    let approved = owner.decide(decision(&pending)).await?;
+    for choice in [ApprovalChoice2::Tool, ApprovalChoice2::Flow] {
+        let mut row = approved.clone();
+        row.choice = Some(choice);
+        row.binding.caller.flow = Some("reviewed-flow".into());
+        let bound = row.binding.clone();
+        assert!(reusable_grant(&[row], &bound, 0).is_none());
+    }
+    assert!(
+        owner
+            .preauthorize_flow(PreauthorizeFlowRequest2 {
+                scope_id: app_io_request().scope_id,
+                flow_id: "reviewed-flow".into(),
+                request_ids: vec![approved.request_id],
+            })
+            .await
+            .is_err()
+    );
+    Ok(())
+}
