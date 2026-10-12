@@ -63,6 +63,26 @@ use tinysecurity_bus::{
 use tinystoragedrivers::secrets::{MemorySecrets, SecretStore};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+// Fixture files must satisfy private-resource admission before behavior is tested.
+fn create_private_fixture_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    #[cfg(windows)]
+    {
+        clack_private_fs::create_new_file(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(path)
+    }
+}
+
 #[derive(Debug, Default)]
 struct Clock(AtomicU64, Mutex<Option<Time>>);
 impl NativeClock for Clock {
@@ -365,28 +385,21 @@ impl Fixture {
         });
         let audit = Arc::new(Audit::default());
         let consumer = Arc::new(Consumer::default());
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(std::path::Path::parent)
-            .ok_or("P00")?
-            .join("target")
+        let dir = std::env::temp_dir()
+            .canonicalize()?
             .join(format!("app-store-{}", hex(&random_bytes()?)));
-        std::fs::create_dir_all(&dir)?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
         }
+        #[cfg(windows)]
+        clack_private_fs::create_dir(&dir)?;
+        #[cfg(not(any(unix, windows)))]
+        std::fs::create_dir(&dir)?;
         if let Some(initial) = initial {
             use std::io::Write;
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options.open(dir.join("secrets.enc"))?;
+            let mut file = create_private_fixture_file(&dir.join("secrets.enc"))?;
             file.write_all(initial)?;
             file.sync_all()?;
         }
@@ -833,14 +846,9 @@ async fn oversized_corrupt_wrong_key_and_invalid_json_never_become_absence() -> 
 #[tokio::test]
 async fn replacing_initially_absent_resource_cannot_retarget_admitted_owner() -> TestResult {
     let fixture = Fixture::new().await?;
-    let mut options = std::fs::OpenOptions::new();
-    options.create_new(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    drop(options.open(fixture.dir.join("secrets.enc"))?);
+    drop(create_private_fixture_file(
+        &fixture.dir.join("secrets.enc"),
+    )?);
     let pending = fixture.owner.prepare(fixture.request(AppStoreKind::Get))?;
     assert!(fixture.owner.execute(pending).await.is_err(), "P01");
     assert_eq!(fixture.consumer.calls.load(Ordering::SeqCst), 0, "P02");
@@ -1375,11 +1383,11 @@ async fn post_publish_resource_substitution_denies_and_permanently_fences_new_ow
     let fixture = Fixture::new().await?;
     let original = fixture.dir.join("secrets.enc");
     let replacement = fixture.dir.join("replacement");
-    std::fs::write(&replacement, b"synthetic")?;
-    #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o600))?;
+        use std::io::Write;
+        let mut file = create_private_fixture_file(&replacement)?;
+        file.write_all(b"synthetic")?;
+        file.sync_all()?;
     }
     *fixture
         .owner

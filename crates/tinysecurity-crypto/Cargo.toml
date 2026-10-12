@@ -40,5 +40,9 @@ async-trait.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 
+[target.'cfg(windows)'.dev-dependencies]
+# App-store fixtures need protected private ACLs at directory and file creation.
+clack-private-fs = "1"
+
 [lints]
 workspace = true

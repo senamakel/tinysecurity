@@ -1670,6 +1670,7 @@ dependencies = [
  "base64 0.22.1",
  "chacha20 0.9.1",
  "chacha20poly1305",
+ "clack-private-fs",
  "getrandom 0.3.4",
  "ghash",
  "poly1305",
