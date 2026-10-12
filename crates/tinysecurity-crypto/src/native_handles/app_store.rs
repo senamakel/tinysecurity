@@ -740,7 +740,7 @@ impl AppStoreOwner {
         let binding = &pending.physical.work()?.binding;
         Ok(EvaluateRequest {
             caller: CallerContext {
-                agent: binding.durable_subject.agent.clone(),
+                agent: binding.subject.agent.clone(),
                 call_id: format!("native-app-io-{}", hex(&binding.commitment)),
                 origin: pending.caller.origin.clone(),
                 tier: pending.caller.tier.clone(),

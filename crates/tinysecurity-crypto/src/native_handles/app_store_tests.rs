@@ -1,8 +1,21 @@
+use super::*;
+
 use super::super::{
     ApprovalChoice2, ApprovalRow2, Binding, HumanGrantReceipt, HumanGrantVerifier, Limits,
     NativeClock, Registration,
 };
-use super::*;
+use crate::keyring::{DriverMint, MasterResolver, MasterSlot};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
+use tinysecurity_approval::{Engine, NativeAuditAcknowledgement, Ports};
+use tinysecurity_bus::{
+    AccessTier, ApprovalActionRequest2, ApprovalCasRequest2, ApprovalCasResponse2, ApprovalConfig2,
+    ApprovalDeliveryRequest2, ApprovalDeliveryResponse2, ApprovalLoadRequest2,
+    ApprovalLoadResponse2, ApprovalRecord2, ApprovalScope2, AuditCorrelation2, DecideRequest2,
+    EvaluateApprovalRequest2, HumanDecisionReceipt2, RedactorConfig, VerifyHumanRequest2,
+};
+use tinystoragedrivers::secrets::{MemorySecrets, SecretStore};
 
 #[test]
 fn sink_acknowledgment_rejects_wrong_scope_stream_and_phase_event() {
@@ -48,19 +61,6 @@ fn sink_acknowledgment_rejects_wrong_scope_stream_and_phase_event() {
         "P04"
     );
 }
-
-use crate::keyring::{DriverMint, MasterResolver, MasterSlot};
-use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize};
-use tinysecurity_approval::{Engine, NativeAuditAcknowledgement, Ports};
-use tinysecurity_bus::{
-    AccessTier, ApprovalActionRequest2, ApprovalCasRequest2, ApprovalCasResponse2, ApprovalConfig2,
-    ApprovalDeliveryRequest2, ApprovalDeliveryResponse2, ApprovalLoadRequest2,
-    ApprovalLoadResponse2, ApprovalRecord2, ApprovalScope2, AuditCorrelation2, DecideRequest2,
-    EvaluateApprovalRequest2, HumanDecisionReceipt2, RedactorConfig, VerifyHumanRequest2,
-};
-use tinystoragedrivers::secrets::{MemorySecrets, SecretStore};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -365,7 +365,11 @@ impl Fixture {
                 timeout_ms: 1_000,
                 scopes: vec![ApprovalScope2 {
                     scope_id: id,
-                    subject: durable.clone(),
+                    subject: SubjectScope {
+                        user: "user".into(),
+                        workspace: "workspace".into(),
+                        agent: "agent".into(),
+                    },
                     policy_ref: "policy".into(),
                     generation: 1,
                     ceiling: AccessTier::Full,
@@ -450,7 +454,7 @@ impl Fixture {
         let durable = SubjectScope {
             user: "durable-user".into(),
             workspace: "durable-workspace".into(),
-            agent: "agent".into(),
+            agent: "durable-agent".into(),
         };
         let registry = Registry::new(
             vec![Registration {
@@ -513,6 +517,17 @@ impl Fixture {
         }
     }
 }
+#[tokio::test]
+async fn native_app_consent_preserves_original_agent_with_mapped_durable_subject() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let pending = fixture.owner.prepare(fixture.request(AppStoreKind::Set))?;
+    let request = AppStoreOwner::approval(&pending)?;
+    assert_eq!(request.caller.agent, "agent");
+    assert_ne!(request.caller.agent, "durable-agent");
+    assert_eq!(fixture.owner.execute(pending).await?, AppStoreResult::Set);
+    Ok(())
+}
+
 #[tokio::test]
 async fn fixed_native_store_preserves_missing_set_get_and_delete_semantics() -> TestResult {
     let fixture = Fixture::new().await?;
