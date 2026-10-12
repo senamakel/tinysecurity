@@ -5,3 +5,6 @@
 [submodule "vendor/tinyinference"]
 	path = vendor/tinyinference
 	url = https://github.com/tinyhumansai/tinyinference.git
+[submodule "vendor/tinystoragedrivers"]
+	path = vendor/tinystoragedrivers
+	url = https://github.com/tinyhumansai/tinystoragedrivers.git

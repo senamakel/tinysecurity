@@ -17,9 +17,20 @@ static APPROVALS: OnceLock<
         Arc<tinysecurity::approval::Engine>,
     )>,
 > = OnceLock::new();
+static SANDBOX: OnceLock<
+    Option<(
+        tinysecurity_bus::SandboxConfig2,
+        Arc<tinysecurity::sandbox::Engine>,
+    )>,
+> = OnceLock::new();
 static ACTIVE: OnceLock<Arc<RwLock<Policy>>> = OnceLock::new();
 #[derive(Clone)]
 struct PolicyService {
+    sandbox_clock: Arc<dyn tinysecurity::approval::Clock>,
+    device: Option<Arc<tinysecurity::crypto::device_handles::Registry>>,
+    secret: Option<Arc<secret::SecretState>>,
+    secret_cipher: Option<Arc<cipher::CipherState>>,
+    sandbox: Option<Arc<tinysecurity::sandbox::Engine>>,
     approvals: Option<Arc<tinysecurity::approval::Engine>>,
     policy: Arc<RwLock<Policy>>,
     audit: Option<Arc<crate::callbacks::AuditClient>>,
@@ -169,6 +180,90 @@ impl PolicyService {
 }
 #[tinybus::interface(name = "ai.tinyhumans.tinysecurity.Policy")]
 impl PolicyService {
+    #[tinybus(confidential)]
+    async fn evaluate_secret_cipher2(
+        &self,
+        request: tinysecurity_bus::EvaluateSecretCipherRequest2,
+    ) -> BusResult<tinysecurity_bus::SecretCipherPending2> {
+        self.cipher_evaluate(request).await
+    }
+    #[tinybus(confidential)]
+    async fn execute_secret_cipher2(
+        &self,
+        request: tinysecurity_bus::ExecuteSecretCipherRequest2,
+    ) -> BusResult<tinysecurity_bus::SecretCipherResponse2> {
+        self.cipher_execute(request).await
+    }
+    #[tinybus(confidential)]
+    async fn evaluate_secret2(
+        &self,
+        request: tinysecurity_bus::EvaluateSecretRequest2,
+    ) -> BusResult<tinysecurity_bus::ApprovalRow2> {
+        self.secret_approval(request).await
+    }
+    #[tinybus(confidential)]
+    async fn execute_secret2(
+        &self,
+        request: tinysecurity_bus::ExecuteSecretRequest2,
+    ) -> BusResult<tinysecurity_bus::SecretResponse2> {
+        self.secret_execute(request).await
+    }
+    #[tinybus(confidential)]
+    async fn evaluate_device2(
+        &self,
+        request: tinysecurity_bus::EvaluateDeviceRequest2,
+    ) -> BusResult<tinysecurity_bus::ApprovalRow2> {
+        self.device_approval(request).await
+    }
+    #[tinybus(confidential)]
+    async fn execute_device2(
+        &self,
+        request: tinysecurity_bus::ExecuteDeviceRequest2,
+    ) -> BusResult<tinysecurity_bus::DeviceResponse2> {
+        self.device_execute(request).await
+    }
+    async fn plan(
+        &self,
+        _request: tinysecurity_bus::SandboxPlanRequest,
+    ) -> BusResult<tinysecurity_bus::SandboxPlanResponse> {
+        let generation = { self.read()?.info().generation };
+        std::future::ready(Ok(tinysecurity_bus::SandboxPlanResponse {
+            decision: Decision {
+                generation,
+                verdict: tinysecurity_bus::Verdict::Deny {
+                    reason: tinysecurity_bus::DenialReason::InvalidContext,
+                },
+                cacheable: false,
+            },
+            backend: None,
+            grants: vec![],
+            network: tinysecurity_bus::NetworkPolicy::None,
+            limits: tinysecurity_bus::ResourceLimits {
+                memory_bytes: 0,
+                cpu_millis: 0,
+                processes: 0,
+            },
+        }))
+        .await
+    }
+    async fn evaluate_sandbox_approval2(
+        &self,
+        request: tinysecurity_bus::EvaluateSandboxApprovalRequest2,
+    ) -> BusResult<tinysecurity_bus::ApprovalRow2> {
+        self.sandbox_approval(request).await
+    }
+    async fn consume_sandbox_plan2(
+        &self,
+        request: tinysecurity_bus::ConsumeSandboxPlanRequest2,
+    ) -> BusResult<tinysecurity_bus::ConsumeSandboxPlanResponse2> {
+        self.sandbox_consume(request).await
+    }
+    async fn plan2(
+        &self,
+        request: tinysecurity_bus::SandboxPlanRequest2,
+    ) -> BusResult<tinysecurity_bus::SandboxPlanResponse2> {
+        self.sandbox_plan(request).await
+    }
     async fn evaluate(&self, request: EvaluateRequest) -> BusResult<Decision> {
         let policy = self.read()?.clone();
         let mut decision = tokio::task::spawn_blocking(move || {
@@ -681,11 +776,19 @@ fn deny_allow(decision: &mut Decision) {
         decision.cacheable = false;
     }
 }
+fn default_clock() -> Arc<dyn tinysecurity::approval::Clock> {
+    Arc::new(tinysecurity::approval::SystemClock::default())
+}
 fn service_for(
     policy: Arc<RwLock<Policy>>,
     audit: Option<Arc<crate::callbacks::AuditClient>>,
 ) -> PolicyService {
     PolicyService {
+        sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
+        device: None,
+        secret: None,
+        secret_cipher: None,
+        sandbox: None,
         approvals: None,
         policy,
         audit,
@@ -834,28 +937,130 @@ async fn configured_policy(config: ModuleConfig) -> BusResult<Policy> {
     .await
     .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
 }
-async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
+fn host_binding(requested: Option<&str>) -> BusResult<crate::callbacks::PeerBinding> {
+    if let Some(binding) = HOST_BINDING.get() {
+        binding.verify_reinit(requested)?;
+        Ok(binding.clone())
+    } else {
+        crate::callbacks::PeerBinding::new(requested)
+    }
+}
+fn queue_policy_changed(connection: &Connection, generation: u64) -> BusResult<()> {
+    let event = tinysecurity_bus::PolicyChanged { generation };
+    let signal = tinybus::Message::signal(
+        names::OBJECT_PATH.try_into()?,
+        names::INTERFACE.try_into()?,
+        names::POLICY_CHANGED.try_into()?,
+        serde_json::to_value((event,))?,
+    );
+    connection.try_send(signal)
+}
+fn activate_authorities(
+    device: Option<&Arc<tinysecurity::crypto::device_handles::Registry>>,
+    device_limits: Option<tinysecurity_bus::DeviceConfig2>,
+    secret: Option<&Arc<secret::SecretState>>,
+    generation: u64,
+    publish: impl FnOnce() -> BusResult<()>,
+) -> BusResult<()> {
+    let cipher_prepared = cipher::prepare_generation()?;
+    let secret_prepared = secret::prepare_generation(secret, generation)?;
+    device::transition(device, device_limits, generation, publish)?;
+    if let Some(prepared) = secret_prepared {
+        prepared.commit();
+    }
+    if let Some(mut pending) = cipher_prepared {
+        pending.clear();
+    }
+    Ok(())
+}
+fn publish_policy_generation(
+    connection: &Connection,
+    candidate: &Policy,
+    audit: Option<&Arc<crate::callbacks::AuditClient>>,
+    approvals: Option<&Arc<tinysecurity::approval::Engine>>,
+    judge: Option<Arc<tinysecurity::auto::Engine>>,
+) -> BusResult<()> {
+    // Queue publication under the state lock before activation.
+    // A full/closed outbox rejects reinit and leaves the old state intact.
+    queue_policy_changed(connection, candidate.info().generation)?;
+    EGRESS_SCOPES
+        .get_or_init(|| Arc::new(Mutex::new(EgressPolicyRegistry::default())))
+        .lock()
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+        .advance_generation(candidate.info().generation)
+        .map_err(|error| failure(&error))?;
+    if let Some(client) = audit {
+        client.replace_registry(candidate.redactor())?;
+    }
+    if let Some(engine) = approvals {
+        engine
+            .replace_redactor(candidate.redactor())
+            .map_err(approval_failure)?;
+        engine.replace_automatic(judge).map_err(approval_failure)?;
+        engine
+            .advance_generation(candidate.info().generation)
+            .map_err(approval_failure)?;
+    }
+    Ok(())
+}
+async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()> {
     // Validate before activation. The SDK serializes reinitializations and
     // preserves a fault latch; this adapter never provides retry RPCs.
+    let mut device_config =
+        tinysecurity::crypto::device_handles::ConfidentialConfig::new(config.device.take());
+    let device_clock = default_clock();
+    let secret_config = config.secret.take();
+    let cipher_config = config.secret_cipher.take();
     let judge_config = config.judge.clone();
     let audit_config = config.audit.clone();
     let approval_config = config.approvals.clone();
     let requested_host = config.trusted_host.clone();
-    let binding = if let Some(binding) = HOST_BINDING.get() {
-        binding.verify_reinit(requested_host.as_deref())?;
-        binding.clone()
-    } else {
-        crate::callbacks::PeerBinding::new(requested_host.as_deref())?
-    };
+    let binding = host_binding(requested_host.as_deref())?;
+    let sandbox = sandbox_configured(
+        config.sandbox.clone(),
+        requested_host.as_deref(),
+        audit_config.as_ref(),
+        approval_config.as_ref(),
+        SANDBOX.get(),
+    )
+    .await?;
     let candidate = configured_policy(config).await?;
+    let (device, device_limits) = device::configured(
+        device_config.take(),
+        requested_host.as_deref(),
+        approval_config.as_ref(),
+        audit_config.as_ref(),
+        candidate.info().generation,
+        device_clock.as_ref(),
+    )?;
     let audit = configured_audit(&connection, &binding, audit_config.clone(), &candidate)?;
     let approvals = configured_approvals(
         &connection,
         requested_host.as_deref(),
-        approval_config,
+        approval_config.clone(),
         audit_config.as_ref(),
         &candidate,
         APPROVALS.get(),
+    )?;
+    let secret = secret::configured(
+        secret_config,
+        secret::Initialization {
+            connection: &connection,
+            peer: requested_host.as_deref(),
+            approvals: approval_config.as_ref(),
+            engine: approvals.as_ref().map(|(_, engine)| engine),
+            audit: audit_config.as_ref(),
+            generation: candidate.info().generation,
+            clock: device_clock.clone(),
+        },
+    )?;
+    let secret_cipher = cipher::configured(
+        cipher_config,
+        &connection,
+        requested_host.as_deref(),
+        secret.as_ref(),
+        approvals.as_ref().map(|(_, engine)| engine),
+        audit.as_ref(),
     )?;
     let judge = configured_automatic(judge_config, approvals.as_ref().map(|(_, e)| e))?;
     if let Some(active) = ACTIVE.get() {
@@ -863,54 +1068,73 @@ async fn setup(connection: Connection, config: ModuleConfig) -> BusResult<()> {
             .write()
             .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
 
-        let event = tinysecurity_bus::PolicyChanged {
-            generation: candidate.info().generation,
-        };
-        let signal = tinybus::Message::signal(
-            names::OBJECT_PATH.try_into()?,
-            names::INTERFACE.try_into()?,
-            names::POLICY_CHANGED.try_into()?,
-            serde_json::to_value((event,))?,
-        );
-        // Queue publication before activation while holding the state lock.
-        // A full/closed outbox rejects reinit and leaves the old state intact.
-        connection.try_send(signal)?;
-        EGRESS_SCOPES
-            .get_or_init(|| Arc::new(Mutex::new(EgressPolicyRegistry::default())))
-            .lock()
-            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
-            .advance_generation(candidate.info().generation)
-            .map_err(|error| failure(&error))?;
-        if let Some(client) = &audit {
-            client.replace_registry(candidate.redactor())?;
-        }
-        if let Some((_, engine)) = &approvals {
-            engine
-                .replace_redactor(candidate.redactor())
-                .map_err(approval_failure)?;
-            engine
-                .replace_automatic(judge.clone())
-                .map_err(approval_failure)?;
-            engine
-                .advance_generation(candidate.info().generation)
-                .map_err(approval_failure)?;
-        }
+        let generation = candidate.info().generation;
+        activate_authorities(
+            device.as_ref(),
+            device_limits,
+            secret.as_ref(),
+            generation,
+            || {
+                publish_policy_generation(
+                    &connection,
+                    &candidate,
+                    audit.as_ref(),
+                    approvals.as_ref().map(|(_, engine)| engine),
+                    judge.clone(),
+                )?;
+                Ok(())
+            },
+        )?;
         *guard = candidate;
         return Ok(());
     }
     let policy = Arc::new(RwLock::new(candidate));
     let mut service = service_for(Arc::clone(&policy), audit.clone());
+    service.device.clone_from(&device);
+    service.secret.clone_from(&secret);
+    service.secret_cipher.clone_from(&secret_cipher);
+    service.sandbox_clock = device_clock;
+    service.sandbox = sandbox.as_ref().map(|(_, engine)| Arc::clone(engine));
     service.approvals = approvals.as_ref().map(|(_, engine)| Arc::clone(engine));
     if let Some(engine) = &service.approvals {
         engine.replace_automatic(judge).map_err(approval_failure)?;
     }
+    serve_policy(&connection, service, binding.clone()).await?;
+    device::activate(device.as_ref())?;
+    secret::activate(secret)?;
+    cipher::activate(secret_cipher)?;
+    activate_policy(policy, audit, binding, sandbox, approvals)
+}
+async fn serve_policy(
+    connection: &Connection,
+    service: PolicyService,
+    binding: crate::callbacks::PeerBinding,
+) -> BusResult<()> {
     connection
         .serve_at(
             names::OBJECT_PATH.try_into()?,
-            crate::callbacks::Authenticated::new(service, binding.clone()),
+            crate::callbacks::Authenticated::new(service, binding),
         )
         .await?;
     connection.request_name(names::INTERFACE).await?;
+    Ok(())
+}
+fn activate_policy(
+    policy: Arc<RwLock<Policy>>,
+    audit: Option<Arc<crate::callbacks::AuditClient>>,
+    binding: crate::callbacks::PeerBinding,
+    sandbox: Option<(
+        tinysecurity_bus::SandboxConfig2,
+        Arc<tinysecurity::sandbox::Engine>,
+    )>,
+    approvals: Option<(
+        tinysecurity_bus::ApprovalConfig2,
+        Arc<tinysecurity::approval::Engine>,
+    )>,
+) -> BusResult<()> {
+    SANDBOX
+        .set(sandbox)
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
     APPROVALS
         .set(approvals)
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
@@ -930,12 +1154,25 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
+    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
-    optional = ["ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],
+    optional = ["ai.tinyhumans.tinysecurity.SecretCipherConsumer2", "ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],
     lazy = false,
 }
 #[cfg(test)]
 #[path = "adapter_tests.rs"]
 mod tests;
+
+#[path = "adapter_sandbox.rs"]
+mod sandbox;
+use sandbox::sandbox_configured;
+
+#[path = "adapter_device.rs"]
+mod device;
+
+#[path = "adapter_secret.rs"]
+pub(crate) mod secret;
+
+#[path = "adapter_secret_cipher.rs"]
+mod cipher;

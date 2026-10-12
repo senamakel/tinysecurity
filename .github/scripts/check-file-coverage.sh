@@ -14,8 +14,10 @@ cargo llvm-cov \
   --workspace \
   --all-targets \
   --all-features \
-  --json \
-  --output-path "$report"
+  --no-report
+
+.github/scripts/run-native-master-cipher-coverage.sh
+cargo llvm-cov report --json --output-path "$report"
 
 covered_files="$(jq --arg source_root "$source_root" '
   [

@@ -158,3 +158,110 @@ async fn uncertain_judge_preserves_authenticated_human_and_unavailable_channel_d
     );
     Ok(())
 }
+#[tokio::test]
+async fn qualified_judge_is_never_invoked_for_sandbox_host_network_human_requirement() -> Result<()>
+{
+    let f = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    let owner = engine(f, clock.clone())?;
+    let judge = judge(true);
+    scorer(&owner, judge.clone(), clock)?;
+    let mut begin = request();
+    begin.request.call.tool = "sandbox_host_network".into();
+    begin.request.call.checks = vec![Check::Unknown {
+        description: "sandbox_host_network".into(),
+    }];
+    let row = owner.begin(begin).await?;
+    assert_eq!(row.state, ApprovalLifecycle2::Pending);
+    assert!(row.judge.is_none());
+    assert_eq!(judge.calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_master_grant_never_calls_a_qualified_configured_judge() -> Result<()> {
+    let fixture = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    let owner = engine(fixture, clock.clone())?;
+    let judge = judge(true);
+    scorer(&owner, judge.clone(), clock)?;
+    let row = owner.begin_native_grant(native_request(), 1000).await?;
+    assert_eq!(row.state, ApprovalLifecycle2::Pending);
+    assert!(row.judge.is_none());
+    assert_eq!(judge.calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn device_crypto_always_delivers_human_prompt_despite_qualified_judge() -> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    let owner = engine(f.clone(), clock.clone())?;
+    let judge = judge(true);
+    scorer(&owner, judge.clone(), clock)?;
+    let mut req = request();
+    req.request.call.tool = "device_crypto".into();
+    let row = owner.begin(req).await?;
+    assert_eq!(row.state, ApprovalLifecycle2::Pending);
+    assert!(row.judge.is_none());
+    assert_eq!(judge.calls.load(Ordering::SeqCst), 0);
+    assert!(
+        f.order
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .contains(&"prompt")
+    );
+    f.choice.store(1, Ordering::SeqCst);
+    assert!(owner.decide(decision(&row)).await.is_err());
+    f.choice.store(0, Ordering::SeqCst);
+    let approved = owner.decide(decision(&row)).await?;
+    assert_eq!(approved.choice, Some(ApprovalChoice2::Once));
+    assert!(approved.decision_ticket_sha256.is_some());
+    let mut consume = action(&row, 3);
+    consume.request.call.tool = "device_crypto".into();
+    owner.consume(consume).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn device_crypto_ignores_auto_approve_and_reusable_grants() -> Result<()> {
+    for automatic in [false, true] {
+        let fixture = Arc::new(Fixture::default());
+        let clock = Arc::new(TestClock::default());
+        let mut cfg = config();
+        cfg.scopes[0].auto_approve_all = automatic;
+        cfg.scopes[0].require_approval = !automatic;
+        let owner = Engine::new(
+            cfg,
+            fixture.clone(),
+            clock,
+            Redactor::new(&tinysecurity_bus::RedactorConfig::default())
+                .map_err(|_| Error::Invalid)?,
+        )?;
+        let mut req = request();
+        req.request.call.tool = "device_crypto".into();
+        let (bound, _, _) = binding::original(
+            &owner.registration(&req.scope_id)?,
+            &req.request,
+            &owner.redactor()?,
+        )?;
+        let mut reusable = owner.begin(request()).await?;
+        reusable.binding = bound;
+        reusable.request_id = "f".repeat(32);
+        reusable.state = ApprovalLifecycle2::Approved;
+        reusable.choice = Some(ApprovalChoice2::Tool);
+        reusable.attribution = Some("verified-human".into());
+        reusable.decision_ticket_sha256 = Some("a".repeat(64));
+        reusable.binding.call_sha256 = "e".repeat(64);
+        fixture
+            .rows
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .insert(reusable.request_id.clone(), binding::envelope(&reusable)?);
+        let row = owner.begin(req).await?;
+        assert_eq!(row.state, ApprovalLifecycle2::Pending);
+        assert!(row.judge.is_none());
+        assert!(row.decision_ticket_sha256.is_none());
+    }
+    Ok(())
+}

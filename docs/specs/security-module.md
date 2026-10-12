@@ -204,18 +204,68 @@ Windows directory-creation durability guarantees.
 
 ## Sandbox and crypto
 
-`Plan` returns a declarative backend, grants, network policy and resource limits.
-It does not spawn processes. SaaS always requires isolation regardless of an
-`OPENHUMAN_SANDBOX=off` override. Untrusted MCP, skill and downloaded sources
-cannot fall back to `Noop`. No grant opens credential stores. Host-network
-access requires explicit policy permission and applicable approval. Unsupported
-capabilities return a typed denial rather than an optimistic backend choice.
-TinyBox verifies actual runtime suitability before execution.
+Contract 1.9 implements `Plan2`, `EvaluateSandboxApproval2` and
+`ConsumeSandboxPlan2`. The legacy reserved `Plan` payload retains its strict
+wire form and always denies. Initialization authenticates the unique host peer
+and fixes source provenance, deployment, mode settings, path/network/resource
+ceilings and executor capability identity. Callers select those facts by ID;
+they cannot supply their own trust, availability or enforcement claims.
+
+SaaS and untrusted sources require kernel isolation and enforced filesystem
+protection before any disabled mode is considered. Every requested hard
+constraint must be `Enforced`; Noop, BestEffort, unsupported CPU time, unvalidated
+proxy routing and credential-covering roots deny. `ResourceLimits2.cpu_time_ms`
+means CPU time, while `cpu_millicores` means thousandths of a core. The legacy
+`ResourceLimits.cpu_millis` remains CPU time; it must never be translated into
+TinyBox 0.1.17's same-named millicore setting.
+
+Recursive filesystem grants use the owner's subtree admission port. The complete
+credential vocabulary for anchored home stores and credential containers, native
+system ancestors and canonical aliases, host state reservations (including prospective prefix children), and readonly write rights
+are checked before admission. Trusted roots cannot waive the credential or
+internal-state floor; individual noncredential cache children remain available.
+Configurable forbidden paths retain their existing explicit-trust precedence.
+Individual tool path checks retain their arbitrary-depth credential-name floor.
+An additive directory grant does not promise exclusions for every possible future
+credential-named child; a launcher requiring that broader recursive-name contract
+must supply verified enforcement or deny it.
+
+Host networking requires permission under the immutable network ceiling plus
+an authenticated human Once ticket bound durably to the exact canonical
+operation, resolved grants, resources, constraints, network, source, scope,
+generation and executor capability. Registry IDs, reservation metadata and the
+independently checked temporal expiry do not enter the durable human binding.
+Retargeting a symlink requires a fresh human decision for the new resolved plan.
+Automatic judge approval, generic reusable grants and caller approval flags do not qualify.
+Exact sanitized Sandbox audit commits before an opaque artifact becomes active.
+Pending artifacts are discarded on every failed or cancelled publication path.
+The 1024-row registry reserves an equal quota for each configured scope; consuming
+an artifact removes its row, and missing identities always deny replay.
+A fingerprint is correlation only. Consume validates the full registered
+artifact and owner, audits the exact phase, then rechecks expiry and generation
+before atomically reserving it once. Registry capacity and pending expiry are
+bounded; callbacks execute without policy or registry locks.
+
+Planning and admission do not spawn processes or prove native confinement.
+TinyBox owns actual enforcement and must recheck live backend availability,
+capability identity and every hard constraint immediately before spawning.
+The Task 14 launcher must revalidate grant root objects, protected-location and
+alias snapshots, and the exact checked consume envelope before launch; refusal
+must never fall back to an unvalidated raw spawn.
+The native sandbox fixture proves loaded-module policy, authenticated human
+approval, audit and artifact admission only. The current Landlock filesystem
+floor, Seatbelt BestEffort and AppContainer unsupported subprocess isolation
+cannot satisfy constraints they do not enforce.
 
 Crypto is last: password encryption, keyring backends, device encryption and
 pairing have one implementation with consent callbacks. Authentication,
 credential ownership, sockets and consent UX stay host-side. Existing encrypted
-data compatibility and migration are acceptance requirements.
+data compatibility and migration are acceptance requirements. The incremental
+[native device handle surface](../../MODULE.md#confidential-device-handles) now
+adds optional SDK-init registrations, confidential authenticated dispatch and
+exact human/audit receipts over the frozen device primitives. Scoped lifecycle,
+bootstrap replay bounds and owned cleanup are implemented in the module; no
+password/keyring/pairing or production host migration is implied.
 
 Contract 1.8 adds bounded init-only judge settings and optional typed judge
 evidence on durable approval rows. Older init payloads retain their wire shape;
@@ -240,3 +290,20 @@ Full completion also requires fuzz/property tests, 90% per-file coverage,
 dependency/license checks, MSRV and warning-free rustdoc, released artifacts,
 OpenHuman migration and deletion of duplicated implementations. Bootstrap
 checks passing establish only bootstrap completion.
+
+`ConsumeSandboxPlan2` carries the original typed `Plan2` envelope as well as the
+opaque artifact. The host derives that envelope from the exact prepared spawn:
+argv, environment, cwd and input belong in its bounded original operation.
+The owner validates its canonical binding before audit and again after the
+callback; changed operations cannot consume a copied artifact. This does not
+replace TinyBox's live isolation and capability checks.
+
+The [contract 1.10 master subset](../../MODULE.md#confidential-injected-master-resolution)
+implements only confidential config/app master resolution through immutable injected
+callbacks, exact Human Once consumption and opaque native aliases. Per-binding
+resolver uncertainty persists for the supplied broker lifetime across accepted
+reinit. Device and native generation checks complete under retained registry locks
+before publication. A rejected publication with valid clocks preserves prior
+authority; accepted reinit clears pending native work and aliases without replacing
+brokers or resolvers. Clock faults retain their permanent native close behavior. It provides no native OS/file access, password/plaintext operations or
+production host adoption.

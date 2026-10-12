@@ -12,10 +12,11 @@ use tinysecurity_bus::{
 struct TestClock {
     wall: AtomicU64,
     mono: AtomicU64,
+    wall_failed: AtomicU64,
 }
 impl Clock for TestClock {
     fn wall_ms(&self) -> Option<u64> {
-        Some(self.wall.load(Ordering::SeqCst))
+        (self.wall_failed.load(Ordering::SeqCst) == 0).then(|| self.wall.load(Ordering::SeqCst))
     }
     fn monotonic_ms(&self) -> u64 {
         self.mono.load(Ordering::SeqCst)
@@ -28,6 +29,10 @@ struct Fixture {
     order: Mutex<Vec<&'static str>>,
     fail: AtomicU64,
     pause_load: AtomicU64,
+    pause_nth_load: AtomicU64,
+    load_calls: AtomicU64,
+    cas_calls: AtomicU64,
+    expire_unavailable_cas: Mutex<Option<(Arc<TestClock>, u64)>>,
     loaded: tokio::sync::Notify,
     release_load: tokio::sync::Notify,
     choice: AtomicU64,
@@ -37,9 +42,33 @@ struct Fixture {
     advance_source_audit: Mutex<Option<(Arc<TestClock>, u64)>>,
     audit_receipts: Mutex<std::collections::BTreeMap<(String, u64), ApprovalRow2>>,
     barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    native_receipt_mode: AtomicU64,
 }
 #[async_trait::async_trait]
 impl Ports for Fixture {
+    async fn native_audit(&self, row: ApprovalRow2) -> Result<NativeAuditAcknowledgement> {
+        self.audit(row.clone()).await?;
+        let mode = self.native_receipt_mode.load(Ordering::SeqCst);
+        if mode == 1 && row.state == ApprovalLifecycle2::Reserved {
+            return Err(Error::Unavailable);
+        }
+        let tail = row.audit.expected_tail + 1;
+        let expected_scope = row.binding.scope.clone();
+        let receipt = tinysecurity_bus::AuditSinkResponse2 {
+            scope: row.binding.scope.clone(),
+            stream_id: "a".repeat(32),
+            events: vec![tinysecurity_bus::AuditEventReceipt2 {
+                sequence: tail,
+                event_id: if mode == 2 && row.state == ApprovalLifecycle2::Reserved {
+                    "f".repeat(32)
+                } else {
+                    row.audit.event_id.clone()
+                },
+            }],
+            new_tail: tail,
+        };
+        NativeAuditAcknowledgement::from_verified_sink(row, expected_scope, receipt)
+    }
     async fn load(&self, r: ApprovalLoadRequest2) -> Result<ApprovalLoadResponse2> {
         let response = ApprovalLoadResponse2 {
             scope: r.scope.clone(),
@@ -52,10 +81,12 @@ impl Ports for Fixture {
                 .collect(),
         };
         r.verify_response(&response).map_err(|_| Error::Invalid)?;
-        if self
-            .pause_load
-            .compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+        let call = self.load_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.pause_nth_load.load(Ordering::SeqCst) == call
+            || self
+                .pause_load
+                .compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
         {
             self.loaded.notify_one();
             self.release_load.notified().await;
@@ -63,6 +94,16 @@ impl Ports for Fixture {
         Ok(response)
     }
     async fn cas(&self, r: ApprovalCasRequest2) -> Result<ApprovalCasResponse2> {
+        self.cas_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some((clock, deadline)) = self
+            .expire_unavailable_cas
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .take()
+        {
+            clock.wall.store(deadline, Ordering::SeqCst);
+            return Err(Error::Unavailable);
+        }
         let barrier = self.barrier.lock().map_err(|_| Error::Unavailable)?.clone();
         if let Some(barrier) = barrier {
             barrier.wait().await;
@@ -1053,4 +1094,759 @@ async fn source_expiring_during_audit_never_poison_durable_subject_rows() -> Res
         assert!(future.created_at_ms < future.expires_at_ms);
     }
     Ok(())
+}
+#[tokio::test]
+async fn sandbox_host_network_requires_exact_authenticated_human_once_despite_auto_all()
+-> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    let mut cfg = config();
+    cfg.scopes[0].auto_approve_all = true;
+    cfg.scopes[0].require_approval = false;
+    let owner = Engine::new(
+        cfg,
+        f.clone(),
+        clock,
+        Redactor::new(&RedactorConfig::default()).map_err(|_| Error::Invalid)?,
+    )?;
+    let mut begin = request();
+    begin.request.call.tool = "sandbox_host_network".into();
+    begin.request.call.checks = vec![Check::Unknown {
+        description: "sandbox_host_network".into(),
+    }];
+    let row = owner.begin(begin.clone()).await?;
+    assert_eq!(row.state, ApprovalLifecycle2::Pending);
+    assert!(row.judge.is_none());
+    assert!(row.attribution.is_none());
+    let approved = owner.decide(decision(&row)).await?;
+    assert!(approved.decision_ticket_sha256.is_some());
+    let mut consume = action(&row, 3);
+    consume.request = begin.request.clone();
+    let reserved = owner.consume(consume.clone()).await?;
+    assert_eq!(reserved.state, ApprovalLifecycle2::Reserved);
+    assert!(owner.consume(consume).await.is_err());
+    let mut other = begin;
+    other.request.caller.call_id = "different-plan".into();
+    other.audit = audit(4);
+    let row = owner.begin(other).await?;
+    assert_eq!(row.state, ApprovalLifecycle2::Pending);
+    f.choice.store(1, Ordering::SeqCst);
+    owner
+        .decide(DecideRequest2 {
+            audit: audit(5),
+            ..decision(&row)
+        })
+        .await?;
+    let mut consume = action(&row, 6);
+    consume.request.call.tool = "sandbox_host_network".into();
+    consume.request.call.checks = vec![Check::Unknown {
+        description: "sandbox_host_network".into(),
+    }];
+    consume.request.caller.call_id = "different-plan".into();
+    assert!(owner.consume(consume).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn generic_native_label_cannot_bootstrap_authority_under_auto_all() -> Result<()> {
+    let fixture = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    clock.wall.store(1000, Ordering::SeqCst);
+    let mut cfg = config();
+    cfg.scopes[0].auto_approve_all = true;
+    let owner = Engine::new(
+        cfg,
+        fixture.clone(),
+        clock,
+        Redactor::new(&RedactorConfig::default()).map_err(|_| Error::Invalid)?,
+    )?;
+    let mut req = request();
+    req.request.call.tool = "native_secret_grant".into();
+    assert!(
+        owner.begin(req).await.is_err(),
+        "generic label must not create native authority"
+    );
+    assert!(
+        fixture
+            .rows
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .is_empty()
+    );
+    Ok(())
+}
+
+fn native_request() -> EvaluateApprovalRequest2 {
+    let mut req = request();
+    req.request.call.tool = "native_secret_grant".into();
+    req.request.caller.call_id = format!("native-{}", "c".repeat(64));
+    req.request.call.arguments_json =
+        format!("{{\"native_authorization_v1\":\"{}\"}}", "c".repeat(64));
+    req.request.call.checks = vec![Check::Unknown {
+        description: "native-master-authority".into(),
+    }];
+    req.summary = "native master grant".into();
+    req
+}
+fn native_action(row: &ApprovalRow2) -> ApprovalActionRequest2 {
+    let mut req = action(row, 3);
+    req.request = native_request().request;
+    req
+}
+#[tokio::test]
+async fn native_grants_require_real_once_decision_and_exact_consumption_receipt() -> Result<()> {
+    for automatic in [true, false] {
+        let f = Arc::new(Fixture::default());
+        let c = Arc::new(TestClock::default());
+        c.wall.store(1000, Ordering::SeqCst);
+        let mut cfg = config();
+        cfg.scopes[0].auto_approve_all = automatic;
+        cfg.scopes[0].require_approval = false;
+        let owner = Engine::new(
+            cfg,
+            f.clone(),
+            c,
+            Redactor::new(&RedactorConfig::default()).map_err(|_| Error::Invalid)?,
+        )?;
+        let row = owner.begin_native_grant(native_request(), 2000).await?;
+        assert_eq!(row.state, ApprovalLifecycle2::Pending);
+        assert!(row.judge.is_none());
+        assert_eq!(row.expires_at_ms, 2000);
+        assert!(
+            owner
+                .consume_native_grant(native_action(&row))
+                .await
+                .is_err()
+        );
+        assert!(owner.consume(native_action(&row)).await.is_err());
+        f.choice.store(1, Ordering::SeqCst);
+        assert!(owner.decide(decision(&row)).await.is_err());
+        f.choice.store(2, Ordering::SeqCst);
+        assert!(owner.decide(decision(&row)).await.is_err());
+        f.choice.store(0, Ordering::SeqCst);
+        let mut wrong = decision(&row);
+        wrong.decision_ticket.clear();
+        assert!(owner.decide(wrong).await.is_err());
+        let approved = owner.decide(decision(&row)).await?;
+        assert_eq!(approved.choice, Some(ApprovalChoice2::Once));
+        let (reserved, receipt) = owner.consume_native_grant(native_action(&row)).await?;
+        assert_eq!(reserved.state, ApprovalLifecycle2::Reserved);
+        let receipt = receipt.into_receipt();
+        assert_eq!(receipt.events[0].event_id, reserved.audit.event_id);
+        assert_eq!(receipt.new_tail, 3);
+        assert!(
+            owner
+                .consume_native_grant(native_action(&row))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            *f.order.lock().map_err(|_| Error::Unavailable)?,
+            vec![
+                "cas", "audit", "prompt", "audit", "audit", "audit", "audit", "cas", "audit",
+                "audit", "cas", "audit", "audit", "audit"
+            ]
+        );
+    }
+    Ok(())
+}
+#[tokio::test]
+async fn native_expired_unavailable_cas_denies_before_retrying_durable_mutation() -> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let c = Arc::new(TestClock::default());
+    c.wall.store(1000, Ordering::SeqCst);
+    let owner = engine(f.clone(), c.clone())?;
+    *f.expire_unavailable_cas
+        .lock()
+        .map_err(|_| Error::Unavailable)? = Some((c, 1100));
+    assert!(
+        owner
+            .begin_native_grant(native_request(), 1100)
+            .await
+            .is_err()
+    );
+    assert_eq!(f.cas_calls.load(Ordering::SeqCst), 1);
+    assert!(f.rows.lock().map_err(|_| Error::Unavailable)?.is_empty());
+    assert!(f.order.lock().map_err(|_| Error::Unavailable)?.is_empty());
+    Ok(())
+}
+async fn native_second_load_invalidates_without_side_effects(fault: u8) -> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let c = Arc::new(TestClock::default());
+    c.wall.store(1000, Ordering::SeqCst);
+    c.mono.store(100, Ordering::SeqCst);
+    let owner = Arc::new(engine(f.clone(), c.clone())?);
+    f.pause_nth_load.store(2, Ordering::SeqCst);
+    let task = {
+        let owner = owner.clone();
+        tokio::spawn(async move { owner.begin_native_grant(native_request(), 1100).await })
+    };
+    f.loaded.notified().await;
+    assert_eq!(f.load_calls.load(Ordering::SeqCst), 2);
+    match fault {
+        0 => c.wall.store(1100, Ordering::SeqCst),
+        1 => c.wall.store(999, Ordering::SeqCst),
+        2 => c.mono.store(99, Ordering::SeqCst),
+        3 => c.wall_failed.store(1, Ordering::SeqCst),
+        4 => c.mono.store(200, Ordering::SeqCst),
+        _ => owner.advance_generation(4)?,
+    }
+    f.release_load.notify_one();
+    assert!(task.await.map_err(|_| Error::Unavailable)?.is_err());
+    assert_eq!(f.cas_calls.load(Ordering::SeqCst), 0);
+    assert!(f.rows.lock().map_err(|_| Error::Unavailable)?.is_empty());
+    assert!(f.order.lock().map_err(|_| Error::Unavailable)?.is_empty());
+    assert!(
+        owner
+            .native_intents
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .is_empty()
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn native_second_load_exact_deadline_denies_before_any_durable_mutation() -> Result<()> {
+    native_second_load_invalidates_without_side_effects(0).await
+}
+#[tokio::test]
+async fn native_second_load_clock_faults_deny_before_any_durable_mutation() -> Result<()> {
+    for fault in 1..=4 {
+        native_second_load_invalidates_without_side_effects(fault).await?;
+    }
+    Ok(())
+}
+#[tokio::test]
+async fn native_second_load_generation_change_denies_before_any_durable_mutation() -> Result<()> {
+    native_second_load_invalidates_without_side_effects(5).await
+}
+#[tokio::test]
+async fn native_fixed_deadline_survives_load_delay_and_retry_without_extension() -> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let c = Arc::new(TestClock::default());
+    c.wall.store(1000, Ordering::SeqCst);
+    let owner = Arc::new(engine(f.clone(), c.clone())?);
+    f.pause_load.store(1, Ordering::SeqCst);
+    let task = {
+        let owner = owner.clone();
+        tokio::spawn(async move { owner.begin_native_grant(native_request(), 2000).await })
+    };
+    f.loaded.notified().await;
+    c.wall.store(1700, Ordering::SeqCst);
+    f.release_load.notify_one();
+    let row = task.await.map_err(|_| Error::Unavailable)??;
+    assert_eq!(row.expires_at_ms, 2000);
+    assert_eq!(owner.begin_native_grant(native_request(), 2000).await?, row);
+    assert!(
+        owner
+            .begin_native_grant(native_request(), 2200)
+            .await
+            .is_err()
+    );
+    c.wall.store(2000, Ordering::SeqCst);
+    assert!(
+        owner
+            .begin_native_grant(native_request(), 2000)
+            .await
+            .is_err()
+    );
+    assert!(owner.decide(decision(&row)).await.is_err());
+    assert!(
+        owner
+            .native_intents
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .is_empty()
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn native_late_load_rollback_ceilings_and_cron_fail_closed() -> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let c = Arc::new(TestClock::default());
+    c.wall.store(1000, Ordering::SeqCst);
+    let owner = Arc::new(engine(f.clone(), c.clone())?);
+    assert!(
+        owner
+            .begin_native_grant(native_request(), 301_001)
+            .await
+            .is_err()
+    );
+    let mut cron = native_request();
+    cron.request.caller.origin = Origin::Cron;
+    assert!(owner.begin_native_grant(cron, 2000).await.is_err());
+    let mut sub = native_request();
+    sub.request.caller.origin = Origin::SubAgent;
+    assert!(owner.begin_native_grant(sub, 181_001).await.is_err());
+    f.pause_load.store(1, Ordering::SeqCst);
+    let task = {
+        let owner = owner.clone();
+        tokio::spawn(async move { owner.begin_native_grant(native_request(), 2000).await })
+    };
+    f.loaded.notified().await;
+    c.wall.store(2000, Ordering::SeqCst);
+    f.release_load.notify_one();
+    assert!(task.await.map_err(|_| Error::Unavailable)?.is_err());
+    assert!(f.rows.lock().map_err(|_| Error::Unavailable)?.is_empty());
+    c.wall.store(1900, Ordering::SeqCst);
+    assert!(
+        owner
+            .begin_native_grant(native_request(), 2100)
+            .await
+            .is_err()
+    );
+    c.wall.store(2200, Ordering::SeqCst);
+    assert!(
+        owner
+            .begin_native_grant(native_request(), 2300)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn native_store_label_and_forged_human_snapshot_cannot_replace_private_provenance()
+-> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let c = Arc::new(TestClock::default());
+    let owner = engine(f.clone(), c.clone())?;
+    let row = owner.begin_native_grant(native_request(), 1000).await?;
+    let mut forged = row.clone();
+    forged.version = 2;
+    forged.state = ApprovalLifecycle2::Approved;
+    forged.choice = Some(ApprovalChoice2::Once);
+    forged.attribution = Some("human".into());
+    forged.decision_ticket_sha256 = Some("e".repeat(64));
+    f.rows
+        .lock()
+        .map_err(|_| Error::Unavailable)?
+        .insert(row.request_id.clone(), binding::envelope(&forged)?);
+    assert!(
+        owner
+            .consume_native_grant(native_action(&row))
+            .await
+            .is_err()
+    );
+    assert!(owner.decide(decision(&row)).await.is_err());
+    assert!(
+        owner
+            .begin_native_grant(native_request(), 1000)
+            .await
+            .is_err()
+    );
+    let restarted = engine(f.clone(), c)?;
+    assert!(
+        restarted
+            .begin_native_grant(native_request(), 1000)
+            .await
+            .is_err()
+    );
+    assert!(
+        restarted
+            .consume_native_grant(native_action(&row))
+            .await
+            .is_err()
+    );
+    // Metadata can still be read; orphan native rows cannot poison unrelated tool approvals.
+    assert_eq!(restarted.list(&request().scope_id).await?.len(), 1);
+    assert!(restarted.begin(request()).await.is_ok());
+    Ok(())
+}
+#[tokio::test]
+async fn native_receipt_failure_generation_change_and_substitution_never_ack_authority()
+-> Result<()> {
+    for mode in [1, 2] {
+        let f = Arc::new(Fixture::default());
+        let owner = engine(f.clone(), Arc::new(TestClock::default()))?;
+        let row = owner.begin_native_grant(native_request(), 1000).await?;
+        owner.decide(decision(&row)).await?;
+        f.native_receipt_mode.store(mode, Ordering::SeqCst);
+        assert!(
+            owner
+                .consume_native_grant(native_action(&row))
+                .await
+                .is_err()
+        );
+        f.native_receipt_mode.store(0, Ordering::SeqCst);
+        assert!(
+            owner
+                .consume_native_grant(native_action(&row))
+                .await
+                .is_err()
+        );
+    }
+    let f = Arc::new(Fixture::default());
+    let owner = engine(f, Arc::new(TestClock::default()))?;
+    let row = owner.begin_native_grant(native_request(), 1000).await?;
+    owner.decide(decision(&row)).await?;
+    let mut changed = native_action(&row);
+    changed.request.call.arguments_json = "{}".into();
+    assert!(owner.consume_native_grant(changed).await.is_err());
+    owner.advance_generation(2)?;
+    assert!(
+        owner
+            .consume_native_grant(native_action(&row))
+            .await
+            .is_err()
+    );
+    assert!(
+        owner
+            .native_intents
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_provenance_admission_bounds_rejected_creations_and_reclaims_expiry() -> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let c = Arc::new(TestClock::default());
+    let owner = engine(f.clone(), c.clone())?;
+    for index in 0..32 {
+        let mut req = native_request();
+        let commitment = format!("{:064x}", index + 1);
+        req.request.caller.call_id = format!("native-{commitment}");
+        req.request.call.arguments_json =
+            format!("{{\"native_authorization_v1\":\"{commitment}\"}}");
+        owner.begin_native_grant(req, 1000).await?;
+    }
+    for index in 32..96 {
+        let mut req = native_request();
+        let commitment = format!("{:064x}", index + 1);
+        req.request.caller.call_id = format!("native-{commitment}");
+        req.request.call.arguments_json =
+            format!("{{\"native_authorization_v1\":\"{commitment}\"}}");
+        assert!(owner.begin_native_grant(req, 1000).await.is_err());
+    }
+    assert_eq!(
+        owner
+            .native_intents
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .len(),
+        32
+    );
+    assert_eq!(f.rows.lock().map_err(|_| Error::Unavailable)?.len(), 32);
+    assert!(
+        owner
+            .creations
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .len()
+            <= 1
+    );
+    c.wall.store(1000, Ordering::SeqCst);
+    let mut fresh = native_request();
+    fresh.request.caller.call_id = format!("native-{}", "d".repeat(64));
+    fresh.request.call.arguments_json =
+        format!("{{\"native_authorization_v1\":\"{}\"}}", "d".repeat(64));
+    assert!(owner.begin_native_grant(fresh, 2000).await.is_ok());
+    assert_eq!(
+        owner
+            .native_intents
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .len(),
+        1
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn native_cancellation_before_admission_and_changed_nonce_scope_or_policy_deny() -> Result<()>
+{
+    let f = Arc::new(Fixture::default());
+    let owner = Arc::new(engine(f.clone(), Arc::new(TestClock::default()))?);
+    f.pause_load.store(1, Ordering::SeqCst);
+    let task = {
+        let owner = owner.clone();
+        tokio::spawn(async move { owner.begin_native_grant(native_request(), 1000).await })
+    };
+    f.loaded.notified().await;
+    task.abort();
+    assert!(task.await.is_err());
+    assert!(
+        owner
+            .native_intents
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .is_empty()
+    );
+    assert!(f.rows.lock().map_err(|_| Error::Unavailable)?.is_empty());
+    let row = owner.begin_native_grant(native_request(), 1000).await?;
+    for field in 0..3 {
+        let mut changed = row.clone();
+        match field {
+            0 => changed.nonce = "e".repeat(32),
+            1 => changed.binding.policy_ref = "e".repeat(64),
+            _ => changed.binding.scope.user = "e".repeat(64),
+        }
+        f.rows
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .insert(row.request_id.clone(), binding::envelope(&changed)?);
+        assert!(owner.decide(decision(&row)).await.is_err());
+        assert!(
+            owner
+                .consume_native_grant(native_action(&row))
+                .await
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct GenericOnlyPorts(Arc<Fixture>);
+#[async_trait::async_trait]
+impl Ports for GenericOnlyPorts {
+    async fn load(&self, r: ApprovalLoadRequest2) -> Result<ApprovalLoadResponse2> {
+        self.0.load(r).await
+    }
+    async fn cas(&self, r: ApprovalCasRequest2) -> Result<ApprovalCasResponse2> {
+        self.0.cas(r).await
+    }
+    async fn prompt(&self, r: ApprovalDeliveryRequest2) -> Result<ApprovalDeliveryResponse2> {
+        self.0.prompt(r).await
+    }
+    async fn human(&self, r: VerifyHumanRequest2) -> Result<HumanDecisionReceipt2> {
+        self.0.human(r).await
+    }
+    async fn audit(&self, r: ApprovalRow2) -> Result<()> {
+        self.0.audit(r).await
+    }
+}
+#[tokio::test]
+async fn generic_successful_audit_port_cannot_fabricate_native_acknowledgement() -> Result<()> {
+    let f = Arc::new(Fixture::default());
+    let owner = Engine::new(
+        config(),
+        Arc::new(GenericOnlyPorts(f)),
+        Arc::new(TestClock::default()),
+        Redactor::new(&RedactorConfig::default()).map_err(|_| Error::Invalid)?,
+    )?;
+    assert!(
+        owner
+            .begin_native_grant(native_request(), 1000)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_safe_correlation_origin_and_registered_subject_cannot_be_substituted() -> Result<()>
+{
+    let f = Arc::new(Fixture::default());
+    let owner = engine(f.clone(), Arc::new(TestClock::default()))?;
+    for field in 0..5 {
+        let mut req = native_request();
+        match field {
+            0 => req.request.caller.call_id = "copied-public-label".into(),
+            1 => req.request.call.arguments_json = "{}".into(),
+            2 => req.scope_id = "f".repeat(32),
+            3 => req.request.caller.agent = "other-agent".into(),
+            _ => req.ttl_ms = Some(1000),
+        }
+        assert!(owner.begin_native_grant(req, 1000).await.is_err());
+    }
+    assert!(f.rows.lock().map_err(|_| Error::Unavailable)?.is_empty());
+    assert!(f.order.lock().map_err(|_| Error::Unavailable)?.is_empty());
+    Ok(())
+}
+#[derive(Debug)]
+struct NativeFailingClock {
+    failed: std::sync::atomic::AtomicBool,
+}
+impl Clock for NativeFailingClock {
+    fn wall_ms(&self) -> Option<u64> {
+        (!self.failed.load(Ordering::SeqCst)).then_some(1000)
+    }
+    fn monotonic_ms(&self) -> u64 {
+        0
+    }
+}
+#[tokio::test]
+async fn native_clock_failure_closes_existing_provenance_permanently() -> Result<()> {
+    let clock = Arc::new(NativeFailingClock {
+        failed: std::sync::atomic::AtomicBool::new(false),
+    });
+    let f = Arc::new(Fixture::default());
+    let owner = Engine::new(
+        config(),
+        f,
+        clock.clone(),
+        Redactor::new(&RedactorConfig::default()).map_err(|_| Error::Invalid)?,
+    )?;
+    let row = owner.begin_native_grant(native_request(), 2000).await?;
+    clock.failed.store(true, Ordering::SeqCst);
+    assert!(owner.decide(decision(&row)).await.is_err());
+    clock.failed.store(false, Ordering::SeqCst);
+    assert!(
+        owner
+            .begin_native_grant(native_request(), 2000)
+            .await
+            .is_err()
+    );
+    assert!(
+        owner
+            .native_intents
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[derive(Debug)]
+struct NativeAuditOnlyPorts(Arc<Fixture>);
+#[async_trait::async_trait]
+impl Ports for NativeAuditOnlyPorts {
+    async fn load(&self, r: ApprovalLoadRequest2) -> Result<ApprovalLoadResponse2> {
+        self.0.load(r).await
+    }
+    async fn cas(&self, r: ApprovalCasRequest2) -> Result<ApprovalCasResponse2> {
+        self.0.cas(r).await
+    }
+    async fn prompt(&self, r: ApprovalDeliveryRequest2) -> Result<ApprovalDeliveryResponse2> {
+        self.0.prompt(r).await
+    }
+    async fn human(&self, r: VerifyHumanRequest2) -> Result<HumanDecisionReceipt2> {
+        self.0.human(r).await
+    }
+    async fn audit(&self, _r: ApprovalRow2) -> Result<()> {
+        std::future::ready(Err(Error::Denied)).await
+    }
+    async fn native_audit(&self, r: ApprovalRow2) -> Result<NativeAuditAcknowledgement> {
+        self.0.native_audit(r).await
+    }
+}
+#[tokio::test]
+async fn redactor_matching_native_label_cannot_route_its_phases_to_generic_audit() -> Result<()> {
+    let mut redactor = RedactorConfig::default();
+    redactor
+        .secrets
+        .push(tinysecurity_bus::Secret("native_secret_grant".into()));
+    let owner = Engine::new(
+        config(),
+        Arc::new(NativeAuditOnlyPorts(Arc::new(Fixture::default()))),
+        Arc::new(TestClock::default()),
+        Redactor::new(&redactor).map_err(|_| Error::Invalid)?,
+    )?;
+    let pending = owner.begin_native_grant(native_request(), 1000).await?;
+    assert_eq!(pending.tool_name, "native_secret_grant");
+    owner.decide(decision(&pending)).await?;
+    assert!(
+        owner
+            .consume_native_grant(native_action(&pending))
+            .await
+            .is_ok()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn expired_native_rows_resolve_terminally_without_restoring_authority() -> Result<()> {
+    for approved in [false, true] {
+        for cancel in [false, true] {
+            let f = Arc::new(Fixture::default());
+            let c = Arc::new(TestClock::default());
+            let owner = engine(f.clone(), c.clone())?;
+            let pending = owner.begin_native_grant(native_request(), 1000).await?;
+            let row = if approved {
+                owner.decide(decision(&pending)).await?
+            } else {
+                pending
+            };
+            c.wall.store(1000, Ordering::SeqCst);
+            owner.prune_native(1000, row.binding.generation)?;
+            let req = ApprovalRecordRequest2 {
+                scope_id: native_request().scope_id,
+                request_id: row.request_id.clone(),
+                audit: audit(9),
+            };
+            let terminal = if cancel {
+                owner.cancel(req.clone()).await?
+            } else {
+                owner.expire(req.clone()).await?
+            };
+            assert_eq!(
+                terminal.state,
+                if cancel {
+                    ApprovalLifecycle2::Cancelled
+                } else {
+                    ApprovalLifecycle2::Expired
+                }
+            );
+            assert_eq!(terminal.version, row.version + 1);
+            assert!(owner.decide(decision(&row)).await.is_err());
+            assert!(
+                owner
+                    .consume_native_grant(native_action(&row))
+                    .await
+                    .is_err()
+            );
+            let retry = if cancel {
+                owner.cancel(req).await?
+            } else {
+                owner.expire(req).await?
+            };
+            assert_eq!(retry, terminal);
+        }
+    }
+    Ok(())
+}
+
+async fn redacted_device_label_requires_once(choice: u64) -> Result<()> {
+    {
+        let fixture = Arc::new(Fixture::default());
+        let redactor = RedactorConfig {
+            secrets: vec![
+                tinysecurity_bus::Secret("device_crypto".into()),
+                tinysecurity_bus::Secret("private-tool-label".into()),
+            ],
+        };
+        let owner = Engine::new(
+            config(),
+            fixture.clone(),
+            Arc::new(TestClock::default()),
+            Redactor::new(&redactor).map_err(|_| Error::Invalid)?,
+        )?;
+        let mut req = request();
+        req.request.call.tool = "device_crypto".into();
+        req.request.caller.flow = Some("registered-flow".into());
+        let row = owner.begin(req.clone()).await?;
+        fixture.choice.store(choice, Ordering::SeqCst);
+        assert_eq!(owner.decide(decision(&row)).await, Err(Error::Denied));
+        assert_eq!(row.tool_name, "device_crypto");
+        fixture.choice.store(0, Ordering::SeqCst);
+        let approved = owner.decide(decision(&row)).await?;
+        assert_eq!(approved.choice, Some(ApprovalChoice2::Once));
+        assert!(approved.decision_ticket_sha256.is_some());
+        let mut consume = action(&row, 3);
+        consume.request = req.request;
+        owner.consume(consume).await?;
+
+        let mut generic = request();
+        generic.request.call.tool = "private-tool-label".into();
+        generic.request.caller.call_id = "generic-label".into();
+        let generic_row = owner.begin(generic).await?;
+        assert_ne!(generic_row.tool_name, "private-tool-label");
+        assert!(
+            !serde_json::to_string(&generic_row)
+                .map_err(|_| Error::Invalid)?
+                .contains("private-tool-label")
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn redacted_device_labels_cannot_accept_tool_decisions() -> Result<()> {
+    redacted_device_label_requires_once(1).await
+}
+#[tokio::test]
+async fn redacted_device_labels_cannot_accept_flow_decisions() -> Result<()> {
+    redacted_device_label_requires_once(2).await
 }

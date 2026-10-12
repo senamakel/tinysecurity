@@ -76,6 +76,23 @@ fn depth(value: &serde_json::Value, level: usize) -> Result<()> {
     }
     Ok(())
 }
+pub(crate) fn native_safe_call(request: &EvaluateRequest) -> Result<String> {
+    let args: serde_json::Value =
+        serde_json::from_str(&request.call.arguments_json).map_err(|_| Error::Invalid)?;
+    let commitment = args
+        .get("native_authorization_v1")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(Error::Denied)?;
+    let safe_call = format!("native-{commitment}");
+    if request.call.tool != "native_secret_grant"
+        || args.as_object().is_none_or(|a| a.len() != 1)
+        || !hex(commitment, 64)
+        || request.caller.call_id != safe_call
+    {
+        return Err(Error::Denied);
+    }
+    Ok(safe_call)
+}
 pub(crate) fn original(
     reg: &ApprovalScope2,
     request: &EvaluateRequest,
@@ -135,7 +152,11 @@ pub(crate) fn original(
     );
     let mut caller = request.caller.clone();
     caller.agent = text(redactor, &caller.agent, RedactMode::IdentifierHash)?;
-    caller.call_id = text(redactor, &caller.call_id, RedactMode::IdentifierHash)?;
+    caller.call_id = if request.call.tool == "native_secret_grant" {
+        native_safe_call(request)?
+    } else {
+        text(redactor, &caller.call_id, RedactMode::IdentifierHash)?
+    };
     caller.thread = caller
         .thread
         .as_deref()

@@ -1,0 +1,45 @@
+# Injected master resolution
+
+The target, known ordered source inventory, and historical slots are bound by
+trusted construction. Existing valid target bytes win. With an absent target,
+every registered source must be readable and valid or confirmed absent.
+Conflicting decoded masters block resolution. Only absence of all registered
+sources permits entropy generation.
+
+A legacy master is copied using its exact original bytes, including hex case,
+then compared against target readback before its native key is returned. The
+source remains unchanged on success and failure. The generic SecretStore port
+does not establish durability, conditional create, or cross-provider CAS.
+Therefore readback never authorizes deletion. File import receipts and native
+keyring selection are separate future integration work.
+
+A reservation rejects simultaneous resolutions on this resolver. Cancellation
+before a set attempt releases it. Once a set is attempted, cancellation, panic,
+set failure or failed readback permanently latches this resolver unavailable.
+Only a successful set followed by exact target readback releases the reservation.
+Before restarting resolution, the owner must independently establish that all
+old backend mutations are quiescent; constructing a new resolver does not
+establish this. This library provides no recovery or automatic retry mechanism.
+
+There are no awaits under state locks. Construction must have one boot owner per
+target: separate resolvers and other processes are not serialized by this
+library. Driver native key-creation locks do not establish cross-provider
+migration atomicity.
+
+The app:master_key, {user}:secretstore.master_key, and .secret_key slots remain
+distinct. `MasterResolver::new` preserves same-slot registration; the typed
+`new_with_sources` constructor takes private-field `LegacySource::at_slot`
+bindings. Each registered source is read through its own slot. Exact slots and
+User/File configuration-master mappings are allowed; App/User, App/File and
+different-user mappings are rejected before I/O. Inventory stays bounded to
+three sources, with invalid user identities rejected during construction.
+
+A File source or target here is only the `.secret_key` named entry of an injected
+SecretStore. This library performs no filesystem operations and supplies no
+native protected-file capability. Binding a generic encrypted map does not turn
+its named entry into a plaintext key-file reader. The driver-owned protected
+read-only file accessor and native platform acceptance remain separate work.
+
+No method is advertised through TinyBus at this checkpoint. Native keyring
+providers, durable consent callbacks, handles and real three-OS acceptance
+remain pending. MemorySecrets tests prove injected policy, not OS capability.

@@ -6,6 +6,8 @@ mod engine;
 mod path;
 pub use engine::Policy;
 
+mod path_subtree;
+pub use path_subtree::protected_subtree;
 mod path_scope;
 pub use path_scope::{PathScope, protected_path, resolve_ancestor};
 mod path_registry;

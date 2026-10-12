@@ -31,9 +31,7 @@ diagnostics work with disabled autonomy, which is the default.
 
 This is bootstrap infrastructure for [OpenHuman #7328](https://github.com/tinyhumansai/openhuman/issues/7328)
 and [TinySecurity #1](https://github.com/tinyhumansai/tinysecurity/issues/1).
-It does **not** complete the migration. Network connection pinning,
-sandbox planning and crypto engines
-remain unavailable. Reserved wire types do not advertise callable handlers.
+It does **not** complete the migration. Concrete sandbox spawning, connection pinning, password RPCs, keyring backends and pairing remain unavailable. The optional [native device handle surface](MODULE.md#confidential-device-handles) uses authenticated confidential calls and exact human/audit receipts. Reserved wire types do not advertise callable handlers.
 There is no production host migration until an upstream release and checksum
 manifest exist.
 
@@ -48,12 +46,24 @@ scores meet local thresholds before durable `auto:jev` one-shot approval;
 all uncertain/error/budget paths keep the authenticated human flow. Required
 CAS/audit receipts and fresh policy floors still gate permission.
 
+Contract 1.10 adds [confidential injected master resolution](MODULE.md#confidential-injected-master-resolution) with opaque native aliases. Configured-secret reinit is conservatively denied pending a coherent owner transaction. This is an injected-store prerequisite, not production keyring or password migration.
+
+Contract 1.9 adds [scoped declarative sandbox planning](crates/tinysecurity-sandbox/README.md).
+`Plan2` uses immutable host-registered source provenance, ceilings and executor
+capability declarations. Exact committed audit precedes activation of an opaque
+artifact; `ConsumeSandboxPlan2` reserves that artifact once. Host networking
+requires an exact authenticated human Once decision through
+`EvaluateSandboxApproval2`, even when generic automatic approvals are enabled.
+These ports do not prove OS confinement or launch a child: TinyBox must enforce
+and revalidate the plan at the actual execution boundary.
+
 ## Workspace
 
 | Crate | Role |
 | --- | --- |
 | `tinysecurity-bus` | Wire types, errors, names and compatibility; normal dependencies only serde and thiserror |
 | `tinysecurity-policy` | Native conservative policy engine |
+| `tinysecurity-sandbox` | Internal scoped planner and bounded opaque artifact registry |
 | `tinysecurity-redact` | Internal immutable redaction registry and semantic intent scanner |
 | `tinysecurity-auto` | Internal optional Jev, approval rules, shared request budget and exact-score cache |
 | `tinysecurity-approval` | Internal durable exact approval, expiry and reservation engine |
@@ -79,3 +89,10 @@ reconfiguration retention and generation, then prints real bus latency.
 
 See [module boundary](MODULE.md), [accepted specification](docs/specs/security-module.md),
 [implementation sequence](docs/plans/security-module.md), and [roadmap](ROADMAP.md).
+
+`ConsumeSandboxPlan2` carries the original typed `Plan2` envelope as well as the
+opaque artifact. The host derives that envelope from the exact prepared spawn:
+argv, environment, cwd and input belong in its bounded original operation.
+The owner validates its canonical binding before audit and again after the
+callback; changed operations cannot consume a copied artifact. This does not
+replace TinyBox's live isolation and capability checks.

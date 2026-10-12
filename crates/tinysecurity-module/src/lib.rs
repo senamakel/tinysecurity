@@ -7,3 +7,5 @@ mod adapter;
 mod callbacks;
 
 mod approval_callbacks;
+
+mod secret_callbacks;

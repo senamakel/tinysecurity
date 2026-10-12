@@ -1,0 +1,5 @@
+# POLYVAL 0.6.2's accelerated dispatcher owns ManuallyDrop state without Drop.
+# Select its constant-time software backend for all private native builds.
+# password.rs fails compilation if an external RUSTFLAGS override loses this.
+[target.'cfg(all())']
+rustflags = ["--cfg", "polyval_force_soft"]

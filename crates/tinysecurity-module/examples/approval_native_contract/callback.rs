@@ -12,14 +12,14 @@ use tinysecurity_bus::{
     VerifyHumanRequest2, callback_names2, names,
 };
 #[derive(Clone)]
-pub(super) struct Callback {
-    pub(super) module: BusName,
-    pub(super) host: Connection,
-    pub(super) interface: InterfaceName,
-    pub(super) scope: SubjectScope,
-    pub(super) store: Arc<Mutex<DiskStore>>,
-    pub(super) reentrant: Arc<AtomicBool>,
-    pub(super) prompt_failure: Arc<AtomicBool>,
+pub(crate) struct Callback {
+    pub(crate) module: BusName,
+    pub(crate) host: Connection,
+    pub(crate) interface: InterfaceName,
+    pub(crate) scope: SubjectScope,
+    pub(crate) store: Arc<Mutex<DiskStore>>,
+    pub(crate) reentrant: Arc<AtomicBool>,
+    pub(crate) prompt_failure: Arc<AtomicBool>,
 }
 #[async_trait]
 impl Interface for Callback {

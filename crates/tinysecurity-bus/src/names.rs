@@ -5,6 +5,18 @@ pub const INTERFACE: &str = "ai.tinyhumans.tinysecurity.Policy";
 pub const OBJECT_PATH: &str = "/ai/tinyhumans/tinysecurity/Policy";
 /// Method names; availability is reported by `PolicyInfo`.
 pub mod methods {
+    /// Admit a bounded routine operation against a real acquired config master.
+    pub const EVALUATE_SECRET_CIPHER2: &str = "EvaluateSecretCipher2";
+    /// Consume exact private pending cipher authority once.
+    pub const EXECUTE_SECRET_CIPHER2: &str = "ExecuteSecretCipher2";
+    /// Begin `HumanOnly` confidential master review.
+    pub const EVALUATE_SECRET2: &str = "EvaluateSecret2";
+    /// Resolve a master after exact Human Once and required audit.
+    pub const EXECUTE_SECRET2: &str = "ExecuteSecret2";
+    /// Begin exact authenticated-human review for confidential native device work.
+    pub const EVALUATE_DEVICE2: &str = "EvaluateDevice2";
+    /// Execute exact reviewed confidential work using scoped opaque handles.
+    pub const EXECUTE_DEVICE2: &str = "ExecuteDevice2";
     /// Trusted legacy history migration without broad grant revival.
     pub const IMPORT_APPROVAL_HISTORY2: &str = "ImportApprovalHistory2";
     /// Durable exact approval evaluation.
@@ -75,6 +87,12 @@ pub mod methods {
     pub const URL_GUARD: &str = "UrlGuard";
     /// Plan member.
     pub const PLAN: &str = "Plan";
+    /// Immutable-scoped declarative sandbox planning.
+    pub const PLAN2: &str = "Plan2";
+    /// Exact human approval creation for immutable-ceiling sandbox host networking.
+    pub const EVALUATE_SANDBOX_APPROVAL2: &str = "EvaluateSandboxApproval2";
+    /// Exact audited once-only execution admission for an issued declarative artifact.
+    pub const CONSUME_SANDBOX_PLAN2: &str = "ConsumeSandboxPlan2";
     /// Exact durable version-two audit member.
     pub const AUDIT2: &str = "Audit2";
     /// Original operation evaluation bound to exact pre-execution audit.
@@ -86,6 +104,16 @@ pub mod methods {
 }
 /// Bootstrap implemented methods only.
 pub const METHODS: &[&str] = &[
+    methods::EVALUATE_SECRET_CIPHER2,
+    methods::EXECUTE_SECRET_CIPHER2,
+    methods::EVALUATE_SECRET2,
+    methods::EXECUTE_SECRET2,
+    methods::EVALUATE_DEVICE2,
+    methods::EXECUTE_DEVICE2,
+    methods::PLAN,
+    methods::EVALUATE_SANDBOX_APPROVAL2,
+    methods::CONSUME_SANDBOX_PLAN2,
+    methods::PLAN2,
     methods::EVALUATE,
     methods::CHECK,
     methods::EVALUATE_AUDITED2,

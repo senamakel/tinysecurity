@@ -32,16 +32,30 @@ pub(super) async fn verify(
         "manifest must agree with actual PolicyInfo"
     );
     assert_eq!(manifest.provides.len(), 1, "only policy is implemented");
-    assert_eq!(
-        manifest.requires.len(),
-        3,
-        "only implemented audit/store/prompt callbacks may be advertised"
-    );
-    for interface in [
+    let expected: BTreeSet<_> = [
         callback_names2::AUDIT_SINK,
         callback_names2::APPROVAL_STORE,
         callback_names2::APPROVAL_PROMPT,
-    ] {
+        callback_names2::SECRET_BACKEND,
+        callback_names2::SECRET_CIPHER_CONSUMER,
+    ]
+    .into_iter()
+    .collect();
+    let required: BTreeSet<_> = manifest
+        .requires
+        .iter()
+        .map(|dependency| dependency.interface.interface.as_str())
+        .collect();
+    assert_eq!(
+        required, expected,
+        "only implemented callbacks may be advertised"
+    );
+    assert_eq!(
+        required.len(),
+        manifest.requires.len(),
+        "no duplicate callbacks"
+    );
+    for interface in expected {
         let dependency = manifest
             .requires
             .iter()

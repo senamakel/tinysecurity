@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use tinybus::{Interface, broker::Broker, transport::memory::MemoryBus};
 use tinysecurity_bus::*;
 #[path = "adapter_approval_tests.rs"]
-mod approval_tests;
+pub(super) mod approval_tests;
 #[tokio::test]
 async fn parsing_a_reply_returns_intent_without_minting_permission()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -420,6 +420,11 @@ async fn required_audit_cannot_be_bypassed_by_an_unbound_permission_check()
 fn only_implemented_members_are_advertised() -> std::result::Result<(), Box<dyn std::error::Error>>
 {
     let service = PolicyService {
+        device: None,
+        secret: None,
+        secret_cipher: None,
+        sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
+        sandbox: None,
         approvals: None,
         audit: None,
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
@@ -448,6 +453,11 @@ async fn native_dispatch_rejects_malformed_args_and_serves_ordered_checks()
         .serve_at(
             names::OBJECT_PATH.try_into()?,
             PolicyService {
+                device: None,
+                secret: None,
+                secret_cipher: None,
+                sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
+                sandbox: None,
                 approvals: None,
                 audit: None,
                 policy: Arc::new(RwLock::new(Policy::new(review_regression_config())?)),
@@ -778,6 +788,11 @@ async fn blocked_filesystem_query_does_not_block_policy_info_or_another_scope()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let service = PolicyService {
+        device: None,
+        secret: None,
+        secret_cipher: None,
+        sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
+        sandbox: None,
         approvals: None,
         audit: None,
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
@@ -847,6 +862,11 @@ async fn blocked_registration_does_not_block_policy_info_or_another_scope()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let service = PolicyService {
+        device: None,
+        secret: None,
+        secret_cipher: None,
+        sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
+        sandbox: None,
         approvals: None,
         audit: None,
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
@@ -1246,6 +1266,11 @@ async fn native_egress_dispatch_binds_scope_and_denies_legacy_or_generic_local_c
         .serve_at(
             names::OBJECT_PATH.try_into()?,
             PolicyService {
+                device: None,
+                secret: None,
+                secret_cipher: None,
+                sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
+                sandbox: None,
                 approvals: None,
                 audit: None,
                 policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
@@ -1381,6 +1406,11 @@ async fn assert_legacy_egress_is_denied(
 async fn consumption_work_runs_off_the_sole_sdk_worker_without_registry_locks()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let service = PolicyService {
+        device: None,
+        secret: None,
+        secret_cipher: None,
+        sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
+        sandbox: None,
         approvals: None,
         audit: None,
         policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),

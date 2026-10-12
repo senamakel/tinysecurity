@@ -1,12 +1,12 @@
 //! Bounded exact approval callback clients, fixed to the trusted unique init peer.
 use crate::callbacks::{AuditClient, PeerBinding};
 use std::sync::Arc;
-use tinysecurity::approval::{Error, Ports, Result};
+use tinysecurity::approval::{Error, NativeAuditAcknowledgement, Ports, Result};
 use tinysecurity_bus::{
     ApprovalCasRequest2, ApprovalCasResponse2, ApprovalConfig2, ApprovalDeliveryRequest2,
     ApprovalDeliveryResponse2, ApprovalLifecycle2, ApprovalLoadRequest2, ApprovalLoadResponse2,
-    ApprovalRow2, AuditConfig2, AuditEvent2, AuditKind2, AuditSinkRequest2, HumanDecisionReceipt2,
-    SubjectScope, VerifyHumanRequest2, callback_names2,
+    ApprovalRow2, AuditConfig2, AuditEvent2, AuditKind2, AuditSinkRequest2, AuditSinkResponse2,
+    HumanDecisionReceipt2, SubjectScope, VerifyHumanRequest2, callback_names2,
 };
 /// Captured registered callback identity; no model-provided destination or scope.
 pub(crate) struct ApprovalStoreClient {
@@ -141,12 +141,18 @@ impl Ports for ApprovalClients {
     }
     async fn prompt(&self, request: ApprovalDeliveryRequest2) -> Result<ApprovalDeliveryResponse2> {
         self.store.scope(&request.row.binding.scope)?;
-        let response: ApprovalDeliveryResponse2 = self
-            .store
-            .proxy(callback_names2::APPROVAL_PROMPT)?
-            .call(callback_names2::PROMPT, (request.clone(),))
-            .await
-            .map_err(|_| Error::Unavailable)?;
+        let proxy = self.store.proxy(callback_names2::APPROVAL_PROMPT)?;
+        let response: ApprovalDeliveryResponse2 = if request.row.tool_name == "native_secret_grant"
+        {
+            proxy
+                .call_confidential(callback_names2::PROMPT, (request.clone(),))
+                .await
+        } else {
+            proxy
+                .call(callback_names2::PROMPT, (request.clone(),))
+                .await
+        }
+        .map_err(|_| Error::Unavailable)?;
         if response.request_id != request.row.request_id
             || response.nonce != request.row.nonce
             || !response.delivered
@@ -157,23 +163,44 @@ impl Ports for ApprovalClients {
     }
     async fn human(&self, request: VerifyHumanRequest2) -> Result<HumanDecisionReceipt2> {
         self.store.scope(&request.row.binding.scope)?;
-        let response: HumanDecisionReceipt2 = self
-            .store
-            .proxy(callback_names2::APPROVAL_PROMPT)?
-            .call(callback_names2::VERIFY_HUMAN, (request.clone(),))
-            .await
-            .map_err(|_| Error::Unavailable)?;
+        let proxy = self.store.proxy(callback_names2::APPROVAL_PROMPT)?;
+        let response: HumanDecisionReceipt2 = if request.row.tool_name == "native_secret_grant" {
+            proxy
+                .call_confidential(callback_names2::VERIFY_HUMAN, (request.clone(),))
+                .await
+        } else {
+            proxy
+                .call(callback_names2::VERIFY_HUMAN, (request.clone(),))
+                .await
+        }
+        .map_err(|_| Error::Unavailable)?;
         if response.row != request.row {
             return Err(Error::Denied);
         }
         Ok(response)
     }
     async fn audit(&self, row: ApprovalRow2) -> Result<()> {
+        self.append_row(row, false).await.map(|_| ())
+    }
+    async fn native_audit(&self, row: ApprovalRow2) -> Result<NativeAuditAcknowledgement> {
+        let (receipt, expected_scope) = self.append_row(row.clone(), true).await?;
+        NativeAuditAcknowledgement::from_verified_sink(row, expected_scope, receipt)
+    }
+}
+impl ApprovalClients {
+    async fn append_row(
+        &self,
+        row: ApprovalRow2,
+        required: bool,
+    ) -> Result<(AuditSinkResponse2, SubjectScope)> {
         let (_, client) = self
             .audit
             .iter()
             .find(|(s, _)| s == &row.binding.scope)
             .ok_or(Error::Denied)?;
+        if required && !client.required() {
+            return Err(Error::Denied);
+        }
         let batch = AuditSinkRequest2 {
             scope: client.scope().clone(),
             stream_id: client.stream_id().into(),
@@ -196,11 +223,21 @@ impl Ports for ApprovalClients {
                 rule_ids: vec![],
             }],
         };
-        let response = client.append(batch).await;
+        let registry = client.registry().map_err(|_| Error::Unavailable)?;
+        let expected_scope = tinysecurity::audit::sanitize(&batch, &registry)
+            .map_err(|_| Error::Invalid)?
+            .scope;
+        let response = if required {
+            client
+                .append_native_with_registry(batch, Ok(registry))
+                .await
+        } else {
+            client.append_with_registry(batch, Ok(registry)).await
+        };
         if !response.committed || !response.permitted {
             return Err(Error::Unavailable);
         }
-        Ok(())
+        Ok((response.receipt.ok_or(Error::Unavailable)?, expected_scope))
     }
 }
 #[cfg(test)]

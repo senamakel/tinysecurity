@@ -2,9 +2,9 @@ use super::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tinybus::{broker::Broker, transport::memory::MemoryBus};
 #[path = "../examples/approval_native_contract/callback.rs"]
-mod callback;
+pub(crate) mod callback;
 #[path = "../examples/approval_native_contract/store.rs"]
-mod store;
+pub(crate) mod store;
 #[derive(Debug)]
 struct TestClock(AtomicU64);
 impl tinysecurity::approval::Clock for TestClock {

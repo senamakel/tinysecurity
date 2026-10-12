@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub enum AuditKind2 {
     /// Accepted policy activation.
     PolicyChanged,
+    /// Fixed native routine operation using a live Human Once acquired master.
+    NativeRoutine,
     /// Approval lifecycle.
     Approval,
     /// Optional judge verdict.
