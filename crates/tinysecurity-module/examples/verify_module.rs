@@ -183,6 +183,37 @@ async fn benchmark(
         "Evaluate p50={:?} p99={:?}; Check p50={:?} p99={:?}",
         evaluate_times[250], evaluate_times[494], check_times[250], check_times[494]
     );
+    if std::env::var_os("TINYSECURITY_PERF_BUDGET").is_some() {
+        enforce_budget("Evaluate", evaluate_times[250], evaluate_times[494])?;
+        enforce_budget("Check", check_times[250], check_times[494])?;
+        println!("release performance budget met (p50 <= {P50_BUDGET:?}, p99 <= {P99_BUDGET:?})");
+    }
+    Ok(())
+}
+
+/// Agreed per-call budget for a release build on a supported native runner
+/// (see docs/performance.md). Enforced only when `TINYSECURITY_PERF_BUDGET`
+/// is set, because debug-build numbers are not meaningful.
+const P50_BUDGET: Duration = Duration::from_millis(1);
+const P99_BUDGET: Duration = Duration::from_millis(10);
+
+fn enforce_budget(
+    method: &str,
+    p50: Duration,
+    p99: Duration,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    if cfg!(debug_assertions) {
+        return Err(io::Error::other(
+            "TINYSECURITY_PERF_BUDGET requires a release build (cargo run --release)",
+        )
+        .into());
+    }
+    if p50 > P50_BUDGET || p99 > P99_BUDGET {
+        return Err(io::Error::other(format!(
+            "{method} exceeded budget: p50={p50:?} (max {P50_BUDGET:?}) p99={p99:?} (max {P99_BUDGET:?})"
+        ))
+        .into());
+    }
     Ok(())
 }
 
