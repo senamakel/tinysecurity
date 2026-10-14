@@ -5,7 +5,9 @@ use tinysecurity_bus::{Error, RedactorConfig, Result};
 pub(crate) struct Patterns {
     literal: Option<Regex>,
     rules: Vec<(Regex, Validator)>,
+    pem: Regex,
     assignment: Regex,
+    cookie: Regex,
     home: Regex,
     endpoint: Regex,
 }
@@ -56,7 +58,7 @@ impl Patterns {
         };
         let definitions = [
             (
-                r"\b(?:sk-(?:ant-|admin-|proj-|org-)?[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|AKIA[A-Z0-9]{16})\b",
+                r"\b(?:sk-(?:ant-|admin-|proj-|org-)?[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|(?:AKIA|ASIA)[A-Z0-9]{16}|xox[abeprs]-[A-Za-z0-9-]{10,}|[spr]k_(?:live|test)_[A-Za-z0-9]{16,}|AIza[0-9A-Za-z_-]{35}|npm_[A-Za-z0-9]{36}|glpat-[A-Za-z0-9_-]{20,})\b",
                 Validator::Always,
             ),
             (
@@ -93,8 +95,15 @@ impl Patterns {
                 .into_iter()
                 .map(|(p, v)| compile(p).map(|r| (r, v)))
                 .collect::<Result<_>>()?,
+            pem: compile(
+                r"(?s)-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----.*?(?:-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|$)",
+            )?,
             assignment: compile(
-                r#"(?i)\b(bearer[ \t]+|(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization|password|secret|token)["']?[ \t]*[=:][ \t]*)(?:\[REDACTED\]|"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\}\]]+)"#,
+                r#"(?i)\b(authorization["']?[ \t]*[=:][ \t]*(?:(?:bearer|basic|digest|token)[ \t]+)?|bearer[ \t]+|(?:x-api-key|api[_-]?(?:key|secret)|access[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|client[_-]?secret|proxy-authorization|passwd|password|secret|token)["']?[ \t]*[=:][ \t]*)(?:\[REDACTED\]|"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\}\]]+)"#,
+            )?,
+            // A Cookie header is a `;`-separated list; the whole line is the credential.
+            cookie: compile(
+                r#"(?i)\b((?:set-)?cookie["']?[ \t]*[=:][ \t]*)(?:\[REDACTED\]|"[^"\r\n]*"|'[^'\r\n]*'|[^\r\n]+)"#,
             )?,
             home: compile(r#"(?i)(?:/(?:home|users)/|[a-z]:[\\/]+users[\\/]+)[^\\/\s"'<>]+"#)?,
             endpoint: compile(r#"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s"'<>]+"#)?,
@@ -107,9 +116,18 @@ impl Patterns {
         )
     }
     pub(crate) fn text(&self, text: &str) -> Result<String> {
+        // A private key block goes first: an assignment such as `Authorization: Bearer
+        // -----BEGIN ...` would otherwise consume only the first word of the PEM.
         let mut out = self.literal(text);
+        out = self.pem.replace_all(&out, MARKER).into_owned();
         out = self
             .assignment
+            .replace_all(&out, |caps: &regex::Captures<'_>| {
+                format!("{}{MARKER}", &caps[1])
+            })
+            .into_owned();
+        out = self
+            .cookie
             .replace_all(&out, |caps: &regex::Captures<'_>| {
                 format!("{}{MARKER}", &caps[1])
             })
@@ -160,6 +178,7 @@ impl Patterns {
     pub(crate) fn retained_endpoint_is_sensitive(&self, text: &str) -> bool {
         self.literal.as_ref().is_some_and(|r| r.is_match(text))
             || self.assignment.is_match(text)
+            || self.cookie.is_match(text)
             || self
                 .rules
                 .iter()
