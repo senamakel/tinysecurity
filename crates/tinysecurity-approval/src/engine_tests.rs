@@ -1064,6 +1064,8 @@ async fn fresh_and_resumed_prompt_reconcile_a_lost_decision_audit_acknowledgemen
 
 #[path = "automatic_tests.rs"]
 mod automatic_tests;
+#[path = "judge_matrix_tests.rs"]
+mod judge_matrix_tests;
 
 #[tokio::test]
 async fn source_expiring_during_audit_never_poison_durable_subject_rows() -> Result<()> {

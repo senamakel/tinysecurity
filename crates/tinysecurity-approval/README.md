@@ -84,6 +84,21 @@ their original lifecycle and evidence even if newer scores differ.
 When approvals are configured, unbound permission methods and the older audited
 permission methods cannot bypass the durable lifecycle.
 
+## Judge and auto-approve evidence matrix
+
+Proven by `judge_matrix_tests` and the native `judge_native_contract`, with a
+stub judge and no real service: the judge is off by default and per-origin
+opt-in (a non-opted origin, including SaaS, makes no request); a qualified
+verdict only converts a pending approval to a once-only `auto:jev` Allow, never
+a hard denial, floor, privacy or isolation requirement; low confidence, an
+invalid reply, timeout, SDK error and budget exhaustion fall to a human; an
+unavailable human channel denies; each row, with scores, thresholds and the
+fixed question IDs, is durably audited before permission; the endpoint and
+credential exist only in SDK init configuration and never in `PolicyInfo`.
+`auto_approve_all` writes an audited `auto:host-policy` row and fails closed when
+the audit append fails. SaaS has no automatic bypass and denies when its
+verified prompt callback is absent. No wire change: contract stays 1.13.
+
 ## Native evidence
 
 `approval_native_contract` loads the actual cdylib in two independent processes.
