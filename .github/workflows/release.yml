@@ -233,7 +233,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # Key by distro: a Linux x64 cache written by one bundle (for example Fedora or
+      # Arch) holds native build output linked against a newer glibc, which the
+      # Ubuntu 22.04 bundle then fails to dlopen.
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.id }}
 
       # aws-lc-sys needs NASM for native Windows x64 assembly; ARM64 does not.
       - name: Install NASM for Windows x64
