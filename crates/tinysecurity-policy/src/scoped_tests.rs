@@ -953,12 +953,7 @@ fn scope_replacement_and_base_root_changes_are_widenings() -> TestResult {
         .iter()
         .map(|w| w.subject.as_str())
         .collect();
-    for expected in [
-        "path_scope_disabled",
-        "workspace_dir",
-        "command_ledger",
-        "command_context",
-    ] {
+    for expected in ["path_scope_disabled", "workspace_dir", "command_context"] {
         assert!(
             subjects.contains(&expected),
             "missing {expected} in {subjects:?}"
@@ -968,5 +963,12 @@ fn scope_replacement_and_base_root_changes_are_widenings() -> TestResult {
         subjects.iter().any(|s| s.starts_with("action_dir:")),
         "{subjects:?}"
     );
+    assert!(
+        !subjects.contains(&"command_ledger"),
+        "a new command scope id alone is not a widening: {subjects:?}"
+    );
     Ok(())
 }
+
+#[path = "scoped_followup_tests.rs"]
+mod followups;

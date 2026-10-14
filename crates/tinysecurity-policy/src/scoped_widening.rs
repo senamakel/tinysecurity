@@ -101,8 +101,9 @@ fn roots(old: &ScopedPolicy, new: &ScopedPolicy, out: &mut Vec<Widening>) {
             push(out, WideningKind::Root, format!("forbidden:{forbidden}"));
         }
     }
-    for forbidden in &os.policy.forbidden_paths {
-        if !ns.policy.forbidden_paths.contains(forbidden) {
+    // Compare the folded roots: `~`, relative and floor spellings are equivalent.
+    for forbidden in &old.effective_policy().forbidden_paths {
+        if !new.effective_policy().forbidden_paths.contains(forbidden) {
             push(out, WideningKind::Root, format!("forbidden:{forbidden}"));
         }
     }
@@ -178,10 +179,10 @@ fn commands(old: &ScopedPolicy, new: &ScopedPolicy, out: &mut Vec<Widening>) {
         }
     }
     let (oc, nc) = (old.command_policy(), new.command_policy());
-    // A different command scope starts a fresh hourly ledger; review it explicitly.
-    if old.registered().command_policy_id != new.registered().command_policy_id {
-        push(out, WideningKind::Class, "command_ledger");
-    }
+    // A different command scope id is not itself a widening. Only what the new
+    // scope grants beyond the old one is: the comparisons below cover context,
+    // enforcement, autonomy, mode, budget size, approvals and allowlist. The
+    // fresh hourly ledger is accepted when the budget is not larger.
     if oc.action_dir != nc.action_dir
         || oc.home_dir != nc.home_dir
         || oc.shell_dialect != nc.shell_dialect

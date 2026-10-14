@@ -1,5 +1,6 @@
 //! Immutable per-subject policies bound to a path scope, a command scope and a verified caller.
 use crate::engine::{Hooks, validate_settings};
+use crate::scoped_forbidden::effective_forbidden;
 use crate::{
     CommandPolicyRegistry, PathPolicyRegistry, PathScope, Policy, RegisteredCommandPolicy,
     scoped_widening,
@@ -10,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tinysecurity_bus::{
     CallerContext, Check, CheckResponse, CommandDenial, CommandGate, CommandRequest, Decision,
     DenialReason, Error, EvaluateRequest, POLICY_CHANGE_TOOL, PathErrorCategory,
-    PathValidationResult, PolicyId, RegisteredPolicy, Result, ScopedCheckRequest,
+    PathValidationResult, PolicyConfig, PolicyId, RegisteredPolicy, Result, ScopedCheckRequest,
     ScopedCheckResponse, ScopedDecision, ScopedEvaluateRequest, ScopedPolicyInfo, ToolCall,
     ToolRuleEffect, Widening,
 };
@@ -24,6 +25,7 @@ pub struct ScopedPolicy {
     id: PolicyId,
     generation: u64,
     registered: RegisteredPolicy,
+    effective: PolicyConfig,
     paths: Arc<PathScope>,
     commands: Arc<RegisteredCommandPolicy>,
     superseded: AtomicBool,
@@ -141,6 +143,13 @@ pub fn checks_fingerprint(id: &PolicyId, caller: &CallerContext, checks: &[Check
     hex(&h.finalize())
 }
 
+/// Whether a check's decision depends only on the registered policy and the
+/// request. Command checks reserve hourly budget and are never reusable;
+/// unknown and policy-change checks have no stable answer.
+fn reusable(check: &Check) -> bool {
+    matches!(check, Check::LocalDiagnostic {} | Check::Path { .. })
+}
+
 fn fresh_id(taken: impl Fn(&PolicyId) -> bool) -> Result<PolicyId> {
     for _ in 0..4 {
         let mut bytes = [0_u8; 32];
@@ -158,7 +167,6 @@ fn validate(registered: &RegisteredPolicy) -> Result<()> {
     if s.user.is_empty() || s.workspace.is_empty() || s.agent.is_empty() {
         return Err(Error::InvalidArguments);
     }
-    validate_settings(&registered.settings.policy).map_err(|_| Error::InvalidArguments)?;
     if registered.tool_rules.len() > MAX_ITEMS
         || registered
             .tool_rules
@@ -217,6 +225,13 @@ impl ScopedPolicy {
     }
     pub(crate) fn command_policy(&self) -> &tinysecurity_bus::CommandPolicy {
         self.commands.policy()
+    }
+    /// Base settings with `forbidden_paths` folded into absolute roots: `~` expanded
+    /// against the registered home, relative entries anchored at `action_dir` and
+    /// floor entries dropped as redundant.
+    #[must_use]
+    pub fn effective_policy(&self) -> &PolicyConfig {
+        &self.effective
     }
     /// Resolved filesystem scope, for host operations bound to this policy.
     #[must_use]
@@ -307,21 +322,25 @@ impl ScopedPolicy {
             return Ok(denied(reason));
         }
         if let Some(reason) = self.tool_denial(&request.call.tool) {
-            return Ok(denied(reason));
+            // Tool rules are immutable per policy id, so this denial is reusable.
+            let mut decision = denied(reason);
+            decision.decision.cacheable = true;
+            return Ok(decision);
         }
         let (command, path) = (self.hook(), self.path_hook());
         let hooks = Hooks {
             command: &command,
             path: &path,
         };
-        let decision = policy.evaluate_with(
-            &self.registered.settings.policy,
+        let mut decision = policy.evaluate_with(
+            &self.effective,
             Some(&hooks),
             &EvaluateRequest {
                 caller: request.caller.clone(),
                 call: request.call.clone(),
             },
         )?;
+        decision.cacheable = request.call.checks.iter().all(reusable);
         Ok(ScopedDecision {
             decision,
             policy_generation: self.generation,
@@ -353,12 +372,16 @@ impl ScopedPolicy {
                 command: &command,
                 path: &path,
             };
-            policy.check_with(
-                &self.registered.settings.policy,
+            let mut response = policy.check_with(
+                &self.effective,
                 Some(&hooks),
                 &request.caller,
                 &request.checks,
-            )
+            );
+            for (decision, check) in response.decisions.iter_mut().zip(&request.checks) {
+                decision.cacheable = reusable(check);
+            }
+            response
         };
         Ok(ScopedCheckResponse {
             policy_generation: self.generation,
@@ -411,26 +434,35 @@ impl ScopedPolicyRegistry {
         registered: &RegisteredPolicy,
         paths: &PathPolicyRegistry,
         commands: &CommandPolicyRegistry,
-    ) -> Result<(Arc<PathScope>, Arc<RegisteredCommandPolicy>)> {
+    ) -> Result<(Arc<PathScope>, Arc<RegisteredCommandPolicy>, PolicyConfig)> {
         validate(registered)?;
-        Ok((
+        let (path_scope, command_scope) = (
             paths.get_owned(&registered.path_policy_id)?,
             commands.get_owned(&registered.command_policy_id)?,
-        ))
+        );
+        let home = path_scope
+            .home_dir
+            .as_deref()
+            .or(command_scope.policy().home_dir.as_deref());
+        let mut effective = registered.settings.policy.clone();
+        effective.forbidden_paths = effective_forbidden(&registered.settings.policy, home)?;
+        validate_settings(&effective).map_err(|_| Error::InvalidArguments)?;
+        Ok((path_scope, command_scope, effective))
     }
 
     fn make(
         &self,
         registered: RegisteredPolicy,
         generation: u64,
-        paths: Arc<PathScope>,
-        commands: Arc<RegisteredCommandPolicy>,
+        scopes: (Arc<PathScope>, Arc<RegisteredCommandPolicy>, PolicyConfig),
     ) -> Result<ScopedPolicy> {
+        let (paths, commands, effective) = scopes;
         let id = fresh_id(|id| self.entries.iter().any(|p| &p.id == id))?;
         Ok(ScopedPolicy {
             id,
             generation,
             registered,
+            effective,
             paths,
             commands,
             superseded: AtomicBool::new(false),
@@ -447,7 +479,7 @@ impl ScopedPolicyRegistry {
         paths: &PathPolicyRegistry,
         commands: &CommandPolicyRegistry,
     ) -> Result<PolicyId> {
-        let (path_scope, command_scope) = Self::resolve(&registered, paths, commands)?;
+        let scopes = Self::resolve(&registered, paths, commands)?;
         if let Some(existing) = self
             .entries
             .iter()
@@ -462,7 +494,7 @@ impl ScopedPolicyRegistry {
         if self.entries.len() >= MAX_POLICIES {
             return Err(Error::Unavailable);
         }
-        let entry = self.make(registered, 1, path_scope, command_scope)?;
+        let entry = self.make(registered, 1, scopes)?;
         let id = entry.id.clone();
         self.entries.push(Arc::new(entry));
         Ok(id)
@@ -494,12 +526,12 @@ impl ScopedPolicyRegistry {
         if previous.is_superseded() || previous.registered.subject_scope != next.subject_scope {
             return Err(Error::InvalidArguments);
         }
-        let (path_scope, command_scope) = Self::resolve(&next, paths, commands)?;
+        let scopes = Self::resolve(&next, paths, commands)?;
         let generation = previous
             .generation
             .checked_add(1)
             .ok_or(Error::InvalidArguments)?;
-        let next = self.make(next, generation, path_scope, command_scope)?;
+        let next = self.make(next, generation, scopes)?;
         let widenings = scoped_widening::widenings(&previous, &next);
         Ok(PreparedSupersede {
             previous,

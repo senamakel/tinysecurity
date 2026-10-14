@@ -38,3 +38,73 @@ fn audited_permission_wire_carries_original_request_and_correlation_without_call
     );
     Ok(())
 }
+#[test]
+fn scoped_audited_wire_wraps_the_scoped_request_with_correlation_and_rejects_forgery()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let wire = serde_json::json!({
+        "request": {
+            "policy_id": "policy-ref",
+            "caller": {
+                "agent": "private-agent", "thread": null, "flow": null,
+                "call_id": "private-call", "origin": "operator", "tier": "full"
+            },
+            "checks": [{"kind": "local_diagnostic"}]
+        },
+        "audit": { "event_id": "a".repeat(32), "expected_tail": 0, "generation": 1 }
+    });
+    let request: CheckScopedAuditedRequest = serde_json::from_value(wire.clone())?;
+    assert_eq!(serde_json::to_value(&request)?, wire);
+    assert!(!format!("{request:?}").contains("private-"));
+    let mut forged = wire.clone();
+    forged["verdict"] = true.into();
+    assert!(serde_json::from_value::<CheckScopedAuditedRequest>(forged).is_err());
+    let evaluate = serde_json::json!({
+        "request": {
+            "policy_id": "policy-ref",
+            "caller": wire["request"]["caller"].clone(),
+            "call": {
+                "tool": "local_diagnostic",
+                "arguments_json": "{}",
+                "checks": [{"kind": "local_diagnostic"}]
+            }
+        },
+        "audit": wire["audit"].clone()
+    });
+    let request: EvaluateScopedAuditedRequest = serde_json::from_value(evaluate.clone())?;
+    assert_eq!(serde_json::to_value(&request)?, evaluate);
+    let denied = crate::AuditResponse2 {
+        permitted: false,
+        committed: false,
+        health: crate::AuditHealth2::Denied,
+        receipt: None,
+    };
+    let response = EvaluateScopedAuditedResponse {
+        decision: crate::ScopedDecision {
+            decision: crate::Decision {
+                generation: 1,
+                verdict: crate::Verdict::Allow,
+                cacheable: false,
+            },
+            policy_generation: 1,
+            fingerprint: "f".repeat(64),
+        },
+        audit: denied.clone(),
+    };
+    assert_eq!(
+        serde_json::from_value::<EvaluateScopedAuditedResponse>(serde_json::to_value(&response)?)?,
+        response
+    );
+    let checks = CheckScopedAuditedResponse {
+        decision: crate::ScopedCheckResponse {
+            policy_generation: 1,
+            fingerprint: "f".repeat(64),
+            decisions: vec![],
+        },
+        audit: denied,
+    };
+    assert_eq!(
+        serde_json::from_value::<CheckScopedAuditedResponse>(serde_json::to_value(&checks)?)?,
+        checks
+    );
+    Ok(())
+}

@@ -126,7 +126,8 @@ pub struct Decision {
     pub generation: u64,
     /// Permission outcome.
     pub verdict: Verdict,
-    /// Whether static caching is authorized. Bootstrap always returns false.
+    /// Whether static caching is authorized. Unscoped members always return false;
+    /// scoped members set it per `docs/specs/scoped-policies.md`.
     pub cacheable: bool,
 }
 /// Permission outcome.

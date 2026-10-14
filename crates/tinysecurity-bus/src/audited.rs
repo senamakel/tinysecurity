@@ -43,6 +43,14 @@ pub type EvaluateAuditedResponse2 = AuditedResponse2<crate::Decision>;
 pub type CheckAuditedRequest2 = AuditedRequest2<crate::CheckRequest>;
 /// Computed ordered permissions with audit evidence.
 pub type CheckAuditedResponse2 = AuditedResponse2<crate::CheckResponse>;
+/// Registered-policy evaluation of an original call with pre-execution audit.
+pub type EvaluateScopedAuditedRequest = AuditedRequest2<crate::ScopedEvaluateRequest>;
+/// Scoped decision with audit evidence. Never cacheable: every use needs its own event.
+pub type EvaluateScopedAuditedResponse = AuditedResponse2<crate::ScopedDecision>;
+/// Registered-policy ordered checks with one pre-execution audit event.
+pub type CheckScopedAuditedRequest = AuditedRequest2<crate::ScopedCheckRequest>;
+/// Scoped ordered decisions with audit evidence. Never cacheable.
+pub type CheckScopedAuditedResponse = AuditedResponse2<crate::ScopedCheckResponse>;
 #[cfg(test)]
 #[path = "audited_tests.rs"]
 mod tests;
