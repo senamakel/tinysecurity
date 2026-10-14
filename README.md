@@ -33,7 +33,7 @@ diagnostics work with disabled autonomy, which is the default.
 
 This is bootstrap infrastructure for [OpenHuman #7328](https://github.com/tinyhumansai/openhuman/issues/7328)
 and [TinySecurity #1](https://github.com/tinyhumansai/tinysecurity/issues/1).
-It does **not** complete the migration. Concrete sandbox spawning, connection pinning, password RPCs, keyring backends and pairing remain unavailable. The optional [native device handle surface](MODULE.md#confidential-device-handles) uses authenticated confidential calls and exact human/audit receipts. Reserved wire types do not advertise callable handlers.
+It does **not** complete the migration. Concrete sandbox spawning, connection pinning, Linux Secret Service and pairing challenge delivery (`Begin`/`Verify`) remain unavailable; contract 1.14 password, keyring and pairing-status members are implemented. The optional [native device handle surface](MODULE.md#confidential-device-handles) uses authenticated confidential calls and exact human/audit receipts. Reserved wire types do not advertise callable handlers.
 There is no production host migration until an upstream release and checksum
 manifest exist.
 

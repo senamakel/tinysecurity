@@ -219,7 +219,7 @@ pub struct KeyringConsentResponse2 {
 }
 
 /// Pairing operation on a registered account.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PairingOperation2 {
     /// Nonsecret lifecycle state.
@@ -246,15 +246,18 @@ pub struct PairingRequest2 {
 }
 
 /// Pairing result; state is nonsecret.
+///
+/// `Authenticate` charges one engine admission and so reports only its outcome;
+/// `is_paired` and `active` are then absent rather than a second rate-limited read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PairingResponse2 {
     /// Configuration flag.
     pub require_pairing: bool,
-    /// Whether any token exists.
-    pub is_paired: bool,
-    /// Whether an acknowledged challenge can be verified.
-    pub active: bool,
+    /// Whether any token exists; absent for `Authenticate`.
+    pub is_paired: Option<bool>,
+    /// Whether an acknowledged challenge can be verified; absent for `Authenticate`.
+    pub active: Option<bool>,
     /// Authenticate outcome, absent for other operations.
     pub authenticated: Option<bool>,
 }
@@ -280,6 +283,7 @@ redacted_debug!(
     KeyringRequest2,
     KeyringResponse2,
     PairingRequest2,
+    PairingOperation2,
 );
 #[cfg(test)]
 #[path = "crypto_ops_tests.rs"]

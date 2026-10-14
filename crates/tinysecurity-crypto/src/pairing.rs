@@ -1076,11 +1076,15 @@ impl PairingOwner {
         self.inner.sample(&mut state)?;
         let index = Inner::index(&state, request)?;
         let permit = self.inner.admit(&mut state, index, false, false)?;
-        let result = !text.trim().is_empty()
-            && state.accounts[index]
-                .tokens
-                .iter()
-                .any(|h| **h == *hash(bearer));
+        // Hash once, compare every stored digest in constant time, and never stop early.
+        let presented = hash(bearer);
+        let mut matched = false;
+        for stored in &state.accounts[index].tokens {
+            matched |=
+                constant_time::verify_slices_are_equal(stored.as_bytes(), presented.as_bytes())
+                    .is_ok();
+        }
+        let result = !text.trim().is_empty() && matched;
         drop(state);
         drop(permit);
         Ok(result)

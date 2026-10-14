@@ -89,7 +89,10 @@ struct PairingState {
     generation: u64,
 }
 pub(super) struct CryptoState {
+    // Bearer tokens are scrubbed after the pairing owner hashes them; the
+    // fingerprint (computed over the full original) detects config changes.
     config: CryptoConfig2,
+    fingerprint: [u8; 32],
     clock: Arc<dyn tinysecurity::approval::Clock>,
     window: Mutex<Window>,
     permits: Arc<tokio::sync::Semaphore>,
@@ -109,6 +112,24 @@ pub(super) struct Initialization<'a> {
     pub(super) peer: Option<&'a str>,
     pub(super) generation: u64,
     pub(super) clock: Arc<dyn tinysecurity::approval::Clock>,
+}
+
+/// Digest of the complete configuration, so immutable-reinit comparison needs
+/// no retained plaintext tokens.
+fn fingerprint(config: &CryptoConfig2) -> BusResult<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    let mut bytes = Zeroizing::new(serde_json::to_vec(config).map_err(|_| denied())?);
+    let digest = Sha256::digest(bytes.as_slice());
+    bytes.zeroize();
+    Ok(digest.into())
+}
+fn scrub(config: &mut CryptoConfig2) {
+    if let Some(pairing) = &mut config.pairing {
+        for account in &mut pairing.accounts {
+            account.tokens.iter_mut().for_each(Zeroize::zeroize);
+            account.tokens.clear();
+        }
+    }
 }
 
 fn validate(config: &CryptoConfig2) -> BusResult<()> {
@@ -149,19 +170,46 @@ fn configure(
         return match (current, config) {
             (Some(weak), requested) => {
                 let state = weak.upgrade().ok_or_else(denied)?;
-                if requested.is_some_and(|requested| requested != state.config) {
-                    return Err(denied());
+                if let Some(mut requested) = requested {
+                    let same = fingerprint(&requested)? == state.fingerprint;
+                    scrub(&mut requested);
+                    if !same {
+                        return Err(denied());
+                    }
                 }
                 Ok(Some(state))
             }
             (None, None) => Ok(None),
-            (None, Some(_)) => Err(denied()),
+            (None, Some(mut requested)) => {
+                scrub(&mut requested);
+                Err(denied())
+            }
         };
     }
-    let Some(config) = config else {
+    let Some(mut config) = config else {
         return Ok(None);
     };
-    validate(&config)?;
+    let result = build(&mut config, init);
+    scrub(&mut config);
+    result.map(|(keyring, pairing, fingerprint)| {
+        Some(Arc::new(CryptoState {
+            config,
+            fingerprint,
+            clock: Arc::clone(&init.clock),
+            window: Mutex::new(Window {
+                minute: 0,
+                count: 0,
+            }),
+            permits: Arc::new(tokio::sync::Semaphore::new(PASSWORD_PERMITS)),
+            keyring,
+            pairing,
+        }))
+    })
+}
+type Built = (Option<KeyringState>, Option<PairingState>, [u8; 32]);
+fn build(config: &mut CryptoConfig2, init: &Initialization<'_>) -> BusResult<Built> {
+    validate(config)?;
+    let fingerprint = fingerprint(config)?;
     let peer = init.peer.ok_or_else(denied)?;
     // Only a unique, authenticated host name may receive secrets or consent prompts.
     let bus_peer = peer.parse::<tinybus::BusName>()?;
@@ -212,8 +260,12 @@ fn configure(
                 registrations,
                 init.generation,
                 Limits {
+                    // The contract admits up to 256 accounts, the engine's hard maximum.
+                    accounts: 256,
                     in_flight: pairing.in_flight,
                     rate: pairing.rate,
+                    retained_bytes: 16 << 20,
+                    resident_bytes: 18 << 20,
                     ..Limits::default()
                 },
                 30_000,
@@ -229,18 +281,7 @@ fn configure(
             })
         })
         .transpose()?;
-    let state = Arc::new(CryptoState {
-        config,
-        clock: Arc::clone(&init.clock),
-        window: Mutex::new(Window {
-            minute: 0,
-            count: 0,
-        }),
-        permits: Arc::new(tokio::sync::Semaphore::new(PASSWORD_PERMITS)),
-        keyring,
-        pairing,
-    });
-    Ok(Some(state))
+    Ok((keyring, pairing, fingerprint))
 }
 
 pub(super) fn activate(state: Option<&Arc<CryptoState>>) -> BusResult<()> {
@@ -317,11 +358,19 @@ impl PolicyService {
         mut request: KeyringRequest2,
     ) -> BusResult<KeyringResponse2> {
         let state = Arc::clone(self.crypto_state()?);
-        let result = keyring_inner(&state, &mut request).await;
-        if let KeyringOperation2::Set { value, .. } = &mut request.operation {
-            value.zeroize();
-        }
-        result
+        // Move the value into a drop guard before any await, so cancellation
+        // or a disconnect still wipes it.
+        let operation = match std::mem::replace(
+            &mut request.operation,
+            KeyringOperation2::Delete {
+                name: String::new(),
+            },
+        ) {
+            KeyringOperation2::Get { name } => Access::Get(name),
+            KeyringOperation2::Set { name, value } => Access::Set(name, Zeroizing::new(value)),
+            KeyringOperation2::Delete { name } => Access::Delete(name),
+        };
+        keyring_inner(&state, &request, operation).await
     }
 
     pub(super) fn pairing_control(
@@ -352,14 +401,14 @@ async fn password_inner(
             plaintext,
             salt,
         } => {
-            if plaintext.len() > bound || password.len() > password::MAX_PASSWORD_BYTES {
+            if plaintext.len() > bound || password.len() > bound.min(password::MAX_PASSWORD_BYTES) {
                 return Err(denied());
             }
-            let password = std::mem::take(password);
+            // Wrap before the closure so a dropped future still wipes both.
+            let password = Zeroizing::new(std::mem::take(password));
             let plaintext = Zeroizing::new(std::mem::take(plaintext));
             let salt = salt.take();
             let sealed = tokio::task::spawn_blocking(move || {
-                let password = Zeroizing::new(password);
                 let _permit = permit;
                 password::encrypt_with_password(&password, &plaintext, salt.as_deref())
             })
@@ -377,18 +426,17 @@ async fn password_inner(
         }
         PasswordOperation2::Decrypt { password, payload } => {
             if payload.ciphertext.len() > bound + 16
-                || password.len() > password::MAX_PASSWORD_BYTES
+                || password.len() > bound.min(password::MAX_PASSWORD_BYTES)
             {
                 return Err(denied());
             }
-            let password = std::mem::take(password);
+            let password = Zeroizing::new(std::mem::take(password));
             let sealed = PasswordPayload {
                 ciphertext: std::mem::take(&mut payload.ciphertext),
                 nonce: std::mem::take(&mut payload.nonce),
                 salt: std::mem::take(&mut payload.salt),
             };
             let mut opened = tokio::task::spawn_blocking(move || {
-                let password = Zeroizing::new(password);
                 let _permit = permit;
                 password::decrypt_with_password(&password, &sealed)
             })
@@ -405,7 +453,6 @@ async fn password_inner(
 }
 
 async fn consent(
-    state: &CryptoState,
     keyring: &KeyringState,
     request: &KeyringRequest2,
     access: KeyringAccess2,
@@ -433,54 +480,65 @@ async fn consent(
         )
         .await
         .map_err(|_| denied())?;
-    let _ = state;
     if reply.allowed { Ok(()) } else { Err(denied()) }
 }
 
+enum Access {
+    Get(String),
+    Set(String, Zeroizing<Vec<u8>>),
+    Delete(String),
+}
 async fn keyring_inner(
     state: &Arc<CryptoState>,
-    request: &mut KeyringRequest2,
+    request: &KeyringRequest2,
+    operation: Access,
 ) -> BusResult<KeyringResponse2> {
     let keyring = state.keyring.as_ref().ok_or_else(denied)?;
     if !control_free(&request.purpose, 256) || request.caller.agent.is_empty() {
         return Err(denied());
     }
-    let (access, name) = match &request.operation {
-        KeyringOperation2::Get { name } => (KeyringAccess2::Read, name.clone()),
-        KeyringOperation2::Set { name, value } => {
+    let (access, name) = match &operation {
+        Access::Get(name) => (KeyringAccess2::Read, name),
+        Access::Set(name, value) => {
             if value.len() > state.bound() {
                 return Err(denied());
             }
-            (KeyringAccess2::Write, name.clone())
+            (KeyringAccess2::Write, name)
         }
-        KeyringOperation2::Delete { name } => (KeyringAccess2::Delete, name.clone()),
+        Access::Delete(name) => (KeyringAccess2::Delete, name),
     };
-    tinysecurity::crypto::secretstore::validate_name(&name).map_err(|_| denied())?;
+    tinysecurity::crypto::secretstore::validate_name(name).map_err(|_| denied())?;
     state.admit()?;
     // Fresh human consent for exactly this operation precedes any backend access.
-    consent(state, keyring, request, access, &name).await?;
-    match &mut request.operation {
-        KeyringOperation2::Get { name } => {
+    consent(keyring, request, access, name).await?;
+    match &operation {
+        Access::Get(name) => {
             let found = keyring.store.get(name).await.map_err(|_| denied())?;
             Ok(match found {
-                Some(mut value) => KeyringResponse2 {
-                    found: true,
-                    bytes: std::mem::take(&mut *value),
-                },
+                Some(mut value) => {
+                    // A value stored outside this bound is refused and wiped, not returned.
+                    if value.len() > state.bound() {
+                        return Err(denied());
+                    }
+                    KeyringResponse2 {
+                        found: true,
+                        bytes: std::mem::take(&mut *value),
+                    }
+                }
                 None => KeyringResponse2 {
                     found: false,
                     bytes: Vec::new(),
                 },
             })
         }
-        KeyringOperation2::Set { name, value } => {
+        Access::Set(name, value) => {
             keyring.store.set(name, value).await.map_err(|_| denied())?;
             Ok(KeyringResponse2 {
                 found: true,
                 bytes: Vec::new(),
             })
         }
-        KeyringOperation2::Delete { name } => {
+        Access::Delete(name) => {
             let removed = keyring.store.delete(name).await.map_err(|_| denied())?;
             Ok(KeyringResponse2 {
                 found: removed,
@@ -498,54 +556,55 @@ fn pairing_inner(state: &CryptoState, request: &PairingRequest2) -> BusResult<Pa
         peer: &pairing.peer,
         generation: pairing.generation,
     };
-    let mut authenticated = None;
+    let require_pairing = |account: &str| {
+        state
+            .config
+            .pairing
+            .as_ref()
+            .and_then(|config| config.accounts.iter().find(|a| a.account == account))
+            .is_some_and(|account| account.require_pairing)
+    };
     match &request.operation {
-        PairingOperation2::Status => {}
         PairingOperation2::Authenticate { bearer } => {
             if bearer.len() > 4096 {
                 return Err(denied());
             }
-            authenticated = Some(
-                pairing
-                    .owner
-                    .authenticate(&account, bearer.as_bytes())
-                    .map_err(|_| denied())?,
-            );
+            // One engine admission: report only the outcome, not a second status read.
+            let matched = pairing
+                .owner
+                .authenticate(&account, bearer.as_bytes())
+                .map_err(|_| denied())?;
+            return Ok(PairingResponse2 {
+                require_pairing: require_pairing(&request.account),
+                is_paired: None,
+                active: None,
+                authenticated: Some(matched),
+            });
+        }
+        PairingOperation2::Revoke => {
+            pairing
+                .owner
+                .revoke_account(&account)
+                .map_err(|_| denied())?;
+            // A revoked account has no status; report the fenced state.
+            return Ok(PairingResponse2 {
+                require_pairing: require_pairing(&request.account),
+                is_paired: Some(false),
+                active: Some(false),
+                authenticated: None,
+            });
         }
         PairingOperation2::Invalidate => {
             pairing.owner.invalidate(&account).map_err(|_| denied())?;
         }
-        PairingOperation2::Revoke => pairing
-            .owner
-            .revoke_account(&account)
-            .map_err(|_| denied())?,
-    }
-    if matches!(request.operation, PairingOperation2::Revoke) {
-        // A revoked account has no status; report the fenced state from configuration.
-        let require_pairing = state
-            .config
-            .pairing
-            .as_ref()
-            .and_then(|config| {
-                config
-                    .accounts
-                    .iter()
-                    .find(|a| a.account == request.account)
-            })
-            .is_some_and(|account| account.require_pairing);
-        return Ok(PairingResponse2 {
-            require_pairing,
-            is_paired: false,
-            active: false,
-            authenticated: None,
-        });
+        PairingOperation2::Status => {}
     }
     let status = pairing.owner.status(&account).map_err(|_| denied())?;
     Ok(PairingResponse2 {
         require_pairing: status.require_pairing,
-        is_paired: status.is_paired,
-        active: status.active,
-        authenticated,
+        is_paired: Some(status.is_paired),
+        active: Some(status.active),
+        authenticated: None,
     })
 }
 

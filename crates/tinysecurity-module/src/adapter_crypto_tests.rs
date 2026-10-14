@@ -377,7 +377,9 @@ async fn pairing_authenticates_constant_time_and_revokes() -> Result<(), Box<dyn
     let status = fixture
         .service
         .pairing_control(call(PairingOperation2::Status))?;
-    assert!(status.is_paired && status.require_pairing && !status.active);
+    assert!(
+        status.is_paired == Some(true) && status.require_pairing && status.active == Some(false)
+    );
     let ok = fixture
         .service
         .pairing_control(call(PairingOperation2::Authenticate {
@@ -403,7 +405,11 @@ async fn pairing_authenticates_constant_time_and_revokes() -> Result<(), Box<dyn
     let revoked = fixture
         .service
         .pairing_control(call(PairingOperation2::Revoke))?;
-    assert!(revoked.require_pairing && !revoked.is_paired && !revoked.active);
+    assert!(
+        revoked.require_pairing
+            && revoked.is_paired == Some(false)
+            && revoked.active == Some(false)
+    );
     // Revoked authority never authenticates again, and the fence is reported as unpaired.
     assert!(
         fixture
@@ -619,7 +625,7 @@ async fn pairing_extras_cover_invalidate_oversized_bearer_and_closed_delivery()
     let invalidated = fixture
         .service
         .pairing_control(call(PairingOperation2::Invalidate))?;
-    assert!(invalidated.is_paired && !invalidated.active);
+    assert!(invalidated.is_paired == Some(true) && invalidated.active == Some(false));
     assert!(
         fixture
             .service
@@ -659,5 +665,127 @@ async fn pairing_extras_cover_invalidate_oversized_bearer_and_closed_delivery()
             .await
             .is_err()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn plaintext_tokens_are_scrubbed_but_reinit_still_detects_token_changes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let clock: Arc<dyn tinysecurity::approval::Clock> = Arc::new(StepClock::default());
+    let dir = std::env::temp_dir().canonicalize()?;
+    let (state, _connection, init) = standalone(config(&dir), clock).await?;
+    let retained = state
+        .config
+        .pairing
+        .as_ref()
+        .ok_or("pairing")?
+        .accounts
+        .iter()
+        .all(|account| account.tokens.is_empty());
+    assert!(
+        retained,
+        "no plaintext bearer may outlive owner construction"
+    );
+    let current = Some(Arc::downgrade(&state));
+    assert!(configure(Some(config(&dir)), Some(&current), &init)?.is_some());
+    let mut rotated = config(&dir);
+    if let Some(pairing) = &mut rotated.pairing {
+        pairing.accounts[0].tokens = vec!["different-bearer".into()];
+    }
+    assert!(configure(Some(rotated), Some(&current), &init).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn pairing_accepts_the_contract_maximum_accounts_and_authenticate_costs_one_admission()
+-> Result<(), Box<dyn std::error::Error>> {
+    let clock: Arc<dyn tinysecurity::approval::Clock> = Arc::new(StepClock::default());
+    let mut many = bare_config();
+    many.operations_per_minute = 4096;
+    many.pairing = Some(tinysecurity_bus::PairingConfig2 {
+        accounts: (0..256)
+            .map(|n| tinysecurity_bus::PairingAccount2 {
+                scope: "scope".into(),
+                provider: "telegram".into(),
+                account: format!("acct-{n}"),
+                lifecycle: "live".into(),
+                require_pairing: false,
+                tokens: vec![format!("bearer-{n}")],
+            })
+            .collect(),
+        in_flight: 1,
+        // A single admission per minute still allows exactly one Authenticate.
+        rate: 1,
+    });
+    let (state, _connection, _init) = standalone(many, clock).await?;
+    let mut service = super::super::service_for(
+        Arc::new(std::sync::RwLock::new(tinysecurity::Policy::new(
+            tinysecurity_bus::ModuleConfig::default(),
+        )?)),
+        None,
+    );
+    service.crypto = Some(state);
+    let reply = service.pairing_control(PairingRequest2 {
+        account: "acct-255".into(),
+        operation: PairingOperation2::Authenticate {
+            bearer: "bearer-255".into(),
+        },
+    })?;
+    assert_eq!(reply.authenticated, Some(true));
+    assert_eq!((reply.is_paired, reply.active), (None, None));
+    Ok(())
+}
+
+#[tokio::test]
+async fn stored_values_beyond_the_bound_and_oversized_passwords_are_refused()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (fixture, _) = fixture(true).await?;
+    let state = fixture.service.crypto.as_ref().ok_or("state")?;
+    let store = &state.keyring.as_ref().ok_or("keyring")?.store;
+    // Written outside this module's bound, for example under an earlier configuration.
+    store.set("user:big", &vec![7u8; 5000]).await?;
+    assert!(
+        fixture
+            .service
+            .keyring_access(keyring_request(KeyringOperation2::Get {
+                name: "user:big".into()
+            }))
+            .await
+            .is_err()
+    );
+    // The payload bound also caps passwords below the legacy 4096-byte ceiling.
+    let clock: Arc<dyn tinysecurity::approval::Clock> = Arc::new(StepClock::default());
+    let mut tight = bare_config();
+    tight.operations_per_minute = 10;
+    let (state, _connection, _init) = standalone(tight, clock).await?;
+    let mut service = super::super::service_for(
+        Arc::new(std::sync::RwLock::new(tinysecurity::Policy::new(
+            tinysecurity_bus::ModuleConfig::default(),
+        )?)),
+        None,
+    );
+    service.crypto = Some(state);
+    for operation in [
+        PasswordOperation2::Encrypt {
+            password: "p".repeat(65),
+            plaintext: vec![],
+            salt: None,
+        },
+        PasswordOperation2::Decrypt {
+            password: "p".repeat(65),
+            payload: PasswordPayload2 {
+                ciphertext: vec![0; 32],
+                nonce: vec![0; 12],
+                salt: vec![0; 16],
+            },
+        },
+    ] {
+        assert!(
+            service
+                .password_crypt(PasswordRequest2 { operation })
+                .await
+                .is_err()
+        );
+    }
     Ok(())
 }

@@ -83,3 +83,28 @@ async fn os_keyring_round_trip_cleans_up() -> TestResult {
     assert!(store.get(&name).await?.is_none());
     Ok(())
 }
+
+#[tokio::test]
+async fn encrypted_file_services_in_one_directory_are_isolated() -> TestResult {
+    let dir = std::env::temp_dir().canonicalize()?.join(unique("shared")?);
+    std::fs::create_dir_all(&dir)?;
+    let first = open("service-one", Backend::EncryptedFile(dir.clone()))?;
+    let second = open("service-two", Backend::EncryptedFile(dir.clone()))?;
+    first.set("user:shared-name", b"one").await?;
+    assert!(second.get("user:shared-name").await?.is_none());
+    assert!(!second.delete("user:shared-name").await?);
+    assert_eq!(
+        first
+            .get("user:shared-name")
+            .await?
+            .as_deref()
+            .map(Vec::as_slice),
+        Some(b"one".as_slice())
+    );
+    assert_eq!(
+        open("", Backend::EncryptedFile(dir.clone())).err(),
+        Some(Error::InvalidInput)
+    );
+    std::fs::remove_dir_all(dir)?;
+    Ok(())
+}

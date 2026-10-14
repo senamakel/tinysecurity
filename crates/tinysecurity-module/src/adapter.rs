@@ -1356,16 +1356,86 @@ fn publish_policy_generation(
     }
     Ok(())
 }
-#[allow(clippy::too_many_lines)]
+struct ConfidentialConfigs {
+    secret: Option<tinysecurity_bus::SecretConfig2>,
+    cipher: Option<tinysecurity_bus::SecretCipherConfig2>,
+    crypto: Option<tinysecurity_bus::CryptoConfig2>,
+}
+impl ConfidentialConfigs {
+    fn take(config: &mut ModuleConfig) -> Self {
+        Self {
+            secret: config.secret.take(),
+            cipher: config.secret_cipher.take(),
+            crypto: config.crypto.take(),
+        }
+    }
+}
+type ApprovalEngine = (
+    tinysecurity_bus::ApprovalConfig2,
+    Arc<tinysecurity::approval::Engine>,
+);
+struct ConfidentialContext<'a> {
+    peer: Option<&'a str>,
+    approvals: Option<&'a ApprovalEngine>,
+    approval_config: Option<&'a tinysecurity_bus::ApprovalConfig2>,
+    audit_config: Option<&'a tinysecurity_bus::AuditConfig2>,
+    audit: Option<&'a Arc<crate::callbacks::AuditClient>>,
+    generation: u64,
+    clock: &'a Arc<dyn tinysecurity::approval::Clock>,
+}
+struct ConfidentialAuthorities {
+    secret: Option<Arc<secret::SecretState>>,
+    secret_cipher: Option<Arc<cipher::CipherState>>,
+    crypto: Option<Arc<crypto::CryptoState>>,
+}
+/// Build the init-only confidential authorities that sit above the approval engine.
+fn configured_confidential(
+    connection: &Connection,
+    configs: ConfidentialConfigs,
+    context: &ConfidentialContext<'_>,
+) -> BusResult<ConfidentialAuthorities> {
+    let secret = secret::configured(
+        configs.secret,
+        secret::Initialization {
+            connection,
+            peer: context.peer,
+            approvals: context.approval_config,
+            engine: context.approvals.map(|(_, engine)| engine),
+            audit: context.audit_config,
+            generation: context.generation,
+            clock: Arc::clone(context.clock),
+        },
+    )?;
+    let secret_cipher = cipher::configured(
+        configs.cipher,
+        connection,
+        context.peer,
+        secret.as_ref(),
+        context.approvals.map(|(_, engine)| engine),
+        context.audit,
+    )?;
+    let crypto = crypto::configured(
+        configs.crypto,
+        &crypto::Initialization {
+            connection,
+            peer: context.peer,
+            generation: context.generation,
+            clock: Arc::clone(context.clock),
+        },
+    )?;
+    Ok(ConfidentialAuthorities {
+        secret,
+        secret_cipher,
+        crypto,
+    })
+}
 async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()> {
     // Validate before activation. The SDK serializes reinitializations and
     // preserves a fault latch; this adapter never provides retry RPCs.
     let mut device_config =
         tinysecurity::crypto::device_handles::ConfidentialConfig::new(config.device.take());
     let device_clock = default_clock();
-    let crypto_config = config.crypto.take();
-    let secret_config = config.secret.take();
-    let cipher_config = config.secret_cipher.take();
+    let confidential_configs = ConfidentialConfigs::take(&mut config);
     let judge_config = config.judge.clone();
     let audit_config = config.audit.clone();
     let approval_config = config.approvals.clone();
@@ -1397,33 +1467,21 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
         &candidate,
         APPROVALS.get(),
     )?;
-    let secret = secret::configured(
-        secret_config,
-        secret::Initialization {
-            connection: &connection,
-            peer: requested_host.as_deref(),
-            approvals: approval_config.as_ref(),
-            engine: approvals.as_ref().map(|(_, engine)| engine),
-            audit: audit_config.as_ref(),
-            generation: candidate.info().generation,
-            clock: device_clock.clone(),
-        },
-    )?;
-    let secret_cipher = cipher::configured(
-        cipher_config,
+    let ConfidentialAuthorities {
+        secret,
+        secret_cipher,
+        crypto,
+    } = configured_confidential(
         &connection,
-        requested_host.as_deref(),
-        secret.as_ref(),
-        approvals.as_ref().map(|(_, engine)| engine),
-        audit.as_ref(),
-    )?;
-    let crypto = crypto::configured(
-        crypto_config,
-        &crypto::Initialization {
-            connection: &connection,
+        confidential_configs,
+        &ConfidentialContext {
             peer: requested_host.as_deref(),
+            approvals: approvals.as_ref(),
+            approval_config: approval_config.as_ref(),
+            audit_config: audit_config.as_ref(),
+            audit: audit.as_ref(),
             generation: candidate.info().generation,
-            clock: device_clock.clone(),
+            clock: &device_clock,
         },
     )?;
     let judge = configured_automatic(judge_config, approvals.as_ref().map(|(_, e)| e))?;

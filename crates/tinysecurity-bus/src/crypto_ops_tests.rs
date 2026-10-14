@@ -89,3 +89,16 @@ fn config_round_trips_and_omits_absent_sections() -> Result<(), Box<dyn std::err
     assert_eq!(serde_json::from_value::<CryptoConfig2>(wire)?, config);
     Ok(())
 }
+
+#[test]
+fn pairing_bearer_never_appears_in_debug_output() {
+    let operation = PairingOperation2::Authenticate {
+        bearer: "bearer-secret".into(),
+    };
+    assert_eq!(format!("{operation:?}"), "PairingOperation2([REDACTED])");
+    let request = PairingRequest2 {
+        account: "a".into(),
+        operation,
+    };
+    assert!(!format!("{request:?}").contains("bearer-secret"));
+}
