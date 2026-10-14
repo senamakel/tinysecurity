@@ -15,7 +15,10 @@ category; it never grants a generic agent URL access to private addresses.
 `LocalOnly` blocks nonlocal requests before DNS. Standard requires a declared
 endpoint and data category. Sensitive additionally refuses credentials,
 identifiers, unknown classification and original payloads, URLs or headers the
-shared redactor changes. Complete actual headers include host-injected credentials;
+shared redactor changes. The descriptor is the registered policy's
+`data_categories` plus the adapter-constructed request category: a category the
+policy does not list, or `Unknown`, denies in every mode, and Sensitive denies
+`Credentials` and `Identifiers` even when listed. Complete actual headers include host-injected credentials;
 Host/authority/routing overrides and unsupported HTTP methods are refused.
 Sensitive inspects UTF-8 plain text, JSON and form bodies. Form fields are
 percent/+ decoded before independent credential/identifier checks; malformed

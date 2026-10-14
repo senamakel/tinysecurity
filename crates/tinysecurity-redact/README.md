@@ -8,7 +8,10 @@ Initialization serialization carries plaintext across the trusted loader
 boundary and must never be logged.
 
 Text preserves diagnostics, timestamps and ordinary tokenizer/medical/legal
-prose while removing known token formats, credential assignments, email,
+prose while removing known token formats (OpenAI/Anthropic, GitHub, AWS access
+keys, Slack, Stripe, Google API, npm, GitLab, JWT, PEM private keys), credential
+assignments (including `Authorization` with its `Bearer`/`Basic`/`Digest`
+scheme and whole `Cookie`/`Set-Cookie` lists), email,
 validated identifiers, URL capabilities and native home prefixes. Cards need
 both an issuer prefix and Luhn validation; IBANs need mod-97 validation. These
 local patterns reduce accidental disclosure and do not detect every identifier
@@ -16,7 +19,9 @@ or establish that arbitrary text is safe for publication.
 
 Structured arguments use approval count/type markers for sensitive content
 keys; structured log arguments redact credential keys without hiding ordinary
-content. Both scan unknown fields, keys and embedded JSON. Key collisions retain
+content. Credential keys compare after lowercasing and dropping `-` and `_`
+(`X-Api-Key`, `api_key` and `apiKey` are one key) and by exact name only, so
+`cancellation_token` stays ordinary content. Both scan unknown fields, keys and embedded JSON. Key collisions retain
 all values under numbered sanitized keys. BrowserResult protects only the
 `pending.token` UUID in an explicit `NeedsConfirmation` document, with the rest
 of the document scrubbed normally. An exact configured credential is never
@@ -31,6 +36,13 @@ matches SHA-256's first eight hex characters; LegacyMask keeps four Unicode
 characters followed by `***` (short inputs become `***`). Already formatted
 hashes/masks are fixed points. These explicit historical modes deliberately
 reveal a small identifier/prefix and must not replace Text for credentials.
+
+Text output of a redaction may start with `[REDACTED]`; that prefix is never
+parsed as JSON, so redacting an output again returns it unchanged. Surrounding
+quotes or brackets that open malformed JSON are still refused on first input.
+The shared corpus test and seeded property tests assert, for every mode, that no
+configured or recognized secret survives and that a second pass is a fixed point;
+a bounded-work test feeds ceiling-sized pathological inputs.
 
 Input is capped at 65536 UTF-8 bytes, output at 131072 bytes and JSON traversal
 at 32 levels, including embedded JSON. Configuration accepts at most 128 exact
@@ -55,4 +67,5 @@ those original findings, run semantic scans on original content, then apply
 owner sanitation. Redacting an instruction or credential does not clear a
 blocked package or authorize a tool. During host migration, unavailable-module
 logging must suppress payloads or retain its established minimum floor; this
-owner change does not remove any host floor.
+owner change does not remove any host floor. That floor is bounded and recorded
+in [ADR 7](../../docs/adr/0007-boot-diagnostic-redaction-floor.md).

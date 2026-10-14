@@ -447,5 +447,8 @@ impl EgressPolicyRegistry {
     }
 }
 #[cfg(test)]
+#[path = "guard_corpus_tests.rs"]
+mod guard_corpus_tests;
+#[cfg(test)]
 #[path = "registry_tests.rs"]
 mod tests;

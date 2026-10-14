@@ -57,22 +57,38 @@ const CONTENT_KEYS: &[&str] = &[
     "signed_url",
     "presigned_url",
 ];
+/// Matches after lowercasing and dropping `-`/`_`, so `X-Api-Key`, `api_key` and
+/// `apiKey` are one key. Exact match only: `cancellation_token` is not a credential.
 fn credential_key(key: &str) -> bool {
+    let key: String = key
+        .chars()
+        .filter(|c| !matches!(c, '-' | '_'))
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
     matches!(
-        key,
-        "api_key"
-            | "apikey"
-            | "api-key"
+        key.as_str(),
+        "apikey"
+            | "apisecret"
+            | "xapikey"
             | "token"
-            | "access_token"
-            | "refresh_token"
+            | "accesstoken"
+            | "refreshtoken"
+            | "idtoken"
+            | "sessiontoken"
+            | "authtoken"
+            | "bearer"
             | "authorization"
+            | "proxyauthorization"
             | "password"
+            | "passwd"
             | "secret"
-            | "client_secret"
+            | "clientsecret"
+            | "secretkey"
             | "credentials"
-            | "private_key"
-            | "session_cookie"
+            | "privatekey"
+            | "sessioncookie"
+            | "cookie"
+            | "setcookie"
     )
 }
 fn marker(text: &str) -> bool {
@@ -107,7 +123,10 @@ fn count_marker(value: &Value) -> Value {
     })
 }
 fn looks_json(text: &str) -> bool {
-    text != MARKER && text.trim_start().starts_with(['{', '[', '"'])
+    // `[REDACTED]` opens a bracket but is never JSON, so redacted text that starts
+    // with the marker must stay re-redactable (idempotence) instead of being refused.
+    let head = text.trim_start();
+    text != MARKER && !head.starts_with(MARKER) && head.starts_with(['{', '[', '"'])
 }
 fn uuid(text: &str) -> bool {
     text.len() == 36

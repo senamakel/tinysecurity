@@ -5,11 +5,16 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PrivacyMode {
-    /// `LocalOnly` state.
+    /// Only an explicit host-local service capability may be reached; every
+    /// other destination is refused before DNS.
     LocalOnly,
-    /// Standard state.
+    /// Registered destination and declared data category are required; the
+    /// address floor still applies to every resolved candidate.
     Standard,
-    /// Sensitive state.
+    /// Standard, and additionally: credential and identifier categories, an
+    /// unknown classification, and any original payload, URL (raw and percent
+    /// decoded) or header that the shared redactor would change are refused,
+    /// as are credential-bearing header names and unsupported body encodings.
     Sensitive,
 }
 /// Legacy `EgressCheckRequest` wire shape; unscoped calls cannot authorize effects.
