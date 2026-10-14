@@ -18,6 +18,7 @@ tinysecurity-redact.workspace = true
 tinysecurity-bus = { workspace = true }
 thiserror = { workspace = true }
 getrandom = { workspace = true }
+# Scoped-policy call fingerprints and policy-change review digests (scoped.rs).
 sha2 = { workspace = true }
 unicode-normalization = { workspace = true }
 

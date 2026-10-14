@@ -1,5 +1,5 @@
 //! Immutable per-subject policies bound to a path scope, a command scope and a verified caller.
-use crate::engine::{CommandHook, validate_settings};
+use crate::engine::{Hooks, validate_settings};
 use crate::{
     CommandPolicyRegistry, PathPolicyRegistry, PathScope, Policy, RegisteredCommandPolicy,
     scoped_widening,
@@ -9,9 +9,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tinysecurity_bus::{
     CallerContext, Check, CheckResponse, CommandDenial, CommandGate, CommandRequest, Decision,
-    DenialReason, Error, EvaluateRequest, POLICY_CHANGE_TOOL, PolicyId, RegisteredPolicy, Result,
-    ScopedCheckRequest, ScopedCheckResponse, ScopedDecision, ScopedEvaluateRequest,
-    ScopedPolicyInfo, ToolCall, ToolRuleEffect, Widening,
+    DenialReason, Error, EvaluateRequest, POLICY_CHANGE_TOOL, PathErrorCategory,
+    PathValidationResult, PolicyId, RegisteredPolicy, Result, ScopedCheckRequest,
+    ScopedCheckResponse, ScopedDecision, ScopedEvaluateRequest, ScopedPolicyInfo, ToolCall,
+    ToolRuleEffect, Widening,
 };
 
 const MAX_POLICIES: usize = 1024;
@@ -244,6 +245,20 @@ impl ScopedPolicy {
         .then_some(DenialReason::Access)
     }
 
+    /// The registered filesystem scope applies on top of the base settings.
+    fn path_hook(&self) -> impl Fn(&str, bool) -> std::result::Result<(), DenialReason> + '_ {
+        move |path: &str, write: bool| match self.paths.validate(path, write) {
+            PathValidationResult::Allowed { .. } => Ok(()),
+            PathValidationResult::Denied { category } => Err(match category {
+                PathErrorCategory::Protected => DenialReason::Floor,
+                PathErrorCategory::PolicyDenied => DenialReason::PathScope,
+                PathErrorCategory::Resolution | PathErrorCategory::InvalidPath => {
+                    DenialReason::PathResolution
+                }
+            }),
+        }
+    }
+
     fn hook(&self) -> impl Fn(&str) -> std::result::Result<(), DenialReason> + '_ {
         move |command: &str| {
             let request = CommandRequest {
@@ -294,11 +309,14 @@ impl ScopedPolicy {
         if let Some(reason) = self.tool_denial(&request.call.tool) {
             return Ok(denied(reason));
         }
-        let hook = self.hook();
-        let hook: &CommandHook<'_> = &hook;
+        let (command, path) = (self.hook(), self.path_hook());
+        let hooks = Hooks {
+            command: &command,
+            path: &path,
+        };
         let decision = policy.evaluate_with(
             &self.registered.settings.policy,
-            Some(hook),
+            Some(&hooks),
             &EvaluateRequest {
                 caller: request.caller.clone(),
                 call: request.call.clone(),
@@ -330,11 +348,14 @@ impl ScopedPolicy {
                     .collect::<Vec<Decision>>(),
             }
         } else {
-            let hook = self.hook();
-            let hook: &CommandHook<'_> = &hook;
+            let (command, path) = (self.hook(), self.path_hook());
+            let hooks = Hooks {
+                command: &command,
+                path: &path,
+            };
             policy.check_with(
                 &self.registered.settings.policy,
-                Some(hook),
+                Some(&hooks),
                 &request.caller,
                 &request.checks,
             )

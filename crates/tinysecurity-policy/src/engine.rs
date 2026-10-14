@@ -7,6 +7,14 @@ use crate::{
 
 /// Registered command-scope check used instead of the bootstrap allowlist.
 pub(crate) type CommandHook<'a> = dyn Fn(&str) -> std::result::Result<(), DenialReason> + 'a;
+/// Registered filesystem scope check applied after the base path rules.
+pub(crate) type PathHook<'a> = dyn Fn(&str, bool) -> std::result::Result<(), DenialReason> + 'a;
+
+/// Registered scopes that replace or tighten the bootstrap checks for one subject.
+pub(crate) struct Hooks<'a> {
+    pub(crate) command: &'a CommandHook<'a>,
+    pub(crate) path: &'a PathHook<'a>,
+}
 /// Active validated policy instance. Failed reconfiguration never changes it.
 #[derive(Clone, Debug)]
 pub struct Policy {
@@ -82,7 +90,7 @@ impl Policy {
     pub(crate) fn evaluate_with(
         &self,
         settings: &PolicyConfig,
-        commands: Option<&CommandHook<'_>>,
+        hooks: Option<&Hooks<'_>>,
         request: &EvaluateRequest,
     ) -> Result<Decision> {
         let matching = !request.call.checks.is_empty()
@@ -122,7 +130,7 @@ impl Policy {
             return Ok(self.denied(reason));
         }
         for check in &request.call.checks {
-            let decision = self.one(settings, commands, &request.caller, check);
+            let decision = self.one(settings, hooks, &request.caller, check);
             if decision.verdict != Verdict::Allow {
                 return Ok(decision);
             }
@@ -139,7 +147,7 @@ impl Policy {
     pub(crate) fn check_with(
         &self,
         settings: &PolicyConfig,
-        commands: Option<&CommandHook<'_>>,
+        hooks: Option<&Hooks<'_>>,
         caller: &CallerContext,
         checks: &[Check],
     ) -> CheckResponse {
@@ -147,7 +155,7 @@ impl Policy {
             generation: self.generation,
             decisions: checks
                 .iter()
-                .map(|check| self.one(settings, commands, caller, check))
+                .map(|check| self.one(settings, hooks, caller, check))
                 .collect(),
         }
     }
@@ -161,7 +169,7 @@ impl Policy {
     fn one(
         &self,
         settings: &PolicyConfig,
-        commands: Option<&CommandHook<'_>>,
+        hooks: Option<&Hooks<'_>>,
         caller: &CallerContext,
         check: &Check,
     ) -> Decision {
@@ -172,15 +180,17 @@ impl Policy {
             Check::LocalDiagnostic {} => Ok(()),
             Check::Unknown { .. } => Err(DenialReason::UnsupportedEffect),
             Check::PolicyChange { .. } => Err(DenialReason::ApprovalUnavailable),
-            Check::Path { path, write } => path::check(settings, path, *write).and_then(|()| {
-                if *write && caller.tier == AccessTier::Read {
-                    Err(DenialReason::Access)
-                } else if *write && (caller.origin == Origin::Cron || settings.enabled) {
-                    Err(DenialReason::ApprovalUnavailable)
-                } else {
-                    Ok(())
-                }
-            }),
+            Check::Path { path, write } => path::check(settings, path, *write)
+                .and_then(|()| hooks.map_or(Ok(()), |h| (h.path)(path, *write)))
+                .and_then(|()| {
+                    if *write && caller.tier == AccessTier::Read {
+                        Err(DenialReason::Access)
+                    } else if *write && (caller.origin == Origin::Cron || settings.enabled) {
+                        Err(DenialReason::ApprovalUnavailable)
+                    } else {
+                        Ok(())
+                    }
+                }),
             Check::Command { command } => self
                 .redactor
                 .scan_prompt(&crate::ScanPromptRequest {
@@ -189,8 +199,8 @@ impl Policy {
                 .map_err(|_| DenialReason::Content)
                 .and_then(|scan| match scan_denial(&scan.verdict) {
                     Some(reason) => Err(reason),
-                    None => match commands {
-                        Some(hook) => hook(command),
+                    None => match hooks {
+                        Some(hooks) => (hooks.command)(command),
                         None => command::check(settings, command),
                     },
                 }),
@@ -241,19 +251,7 @@ fn validate(config: &ModuleConfig) -> Result<()> {
     if let Some(judge) = &config.judge {
         tinysecurity_auto::Engine::validate_config(judge).map_err(|_| Error::InvalidConfig)?;
     }
-    let p = &config.policy;
-    if p.enabled && (!path::valid_root(&p.action_dir) || !path::valid_root(&p.workspace_dir)) {
-        return Err(Error::InvalidConfig);
-    }
-    if p.forbidden_paths
-        .iter()
-        .any(|root| !std::path::Path::new(root).is_absolute() || path::floor(root))
-        || p.allowed_commands
-            .iter()
-            .any(|c| c.is_empty() || c.chars().any(char::is_whitespace))
-    {
-        return Err(Error::InvalidConfig);
-    }
+    validate_settings(&config.policy)?;
     Ok(())
 }
 

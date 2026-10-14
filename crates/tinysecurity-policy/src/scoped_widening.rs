@@ -56,11 +56,29 @@ fn boundaries(old: &ScopedPolicy, new: &ScopedPolicy, out: &mut Vec<Widening>) {
     if privacy(&ns.privacy) < privacy(&os.privacy) {
         push(out, WideningKind::Boundary, "privacy_loosened");
     }
+    if old.paths().enabled && !new.paths().enabled {
+        push(out, WideningKind::Boundary, "path_scope_disabled");
+    }
 }
 
 fn roots(old: &ScopedPolicy, new: &ScopedPolicy, out: &mut Vec<Widening>) {
     let (os, ns) = (&old.registered().settings, &new.registered().settings);
     let (op, np) = (&**old.paths(), &**new.paths());
+    // Base settings decide which roots are permitted or reserved for the subject.
+    let (oa, na) = (
+        Path::new(&os.policy.action_dir),
+        Path::new(&ns.policy.action_dir),
+    );
+    if !na.starts_with(oa) {
+        push(
+            out,
+            WideningKind::Root,
+            format!("action_dir:{}", na.display()),
+        );
+    }
+    if os.policy.workspace_dir != ns.policy.workspace_dir {
+        push(out, WideningKind::Root, "workspace_dir");
+    }
     if op.workspace_only && !np.workspace_only {
         push(out, WideningKind::Root, "workspace_only");
     }
@@ -160,6 +178,16 @@ fn commands(old: &ScopedPolicy, new: &ScopedPolicy, out: &mut Vec<Widening>) {
         }
     }
     let (oc, nc) = (old.command_policy(), new.command_policy());
+    // A different command scope starts a fresh hourly ledger; review it explicitly.
+    if old.registered().command_policy_id != new.registered().command_policy_id {
+        push(out, WideningKind::Class, "command_ledger");
+    }
+    if oc.action_dir != nc.action_dir
+        || oc.home_dir != nc.home_dir
+        || oc.shell_dialect != nc.shell_dialect
+    {
+        push(out, WideningKind::Class, "command_context");
+    }
     if oc.enabled && !nc.enabled {
         push(out, WideningKind::Boundary, "command_policy_disabled");
     }

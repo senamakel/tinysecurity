@@ -105,7 +105,13 @@ impl Fixture {
         enabled: bool,
         autonomy: CommandAutonomy,
     ) -> std::result::Result<RegisteredPolicy, Box<dyn std::error::Error>> {
-        let path_policy_id = self.paths.register(path_policy(self.dir.path(), vec![]))?;
+        let root = PathTrustedRoot {
+            path: self.dir.path().into(),
+            access: PathAccess::ReadWrite,
+        };
+        let path_policy_id = self
+            .paths
+            .register(path_policy(self.dir.path(), vec![root]))?;
         let command_policy_id =
             self.commands
                 .register(command_policy(self.dir.path(), enabled, autonomy, 100))?;
@@ -845,6 +851,122 @@ fn registry_capacity_fails_closed_and_retired_policies_are_reclaimed() -> TestRe
     assert!(
         f.scoped.get_owned(&ids[0]).is_err(),
         "retired policy reclaimed"
+    );
+    Ok(())
+}
+
+#[test]
+fn registered_path_scope_is_enforced_even_when_base_settings_are_permissive() -> TestResult {
+    let mut f = Fixture::new()?;
+    let inside = f.dir.path().join("inside.txt");
+    std::fs::write(&inside, "x")?;
+    let outside_dir = tempfile::tempdir()?;
+    let outside = outside_dir.path().join("outside.txt");
+    std::fs::write(&outside, "x")?;
+    // Base settings are disabled; only the registered path scope restricts the subject.
+    let r = f.registered("a", false, CommandAutonomy::Full)?;
+    let id = f.register(r)?;
+    let scope = f.scoped.get_owned(&id)?;
+    let read = |path: &std::path::Path| -> Result<Verdict> {
+        let check = Check::Path {
+            path: path.display().to_string(),
+            write: false,
+        };
+        Ok(scope
+            .evaluate(&f.engine, &eval("path_check", check, "a", &id, "1"))?
+            .decision
+            .verdict)
+    };
+    assert_eq!(read(&inside)?, Verdict::Allow);
+    assert_eq!(
+        read(&outside)?,
+        Verdict::Deny {
+            reason: DenialReason::PathScope
+        }
+    );
+    assert_eq!(
+        read(&f.dir.path().join("missing.txt"))?,
+        Verdict::Deny {
+            reason: DenialReason::PathResolution
+        }
+    );
+    let batch = scope.check(
+        &f.engine,
+        &ScopedCheckRequest {
+            policy_id: id.clone(),
+            caller: caller("a", "1"),
+            checks: vec![
+                Check::Path {
+                    path: inside.display().to_string(),
+                    write: false,
+                },
+                Check::Path {
+                    path: outside.display().to_string(),
+                    write: false,
+                },
+                Check::Path {
+                    path: "/etc/shadow".into(),
+                    write: false,
+                },
+            ],
+        },
+    )?;
+    assert_eq!(batch.decisions[0].verdict, Verdict::Allow);
+    assert_eq!(
+        batch.decisions[1].verdict,
+        Verdict::Deny {
+            reason: DenialReason::PathScope
+        }
+    );
+    assert!(matches!(batch.decisions[2].verdict, Verdict::Deny { .. }));
+    Ok(())
+}
+
+#[test]
+fn scope_replacement_and_base_root_changes_are_widenings() -> TestResult {
+    let mut f = Fixture::new()?;
+    let base = f.registered("a", true, CommandAutonomy::Full)?;
+    let old = f.register(base.clone())?;
+    let mut next = base;
+    // A disabled registered path scope permits everything outside the floor.
+    let mut disabled = path_policy(f.dir.path(), vec![]);
+    disabled.enabled = false;
+    next.path_policy_id = f.paths.register(disabled)?;
+    std::fs::create_dir_all(f.dir.path().join("other"))?;
+    // Base action root moves to a parent and the excluded workspace root changes.
+    let parent = f
+        .dir
+        .path()
+        .parent()
+        .map_or_else(|| "/".into(), |p| p.display().to_string());
+    next.settings.policy.action_dir = parent;
+    next.settings.policy.workspace_dir = f.dir.path().join("other").display().to_string();
+    // A fresh command scope resets the ledger, and a moved context changes parsing.
+    let mut moved = command_policy(f.dir.path(), true, CommandAutonomy::Full, 100);
+    moved.home_dir = Some(f.dir.path().join("home"));
+    next.command_policy_id = f.commands.register(moved)?;
+    let prepared = f
+        .scoped
+        .prepare_supersede(&old, next, &f.paths, &f.commands)?;
+    let subjects: Vec<&str> = prepared
+        .widenings()
+        .iter()
+        .map(|w| w.subject.as_str())
+        .collect();
+    for expected in [
+        "path_scope_disabled",
+        "workspace_dir",
+        "command_ledger",
+        "command_context",
+    ] {
+        assert!(
+            subjects.contains(&expected),
+            "missing {expected} in {subjects:?}"
+        );
+    }
+    assert!(
+        subjects.iter().any(|s| s.starts_with("action_dir:")),
+        "{subjects:?}"
     );
     Ok(())
 }

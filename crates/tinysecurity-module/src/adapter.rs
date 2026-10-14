@@ -845,6 +845,23 @@ impl PolicyService {
                 .approvals
                 .as_ref()
                 .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?;
+            // Only an authenticated human may widen a policy: automatic and judge
+            // approvals, and reused grants, carry no human decision ticket.
+            let human = engine
+                .list(&approval.scope_id)
+                .await
+                .map_err(approval_failure)?
+                .into_iter()
+                .any(|row| {
+                    row.request_id == approval.request_id
+                        && row.state == tinysecurity_bus::ApprovalLifecycle2::Approved
+                        && row.decision_ticket_sha256.is_some()
+                });
+            if !human {
+                return Err(tinybus::Error::failed(
+                    "policy change needs a human decision",
+                ));
+            }
             engine
                 .consume(tinysecurity_bus::ApprovalActionRequest2 {
                     scope_id: approval.scope_id,
@@ -863,12 +880,19 @@ impl PolicyService {
             let mut registry = scoped
                 .lock()
                 .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
-            // Queue publication first: a full outbox rejects and keeps the old policy.
-            let (id, pg) = (prepared_id(&prepared), next_generation);
-            queue_scoped_changed(signals.as_ref(), generation, &id, pg)?;
-            registry
+            let id = prepared_id(&prepared);
+            let committed = registry
                 .commit_supersede(prepared)
-                .map_err(|error| failure(&error))
+                .map_err(|error| failure(&error))?;
+            // Publish only a committed replacement. The registry is authoritative: a
+            // full outbox loses this advisory signal, and hosts re-read the policy.
+            drop(queue_scoped_changed(
+                signals.as_ref(),
+                generation,
+                &id,
+                next_generation,
+            ));
+            BusResult::Ok(committed)
         })
         .await
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
