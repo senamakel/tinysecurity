@@ -538,3 +538,6 @@ pub(crate) fn denied(generation: u64, reason: SandboxDenial2) -> SandboxPlanResp
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 pub(crate) mod tests;
+#[cfg(test)]
+#[path = "plan_matrix_tests.rs"]
+mod plan_matrix_tests;
