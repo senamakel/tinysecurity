@@ -5,6 +5,8 @@ use tinybus::{Interface, broker::Broker, transport::memory::MemoryBus};
 use tinysecurity_bus::*;
 #[path = "adapter_approval_tests.rs"]
 pub(super) mod approval_tests;
+#[path = "adapter_scoped_audit_tests.rs"]
+mod scoped_audit_tests;
 #[tokio::test]
 async fn parsing_a_reply_returns_intent_without_minting_permission()
 -> std::result::Result<(), Box<dyn std::error::Error>> {

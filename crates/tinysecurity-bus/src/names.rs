@@ -109,6 +109,10 @@ pub mod methods {
     pub const EVALUATE_AUDITED2: &str = "EvaluateAudited2";
     /// Ordered check evaluation bound to exact pre-execution audit.
     pub const CHECK_AUDITED2: &str = "CheckAudited2";
+    /// Scoped original-operation evaluation bound to exact pre-execution audit.
+    pub const EVALUATE_SCOPED_AUDITED: &str = "EvaluateScopedAudited";
+    /// Scoped ordered check evaluation bound to exact pre-execution audit.
+    pub const CHECK_SCOPED_AUDITED: &str = "CheckScopedAudited";
     /// Audit member.
     pub const AUDIT: &str = "Audit";
 }
@@ -161,6 +165,8 @@ pub const METHODS: &[&str] = &[
     methods::EVALUATE_SCOPED,
     methods::CHECK_SCOPED,
     methods::SCOPED_POLICY_INFO,
+    methods::EVALUATE_SCOPED_AUDITED,
+    methods::CHECK_SCOPED_AUDITED,
 ];
 /// Accepted policy activation event.
 pub const POLICY_CHANGED: &str = "PolicyChanged";

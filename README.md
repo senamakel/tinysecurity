@@ -12,6 +12,8 @@ Blocked original content denies; suspicious content denies with
 approval-unavailable in unbound policy methods. Scan verdicts
 never grant permission, and redaction never clears an existing scan finding.
 
+Contract 1.13 adds `EvaluateScopedAudited` and `CheckScopedAudited` for registered policies under required audit (see [`docs/specs/scoped-policies.md`](docs/specs/scoped-policies.md)).
+
 Contract 1.6 supplies `Audit2`, `EvaluateAudited2` and `CheckAudited2` with
 authenticated exact audit callbacks and a bounded [native journal](crates/tinysecurity-audit/README.md).
 The audited permission methods derive events from the actual original request,

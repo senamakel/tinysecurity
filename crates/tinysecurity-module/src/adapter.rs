@@ -962,6 +962,90 @@ impl PolicyService {
         let generation = self.read()?.info().generation;
         std::future::ready(Ok(scope.info(generation))).await
     }
+    async fn evaluate_scoped_audited(
+        &self,
+        request: tinysecurity_bus::EvaluateScopedAuditedRequest,
+    ) -> BusResult<tinysecurity_bus::EvaluateScopedAuditedResponse> {
+        let scope = self
+            .scoped
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .get_owned(&request.request.policy_id)
+            .map_err(|error| failure(&error))?;
+        let policy = self.read()?.clone();
+        let registry = policy.redactor();
+        let original = request.request.clone();
+        let mut decision = tokio::task::spawn_blocking(move || {
+            scope
+                .evaluate(&policy, &original)
+                .map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
+        // The policy id is a private reference; the fingerprint binds it instead.
+        let audited = serde_json::to_value(tinysecurity_bus::EvaluateRequest {
+            caller: request.request.caller.clone(),
+            call: request.request.call.clone(),
+        })?;
+        let audit = self
+            .audit_permission(
+                audited,
+                serde_json::to_value(&decision)?,
+                request.audit,
+                decision.decision.generation,
+                registry,
+            )
+            .await?;
+        if !audit.permitted || self.approvals.is_some() {
+            deny_allow(&mut decision.decision);
+        }
+        // Each use of an audited permission needs its own durable event.
+        decision.decision.cacheable = false;
+        Ok(tinysecurity_bus::AuditedResponse2 { decision, audit })
+    }
+    async fn check_scoped_audited(
+        &self,
+        request: tinysecurity_bus::CheckScopedAuditedRequest,
+    ) -> BusResult<tinysecurity_bus::CheckScopedAuditedResponse> {
+        let scope = self
+            .scoped
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .get_owned(&request.request.policy_id)
+            .map_err(|error| failure(&error))?;
+        let policy = self.read()?.clone();
+        let registry = policy.redactor();
+        let generation = policy.info().generation;
+        let original = request.request.clone();
+        let mut decision = tokio::task::spawn_blocking(move || {
+            scope
+                .check(&policy, &original)
+                .map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
+        let audited = serde_json::to_value(tinysecurity_bus::CheckRequest {
+            caller: request.request.caller.clone(),
+            checks: request.request.checks.clone(),
+        })?;
+        let audit = self
+            .audit_permission(
+                audited,
+                serde_json::to_value(&decision)?,
+                request.audit,
+                generation,
+                registry,
+            )
+            .await?;
+        let denied = !audit.permitted || self.approvals.is_some();
+        for item in &mut decision.decisions {
+            if denied {
+                deny_allow(item);
+            }
+            item.cacheable = false;
+        }
+        Ok(tinysecurity_bus::AuditedResponse2 { decision, audit })
+    }
 }
 fn permission_payload(mut original: serde_json::Value) -> BusResult<String> {
     use sha2::{Digest, Sha256};
@@ -1400,7 +1484,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
+    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = ["ai.tinyhumans.tinysecurity.SecretCipherConsumer2", "ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],

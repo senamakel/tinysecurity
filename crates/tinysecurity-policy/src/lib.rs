@@ -22,6 +22,7 @@ pub use command_registry::{
 pub use command_scope::CommandScope;
 
 mod scoped;
+mod scoped_forbidden;
 mod scoped_widening;
 pub use scoped::{
     PreparedSupersede, ScopedPolicy, ScopedPolicyRegistry, call_fingerprint, checks_fingerprint,
