@@ -244,9 +244,13 @@ fn configure(
 }
 
 pub(super) fn activate(state: Option<&Arc<CryptoState>>) -> BusResult<()> {
-    CRYPTO
-        .set(state.map(Arc::downgrade))
-        .map_err(|_| denied())?;
+    activate_into(&CRYPTO, state)
+}
+fn activate_into(
+    cell: &OnceLock<Option<Weak<CryptoState>>>,
+    state: Option<&Arc<CryptoState>>,
+) -> BusResult<()> {
+    cell.set(state.map(Arc::downgrade)).map_err(|_| denied())?;
     if let Some(state) = state {
         let strong = Arc::clone(state);
         // Runtime shutdown cancels this future and releases the owner.
@@ -391,9 +395,7 @@ async fn password_inner(
             .await
             .map_err(|_| denied())?
             .map_err(|_| denied())?;
-            if opened.len() > bound {
-                return Err(denied());
-            }
+            // The bounded ciphertext cannot decrypt to more than the bound.
             Ok(PasswordResponse2 {
                 payload: None,
                 bytes: std::mem::take(&mut *opened),

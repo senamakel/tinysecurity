@@ -60,14 +60,24 @@ fn config(dir: &std::path::Path) -> CryptoConfig2 {
             consent_timeout_ms: 1000,
         }),
         pairing: Some(tinysecurity_bus::PairingConfig2 {
-            accounts: vec![tinysecurity_bus::PairingAccount2 {
-                scope: "scope".into(),
-                provider: "telegram".into(),
-                account: "acct".into(),
-                lifecycle: "live".into(),
-                require_pairing: true,
-                tokens: vec!["legacy-bearer".into()],
-            }],
+            accounts: vec![
+                tinysecurity_bus::PairingAccount2 {
+                    scope: "scope".into(),
+                    provider: "telegram".into(),
+                    account: "acct".into(),
+                    lifecycle: "live".into(),
+                    require_pairing: true,
+                    tokens: vec!["legacy-bearer".into()],
+                },
+                tinysecurity_bus::PairingAccount2 {
+                    scope: "scope".into(),
+                    provider: "telegram".into(),
+                    account: "fresh".into(),
+                    lifecycle: "live".into(),
+                    require_pairing: true,
+                    tokens: vec![],
+                },
+            ],
             in_flight: 2,
             rate: 100,
         }),
@@ -475,5 +485,179 @@ async fn members_require_confidential_transport_and_the_authenticated_peer()
         .err()
         .ok_or("must deny")?;
     assert!(!error.to_string().contains("private-secret"));
+    Ok(())
+}
+
+#[derive(Debug, Default)]
+struct StepClock(std::sync::atomic::AtomicU64);
+impl tinysecurity::approval::Clock for StepClock {
+    fn wall_ms(&self) -> Option<u64> {
+        Some(1_000 + self.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+    fn monotonic_ms(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+async fn standalone(
+    config: CryptoConfig2,
+    clock: Arc<dyn tinysecurity::approval::Clock>,
+) -> Result<
+    (
+        Arc<CryptoState>,
+        tinybus::Connection,
+        Initialization<'static>,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    use tinybus::{Connection, broker::Broker, transport::memory::MemoryBus};
+    let bus = MemoryBus::new();
+    let _ = Broker::new().spawn(bus.clone());
+    let connection = Connection::connect(bus.connect().await?).await?;
+    let peer = connection.unique_name().ok_or("peer")?;
+    let leaked: &'static Connection = Box::leak(Box::new(connection.clone()));
+    let init = Initialization {
+        connection: leaked,
+        peer: Some(Box::leak(peer.as_str().to_owned().into_boxed_str())),
+        generation: 1,
+        clock,
+    };
+    let state = configure(Some(config), None, &init)?.ok_or("state")?;
+    Ok((state, connection, init))
+}
+
+fn bare_config() -> CryptoConfig2 {
+    CryptoConfig2 {
+        max_payload_bytes: 64,
+        operations_per_minute: 1,
+        keyring: None,
+        pairing: None,
+    }
+}
+
+#[tokio::test]
+async fn immutable_reinit_accepts_same_or_absent_config_and_rejects_changes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let clock: Arc<dyn tinysecurity::approval::Clock> = Arc::new(StepClock::default());
+    let (state, _connection, init) = standalone(bare_config(), clock).await?;
+    let current = Some(Arc::downgrade(&state));
+    let same = configure(Some(bare_config()), Some(&current), &init)?;
+    assert!(same.is_some_and(|same| Arc::ptr_eq(&same, &state)));
+    assert!(configure(None, Some(&current), &init)?.is_some());
+    let mut changed = bare_config();
+    changed.max_payload_bytes = 65;
+    assert!(configure(Some(changed), Some(&current), &init).is_err());
+    // A module first initialized without crypto cannot gain it on reinit.
+    assert!(configure(None, Some(&None), &init)?.is_none());
+    assert!(configure(Some(bare_config()), Some(&None), &init).is_err());
+    // A dropped owner (runtime shutdown) never resurrects.
+    drop(state);
+    assert!(configure(None, Some(&current), &init).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn initialization_requires_a_unique_authenticated_peer_and_valid_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    let clock: Arc<dyn tinysecurity::approval::Clock> = Arc::new(StepClock::default());
+    let (_state, connection, mut init) = standalone(bare_config(), clock.clone()).await?;
+    init.peer = None;
+    assert!(configure(Some(bare_config()), None, &init).is_err());
+    init.peer = Some("well.known");
+    assert!(configure(Some(bare_config()), None, &init).is_err());
+    let peer = connection.unique_name().ok_or("peer")?;
+    init.peer = Some(Box::leak(peer.as_str().to_owned().into_boxed_str()));
+    let dir = std::env::temp_dir().canonicalize()?;
+    for backend in [KeyringBackend2::Os, KeyringBackend2::LinuxKernel] {
+        let mut config = config(&dir);
+        config.pairing = None;
+        if let Some(keyring) = &mut config.keyring {
+            keyring.backend = backend;
+        }
+        // Lazy OS stores construct without touching the credential store.
+        let built = configure(Some(config), None, &init);
+        assert!(built.is_ok() || !cfg!(target_os = "linux"));
+    }
+    let mut config = config(&dir);
+    if let Some(keyring) = &mut config.keyring {
+        keyring.backend = KeyringBackend2::SecretService;
+    }
+    assert!(configure(Some(config), None, &init).is_err());
+    let mut relative = self::config(&dir);
+    if let Some(keyring) = &mut relative.keyring {
+        keyring.backend = KeyringBackend2::EncryptedFile {
+            directory: "relative".into(),
+        };
+    }
+    assert!(configure(Some(relative), None, &init).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn activation_is_single_shot_and_the_rate_window_rolls_over()
+-> Result<(), Box<dyn std::error::Error>> {
+    let clock = Arc::new(StepClock::default());
+    let (state, _connection, _init) = standalone(bare_config(), clock.clone()).await?;
+    let cell = OnceLock::new();
+    activate_into(&cell, Some(&state))?;
+    assert!(activate_into(&cell, Some(&state)).is_err());
+    assert!(state.admit().is_ok());
+    assert!(state.admit().is_err());
+    clock.0.store(60_001, std::sync::atomic::Ordering::SeqCst);
+    assert!(state.admit().is_ok());
+    Ok(())
+}
+
+#[tokio::test]
+async fn pairing_extras_cover_invalidate_oversized_bearer_and_closed_delivery()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (fixture, _) = fixture(true).await?;
+    let call = |operation| PairingRequest2 {
+        account: "acct".into(),
+        operation,
+    };
+    let invalidated = fixture
+        .service
+        .pairing_control(call(PairingOperation2::Invalidate))?;
+    assert!(invalidated.is_paired && !invalidated.active);
+    assert!(
+        fixture
+            .service
+            .pairing_control(call(PairingOperation2::Authenticate {
+                bearer: "x".repeat(4097)
+            }))
+            .is_err()
+    );
+    // The fixed delivery port is closed, so no challenge can be issued yet.
+    let state = fixture.service.crypto.as_ref().ok_or("state")?;
+    let pairing = state.pairing.as_ref().ok_or("pairing")?;
+    let request = |account| TrustedAccountRequest {
+        account,
+        peer: &pairing.peer,
+        generation: pairing.generation,
+    };
+    // A paired account issues nothing; an unpaired one reaches the closed port and fails.
+    assert!(matches!(
+        pairing.owner.begin(&request("acct")).await,
+        Ok(tinysecurity::crypto::pairing::BeginOutcome::Inactive)
+    ));
+    assert!(pairing.owner.begin(&request("fresh")).await.is_err());
+    // An oversized password is refused before any derivation.
+    assert!(
+        fixture
+            .service
+            .password_crypt(PasswordRequest2 {
+                operation: PasswordOperation2::Decrypt {
+                    password: "p".repeat(4097),
+                    payload: PasswordPayload2 {
+                        ciphertext: vec![0; 32],
+                        nonce: vec![0; 12],
+                        salt: vec![0; 16]
+                    }
+                }
+            })
+            .await
+            .is_err()
+    );
     Ok(())
 }
