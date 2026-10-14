@@ -512,7 +512,7 @@ async fn standalone(
 > {
     use tinybus::{Connection, broker::Broker, transport::memory::MemoryBus};
     let bus = MemoryBus::new();
-    let _ = Broker::new().spawn(bus.clone());
+    drop(Broker::new().spawn(bus.clone()));
     let connection = Connection::connect(bus.connect().await?).await?;
     let peer = connection.unique_name().ok_or("peer")?;
     let leaked: &'static Connection = Box::leak(Box::new(connection.clone()));
