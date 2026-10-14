@@ -297,6 +297,9 @@ pub struct ModuleConfig {
     /// Immutable fixed confidential native config cipher consumer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_cipher: Option<crate::SecretCipherConfig2>,
+    /// Init-only confidential password, keyring and pairing surface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crypto: Option<crate::CryptoConfig2>,
     /// Init-only metadata for confidential native master resolution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<crate::SecretConfig2>,
@@ -331,6 +334,7 @@ impl Default for ModuleConfig {
         Self {
             contract_version: crate::CONTRACT_VERSION,
             device: None,
+            crypto: None,
             secret: None,
             secret_cipher: None,
             sandbox: None,
@@ -414,6 +418,9 @@ pub struct CallbackAvailability {
     pub secret_cipher: bool,
     /// Confidential device authority configured.
     pub device: bool,
+    /// Confidential password, keyring and pairing authority configured.
+    #[serde(default)]
+    pub crypto: bool,
 }
 /// Accepted configuration change notification.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

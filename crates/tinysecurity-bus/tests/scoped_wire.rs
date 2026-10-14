@@ -82,10 +82,11 @@ fn new_members_are_advertised_and_named_by_contract_constants() {
 
 #[test]
 fn contract_bump_is_additive_for_older_hosts_and_modules() {
-    assert_eq!(CONTRACT_VERSION, (1, 13));
-    // A host built against 1.13 accepts this module, and this host accepts newer minors.
-    assert!(is_compatible((1, 13)));
+    assert_eq!(CONTRACT_VERSION, (1, 14));
+    // A host built against 1.14 accepts this module and newer minors, not a 1.13 module.
     assert!(is_compatible((1, 14)));
+    assert!(is_compatible((1, 15)));
+    assert!(!is_compatible((1, 13)));
     // A 1.12 module cannot supply the audited scoped members.
     assert!(!is_compatible((1, 12)));
     assert!(!is_compatible((1, 11)));

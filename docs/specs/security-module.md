@@ -295,7 +295,7 @@ data compatibility and migration are acceptance requirements. The incremental
 adds optional SDK-init registrations, confidential authenticated dispatch and
 exact human/audit receipts over the frozen device primitives. Scoped lifecycle,
 bootstrap replay bounds and owned cleanup are implemented in the module; no
-password/keyring/pairing or production host migration is implied.
+production host migration is implied. Contract 1.14 adds confidential password, keyring (consent-gated) and pairing status/authenticate/revoke members ([MODULE.md](../../MODULE.md#confidential-password-keyring-and-pairing-members-contract-114)); Linux Secret Service and pairing challenge delivery remain unavailable.
 
 Contract 1.8 adds bounded init-only judge settings and optional typed judge
 evidence on durable approval rows. Older init payloads retain their wire shape;

@@ -2,6 +2,8 @@
 //!
 //! Hosts link this crate; the policy engine and native module stay isolated.
 //! Implements bootstrap checks plus immutable native filesystem scope contracts.
+mod crypto_ops;
+pub use crypto_ops::*;
 mod secret_cipher;
 pub use secret_cipher::*;
 mod secret;
@@ -40,7 +42,7 @@ pub use redact::RedactorConfig;
 pub use scoped_policy::*;
 pub mod names;
 /// Current wire vocabulary version, independent of the artifact version.
-pub const CONTRACT_VERSION: (u32, u32) = (1, 13);
+pub const CONTRACT_VERSION: (u32, u32) = (1, 14);
 /// Whether a remote module's advertised version supplies this host's vocabulary.
 ///
 /// `version` is the provider version received by the host, not a host requirement

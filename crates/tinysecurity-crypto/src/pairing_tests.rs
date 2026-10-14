@@ -255,6 +255,20 @@ fn disabled_pairing_still_requires_exact_configured_bearer() {
             .checked()
     );
 }
+#[test]
+fn bearer_authentication_scans_every_token_and_matches_any_position() {
+    let tokens: Vec<String> = (0..8).map(|n| format!("token-{n}")).collect();
+    let (owner, _, _, _, _) = setup(false, tokens, Limits::default());
+    for n in 0..8 {
+        assert!(
+            owner
+                .authenticate(&account_request(), format!("token-{n}").as_bytes())
+                .checked()
+        );
+    }
+    assert!(!owner.authenticate(&account_request(), b"token-8").checked());
+    assert!(!owner.authenticate(&account_request(), b"token-").checked());
+}
 #[tokio::test]
 async fn secret_staging_uses_one_permitted_slot_without_reentrant_lock() {
     let (owner, _, _, _, _) = setup(true, vec![], Limits::default());

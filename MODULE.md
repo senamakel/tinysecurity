@@ -79,8 +79,8 @@ Durable approval lifecycle/flow/reply, redaction/scanning, scoped egress guards
 and audit have implemented members in the generated method inventory.
 Contract 1.7 approvals use explicit initialization and authenticated callbacks;
 see [durable exact approvals](crates/tinysecurity-approval/README.md).
-Network/DNS connection pinning, sandbox isolation, judge and keyring consent
-remain unavailable. Their reserved payloads do not advertise callable members.
+Network/DNS connection pinning, sandbox isolation and judge remain unavailable;
+keyring consent is implemented by the confidential crypto members below. Their reserved payloads do not advertise callable members.
 Unsupported member calls return the bus's unknown-member error.
 
 ## Packaging and smoke checks
@@ -289,3 +289,40 @@ availability, and the active scoped-policy count; `ScopedPolicyInfo(PolicyId)`
 returns one policy's effective settings and rules. No credential, endpoint or
 scope handle appears in either. `max_cost_per_day_cents` is not part of the
 contract: see ADR 0006.
+
+## Confidential password, keyring and pairing members (contract 1.14)
+
+Optional `ModuleConfig.crypto: CryptoConfig2` adds three confidential members,
+`PasswordCrypt2`, `KeyringAccess2` and `PairingControl2`. Like the device and
+secret members they require TinyBus confidential transport and the immutable
+verified `trusted_host` peer; an unconfigured module denies all three. Config is
+init-only and immutable across reinit. It bounds payload bytes (at most 1 MiB)
+and operations per monotonic minute (at most 4096).
+
+`PasswordCrypt2` preserves the existing Argon2id v0x13 (64 MiB, 3 passes, 1 lane)
+plus AES-256-GCM format. The payload keeps the legacy byte-array shape
+(`ciphertext`, `nonce`, `salt`); encrypt generates a sixteen-byte salt unless the
+caller supplies one for the legacy separate-salt layout. Frozen host fixtures
+decrypt unchanged. At most two derivations run at once and there is no wait queue.
+
+`KeyringAccess2` reads, writes or deletes a named secret on a backend chosen at
+init: platform default (Keychain, Credential Manager, Linux kernel keyring),
+Linux kernel keyring, or a protected encrypted file in an absolute directory.
+Linux Secret Service is not compiled into this module and fails closed. Every
+operation first calls the host's `ai.tinyhumans.tinysecurity.KeyringConsent2`
+`Consent` callback with the verified caller, purpose, access kind and secret name
+(never the value), and proceeds only on an explicit allow. Invalid names or
+purposes, oversized values and denied or timed-out consent never reach the backend.
+
+`PairingControl2` exposes `Status`, `Authenticate` (constant-time bearer check
+against legacy tokens), `Invalidate` and `Revoke` for accounts registered at init.
+Challenge issuance and numeric verification (`Begin`/`Verify`) are not exposed:
+they need confidential delivery to an admitted native destination, the same open
+TinyBus gap as the config cipher consumer. Their ports fail closed.
+
+Passwords, plaintext, secret values and bearers are wiped after use and never
+appear in `Debug`, errors, `PolicyInfo` (only `callbacks.crypto`) or audit rows.
+The X25519/HKDF device tunnel remains the `EvaluateDevice2`/`ExecuteDevice2`
+surface above. The OS keyring test runs on every platform and is required to
+use the real credential store when `TINYSECURITY_REQUIRE_OS_KEYRING=1`; it
+always removes its entry.

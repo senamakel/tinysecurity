@@ -67,6 +67,14 @@ impl<T: Interface> Interface for Authenticated<T> {
         let result = self.inner.call(member, args).await;
         if matches!(
             member.as_str(),
+            tinysecurity_bus::names::methods::PASSWORD_CRYPT2
+                | tinysecurity_bus::names::methods::KEYRING_ACCESS2
+                | tinysecurity_bus::names::methods::PAIRING_CONTROL2
+        ) {
+            return result.map_err(|_| tinybus::Error::failed("crypto authority denied"));
+        }
+        if matches!(
+            member.as_str(),
             tinysecurity_bus::names::methods::EVALUATE_SECRET_CIPHER2
                 | tinysecurity_bus::names::methods::EXECUTE_SECRET_CIPHER2
                 | tinysecurity_bus::names::methods::EVALUATE_SECRET2
