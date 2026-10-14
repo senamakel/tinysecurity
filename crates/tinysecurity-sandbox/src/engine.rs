@@ -63,6 +63,15 @@ fn supports(executor: &SandboxExecutor2, constraint: SandboxConstraint2) -> bool
         .iter()
         .any(|s| s.constraint == constraint && s.enforcement == ConstraintEnforcement2::Enforced)
 }
+/// A real backend (never `Noop`) reporting kernel or microVM isolation: the only
+/// executors an untrusted tier or `SaaS` scope may ever be planned onto.
+fn suitable_for_untrusted(executor: &SandboxExecutor2) -> bool {
+    executor.backend != SandboxBackend::Noop
+        && matches!(
+            executor.isolation,
+            IsolationLevel2::Kernel | IsolationLevel2::MicroVm
+        )
+}
 fn requirements(request: &SandboxPlanRequest2) -> Vec<SandboxConstraint2> {
     let mut constraints = vec![SandboxConstraint2::Filesystem, SandboxConstraint2::Network];
     for (required, constraint) in [
@@ -102,11 +111,7 @@ fn select<'a>(
         .into_iter()
         .find(|e| {
             e.available
-                && (!isolation
-                    || matches!(
-                        e.isolation,
-                        IsolationLevel2::Kernel | IsolationLevel2::MicroVm
-                    ))
+                && (!isolation || suitable_for_untrusted(e))
                 && e.backend != SandboxBackend::Noop
                 && constraints.iter().all(|c| supports(e, *c))
                 && (request.network != NetworkPolicy::EgressProxy
@@ -487,10 +492,7 @@ impl Engine {
             || executor.backend != artifact.backend
             || executor.backend == SandboxBackend::Noop
             || (artifact.minimum_isolation == IsolationLevel2::Kernel
-                && !matches!(
-                    executor.isolation,
-                    IsolationLevel2::Kernel | IsolationLevel2::MicroVm
-                ))
+                && !suitable_for_untrusted(executor))
             || artifact.generation != generation
             || now_ms >= artifact.expires_at_ms
             || artifact.executor_id != executor.executor_id
