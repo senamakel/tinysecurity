@@ -128,3 +128,26 @@ fn even_an_exact_echo_cannot_confirm_an_unscoped_batch() {
         "matching receipt must never bless missing trusted scope"
     );
 }
+#[test]
+fn legacy_audit_member_is_not_served_and_audit2_covers_every_legacy_kind()
+-> Result<(), serde_json::Error> {
+    use crate::AuditKind;
+    assert!(!crate::names::METHODS.contains(&crate::names::methods::AUDIT));
+    assert!(crate::names::METHODS.contains(&crate::names::methods::AUDIT2));
+    let pairs = [
+        (AuditKind::PolicyChanged, AuditKind2::PolicyChanged),
+        (AuditKind::Approval, AuditKind2::Approval),
+        (AuditKind::Judge, AuditKind2::Judge),
+        (AuditKind::Execution, AuditKind2::Execution),
+        (AuditKind::Sandbox, AuditKind2::Sandbox),
+    ];
+    for (legacy, current) in pairs {
+        assert_eq!(
+            serde_json::to_string(&legacy)?,
+            serde_json::to_string(&current)?
+        );
+    }
+    // Shell is the one category version two adds beyond the legacy vocabulary.
+    assert_eq!(serde_json::to_string(&AuditKind2::Shell)?, "\"shell\"");
+    Ok(())
+}
