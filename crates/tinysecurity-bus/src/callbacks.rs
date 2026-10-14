@@ -145,6 +145,10 @@ pub mod callback_names2 {
     pub const SECRET_BACKEND: &str = "ai.tinyhumans.tinysecurity.SecretBackend2";
     /// Exact confidential target mutation.
     pub const SET: &str = "Set";
+    /// Confidential-transport-free human consent for native keyring access.
+    pub const KEYRING_CONSENT: &str = "ai.tinyhumans.tinysecurity.KeyringConsent2";
+    /// Exact keyring consent member.
+    pub const CONSENT: &str = "Consent";
     /// Versioned durable audit callback.
     pub const AUDIT_SINK: &str = "ai.tinyhumans.tinysecurity.AuditSink2";
     /// Versioned scoped storage callback seam.

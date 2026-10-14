@@ -132,6 +132,44 @@ impl PasswordKey {
     }
 }
 
+/// Encrypt with a derived key and return a payload that carries its salt.
+///
+/// A supplied salt must be sixteen bytes (the legacy separate-salt layout);
+/// otherwise a fresh one is generated.
+///
+/// # Errors
+/// Limit, input, entropy or derivation failures; none retain the inputs.
+pub fn encrypt_with_password(
+    password: &str,
+    plaintext: &[u8],
+    salt: Option<&[u8]>,
+) -> Result<PasswordPayload> {
+    if plaintext.len() > MAX_PLAINTEXT_BYTES {
+        return Err(Error::Limit);
+    }
+    let salt = match salt {
+        Some(salt) => salt.to_vec(),
+        None => PasswordKey::generate_salt()?.to_vec(),
+    };
+    let mut payload = PasswordKey::derive(password, &salt)?.encrypt(plaintext)?;
+    payload.salt = salt;
+    Ok(payload)
+}
+
+/// Derive from the payload's salt, authenticate and decrypt.
+///
+/// # Errors
+/// Limit, input or authentication failures; none retain the inputs.
+pub fn decrypt_with_password(
+    password: &str,
+    payload: &PasswordPayload,
+) -> Result<Zeroizing<Vec<u8>>> {
+    if payload.ciphertext.len() > MAX_PLAINTEXT_BYTES + TAG_BYTES {
+        return Err(Error::Limit);
+    }
+    PasswordKey::derive(password, &payload.salt)?.decrypt(payload)
+}
+
 #[cfg(test)]
 #[path = "password_tests.rs"]
 mod tests;

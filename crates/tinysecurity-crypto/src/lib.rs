@@ -19,6 +19,7 @@ pub mod device_handles;
 mod error;
 pub mod keyring;
 pub mod native_handles;
+pub mod native_store;
 pub mod pairing;
 pub mod password;
 pub mod secretstore;

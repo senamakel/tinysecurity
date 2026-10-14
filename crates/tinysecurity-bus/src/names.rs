@@ -5,6 +5,12 @@ pub const INTERFACE: &str = "ai.tinyhumans.tinysecurity.Policy";
 pub const OBJECT_PATH: &str = "/ai/tinyhumans/tinysecurity/Policy";
 /// Method names; availability is reported by `PolicyInfo`.
 pub mod methods {
+    /// Password encryption and decryption over the legacy Argon2id/AES-256-GCM format.
+    pub const PASSWORD_CRYPT2: &str = "PasswordCrypt2";
+    /// Consent-gated named secret access on the configured native keyring backend.
+    pub const KEYRING_ACCESS2: &str = "KeyringAccess2";
+    /// Nonsecret pairing lifecycle and constant-time bearer authentication.
+    pub const PAIRING_CONTROL2: &str = "PairingControl2";
     /// Admit a bounded routine operation against a real acquired config master.
     pub const EVALUATE_SECRET_CIPHER2: &str = "EvaluateSecretCipher2";
     /// Consume exact private pending cipher authority once.
@@ -122,6 +128,9 @@ pub const METHODS: &[&str] = &[
     methods::EXECUTE_SECRET_CIPHER2,
     methods::EVALUATE_SECRET2,
     methods::EXECUTE_SECRET2,
+    methods::PASSWORD_CRYPT2,
+    methods::KEYRING_ACCESS2,
+    methods::PAIRING_CONTROL2,
     methods::EVALUATE_DEVICE2,
     methods::EXECUTE_DEVICE2,
     methods::PLAN,

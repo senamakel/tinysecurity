@@ -201,3 +201,41 @@ fn resolved_authentication_state_runs_cleanup_on_drop() {
     assert!(std::mem::needs_drop::<polyval::Polyval>());
     assert!(std::mem::needs_drop::<ghash::GHash>());
 }
+
+#[test]
+fn one_shot_helpers_round_trip_with_embedded_or_supplied_salt()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let sealed = encrypt_with_password("pw", b"bytes", None)?;
+    assert_eq!(sealed.salt.len(), 16);
+    assert_eq!(&*decrypt_with_password("pw", &sealed)?, b"bytes");
+    assert_eq!(
+        decrypt_with_password("other", &sealed),
+        Err(Error::Authentication)
+    );
+    let fixed = encrypt_with_password("pw", b"bytes", Some(&[5; 16]))?;
+    assert_eq!(fixed.salt, vec![5; 16]);
+    assert_eq!(
+        encrypt_with_password("pw", b"x", Some(&[1; 3])),
+        Err(Error::InvalidInput)
+    );
+    let mut bad = sealed.clone();
+    bad.salt = vec![0; 15];
+    assert_eq!(decrypt_with_password("pw", &bad), Err(Error::InvalidInput));
+    Ok(())
+}
+
+#[test]
+fn one_shot_decrypt_opens_the_frozen_host_fixture()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/openhuman-password.json"))?;
+    let password = fixture["password"].as_str().ok_or("password")?;
+    let mut payload: PasswordPayload = serde_json::from_value(fixture["payload"].clone())?;
+    let salt: Vec<u8> = serde_json::from_value(fixture["salt"].clone())?;
+    payload.salt = salt;
+    assert_eq!(
+        &*decrypt_with_password(password, &payload)?,
+        b"host AES/password fixture\0legacy bytes"
+    );
+    Ok(())
+}

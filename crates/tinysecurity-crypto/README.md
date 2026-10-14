@@ -16,8 +16,9 @@ malformed nonce and tag shapes return errors before reaching the cipher.
 `encrypt` returns an empty salt, as the existing derived-key helper does.
 
 The native device surface described below exposes scoped opaque handles over
-these internal keys. Hosts continue to link `tinysecurity-bus` alone. Password
-RPCs, keyring backends and pairing remain separate, unavailable capabilities.
+these internal keys. Hosts continue to link `tinysecurity-bus` alone. Password,
+keyring and pairing status operations are the confidential contract 1.14 members
+documented in MODULE.md; pairing challenge delivery remains unavailable.
 The config-secret RPC uses TinyStorageDrivers' existing ChaCha20-Poly1305 storage
 format and is not implemented by this device surface.
 
