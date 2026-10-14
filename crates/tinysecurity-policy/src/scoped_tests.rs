@@ -623,3 +623,229 @@ fn command_budget_is_per_tenant() -> TestResult {
     assert_eq!(run(&a_scope, "a", &a_id)?, Verdict::Allow);
     Ok(())
 }
+
+#[test]
+fn removed_path_restrictions_and_command_guards_are_widenings() -> TestResult {
+    let mut f = Fixture::new()?;
+    let root = f.dir.path().to_path_buf();
+    let reserved = root.join("state");
+    let readonly = root.join("docs");
+    let mut strict = path_policy(
+        &root,
+        vec![PathTrustedRoot {
+            path: root.clone(),
+            access: PathAccess::ReadOnly,
+        }],
+    );
+    strict.forbidden_paths = vec![root.join("secret").display().to_string()];
+    strict.reserved_paths = vec![tinysecurity_bus::PathReservation {
+        path: reserved,
+        children_only: false,
+        exceptions: vec![],
+    }];
+    strict.readonly_paths = vec![readonly];
+    let mut r = f.registered("a", true, CommandAutonomy::ReadOnly)?;
+    r.path_policy_id = f.paths.register(strict)?;
+    r.settings.policy.forbidden_paths = vec![root.join("never").display().to_string()];
+    r.settings.command_classes = vec![CommandClass::Read];
+    let mut guarded = command_policy(&root, true, CommandAutonomy::ReadOnly, 10);
+    guarded.block_high_risk_commands = true;
+    r.command_policy_id = f.commands.register(guarded)?;
+    let old = f.register(r.clone())?;
+
+    let elsewhere = tempfile::tempdir()?;
+    let mut loose_paths = path_policy(elsewhere.path(), vec![]);
+    loose_paths.workspace_only = false;
+    let mut open = r;
+    open.path_policy_id = f.paths.register(loose_paths)?;
+    open.settings.policy.forbidden_paths = vec![];
+    open.settings.policy.allowed_commands = vec!["git".into()];
+    open.settings.command_classes = vec![CommandClass::Read, CommandClass::Network];
+    let mut loose = command_policy(&root, false, CommandAutonomy::Full, 10);
+    loose.allowed_commands = vec!["curl".into()];
+    loose.require_approval_for_medium_risk = false;
+    loose.block_high_risk_commands = false;
+    loose.execution_mode = CommandExecutionMode::Allowlisted;
+    open.command_policy_id = f.commands.register(loose)?;
+    let prepared = f
+        .scoped
+        .prepare_supersede(&old, open, &f.paths, &f.commands)?;
+    let subjects: Vec<&str> = prepared
+        .widenings()
+        .iter()
+        .map(|w| w.subject.as_str())
+        .collect();
+    for expected in [
+        "workspace_only",
+        "command_policy_disabled",
+        "autonomy",
+        "execution_mode",
+        "medium_risk_approval",
+        "high_risk_block",
+        "command:git",
+        "command:curl",
+        "class:Network",
+    ] {
+        assert!(
+            subjects.contains(&expected),
+            "missing {expected} in {subjects:?}"
+        );
+    }
+    for prefix in ["forbidden:", "reserved:", "readonly:"] {
+        assert!(
+            subjects.iter().any(|s| s.starts_with(prefix)),
+            "missing {prefix} in {subjects:?}"
+        );
+    }
+    assert!(
+        subjects
+            .iter()
+            .any(|s| s.contains(&*elsewhere.path().display().to_string())),
+        "relocated action dir is a new root: {subjects:?}"
+    );
+    assert_eq!(prepared.digest().len(), 64);
+    Ok(())
+}
+
+#[test]
+fn command_gates_map_to_stable_denials_and_class_filters_apply() -> TestResult {
+    let mut f = Fixture::new()?;
+    let mut r = f.registered("a", true, CommandAutonomy::Supervised)?;
+    r.settings.command_classes = vec![CommandClass::Read];
+    let id = f.register(r)?;
+    let scope = f.scoped.get_owned(&id)?;
+    assert_eq!(scope.id(), &id);
+    assert_eq!(scope.generation(), 1);
+    let run = |command: &str| -> Result<Verdict> {
+        let request = eval("command_check", shell(command), "a", &id, "1");
+        Ok(scope.evaluate(&f.engine, &request)?.decision.verdict)
+    };
+    assert_eq!(run("ls")?, Verdict::Allow);
+    // Outside the permitted class list the registered scope is never consulted.
+    assert_eq!(
+        run("curl https://example.com")?,
+        Verdict::Deny {
+            reason: DenialReason::Command
+        }
+    );
+    assert_eq!(
+        run("cat ~/.ssh/id_rsa")?,
+        Verdict::Deny {
+            reason: DenialReason::Floor
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn unfiltered_scopes_surface_prompts_as_unavailable_approval_and_blocks_as_denials() -> TestResult {
+    let mut f = Fixture::new()?;
+    let r = f.registered("a", true, CommandAutonomy::Supervised)?;
+    let id = f.register(r)?;
+    let scope = f.scoped.get_owned(&id)?;
+    let run = |command: &str| -> Result<Verdict> {
+        let request = eval("command_check", shell(command), "a", &id, "1");
+        Ok(scope.evaluate(&f.engine, &request)?.decision.verdict)
+    };
+    assert_eq!(
+        run("curl https://example.com")?,
+        Verdict::Deny {
+            reason: DenialReason::ApprovalUnavailable
+        }
+    );
+    let mut readonly = f.registered("b", true, CommandAutonomy::ReadOnly)?;
+    readonly.command_policy_id = f.commands.register(command_policy(
+        f.dir.path(),
+        true,
+        CommandAutonomy::ReadOnly,
+        5,
+    ))?;
+    let b = f.register(readonly)?;
+    let scope_b = f.scoped.get_owned(&b)?;
+    let blocked = scope_b.evaluate(
+        &f.engine,
+        &eval("command_check", shell("echo x > y"), "b", &b, "1"),
+    )?;
+    assert_eq!(
+        blocked.decision.verdict,
+        Verdict::Deny {
+            reason: DenialReason::Command
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn fingerprints_cover_every_check_kind() -> TestResult {
+    let id = PolicyId("p".into());
+    let who = caller("a", "1");
+    let kinds = [
+        Check::Path {
+            path: "/x".into(),
+            write: true,
+        },
+        Check::Path {
+            path: "/x".into(),
+            write: false,
+        },
+        Check::LocalDiagnostic {},
+        Check::PolicyChange { digest: "d".into() },
+        Check::Unknown {
+            description: "u".into(),
+        },
+        shell("ls"),
+    ];
+    let prints: Vec<String> = kinds
+        .iter()
+        .map(|check| checks_fingerprint(&id, &who, std::slice::from_ref(check)))
+        .collect();
+    for (i, a) in prints.iter().enumerate() {
+        for b in &prints[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn registry_capacity_fails_closed_and_retired_policies_are_reclaimed() -> TestResult {
+    let mut f = Fixture::new()?;
+    let base = f.registered("agent-0", false, CommandAutonomy::Full)?;
+    let mut ids = Vec::new();
+    for n in 0..1024 {
+        let mut r = base.clone();
+        r.subject_scope = subject(&format!("agent-{n}"));
+        ids.push(f.register(r)?);
+    }
+    let mut extra = base.clone();
+    extra.subject_scope = subject("overflow");
+    assert_eq!(f.register(extra), Err(Error::Unavailable));
+    // Every slot is a live policy, so a replacement has nowhere to go.
+    let mut next = base.clone();
+    next.settings.privacy = PrivacyMode::Sensitive;
+    let prepared = f
+        .scoped
+        .prepare_supersede(&ids[0], next.clone(), &f.paths, &f.commands)?;
+    assert_eq!(f.scoped.commit_supersede(prepared), Err(Error::Unavailable));
+    assert!(!f.scoped.get_owned(&ids[0])?.is_superseded());
+    // Free a slot by retiring one policy without holding a handle to it.
+    f.scoped.entries_for_test().pop();
+    let prepared = f
+        .scoped
+        .prepare_supersede(&ids[0], next.clone(), &f.paths, &f.commands)?;
+    f.scoped.commit_supersede(prepared)?;
+    // The registry is full again, but the retired entry can now be reclaimed.
+    let mut third = base;
+    third.settings.privacy = PrivacyMode::LocalOnly;
+    third.subject_scope = subject("agent-1");
+    let latest = f.scoped.get_owned(&ids[1])?.id().clone();
+    let prepared = f
+        .scoped
+        .prepare_supersede(&latest, third, &f.paths, &f.commands)?;
+    f.scoped.commit_supersede(prepared)?;
+    assert!(
+        f.scoped.get_owned(&ids[0]).is_err(),
+        "retired policy reclaimed"
+    );
+    Ok(())
+}

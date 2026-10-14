@@ -375,6 +375,10 @@ pub struct ScopedPolicyRegistry {
 }
 
 impl ScopedPolicyRegistry {
+    #[cfg(test)]
+    pub(crate) fn entries_for_test(&mut self) -> &mut Vec<Arc<ScopedPolicy>> {
+        &mut self.entries
+    }
     /// Number of active (not superseded) policies.
     #[must_use]
     pub fn active(&self) -> u32 {
