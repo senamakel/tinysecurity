@@ -58,10 +58,11 @@ fn tilde_without_a_registered_home_or_with_a_user_form_is_rejected() {
 fn relative_entries_resolve_against_the_action_dir() {
     let action = abs("action");
     assert_eq!(
-        effective(&["private", "a/b"], None),
+        effective(&["private", "a/b", "./cur"], None),
         Ok(vec![
             text(&action.join("private")),
-            text(&action.join("a").join("b"))
+            text(&action.join("a").join("b")),
+            text(&action.join("cur"))
         ])
     );
 }

@@ -49,7 +49,15 @@ fn resolve_entry(entry: &str, action_dir: &Path, home: Option<&Path>) -> Result<
     if candidate.has_root() || !action_dir.is_absolute() {
         return Err(Error::InvalidArguments);
     }
-    Ok(action_dir.join(candidate))
+    // Push component by component so the result uses one native separator.
+    Ok(candidate
+        .components()
+        .fold(action_dir.to_path_buf(), |mut path, part| {
+            if let std::path::Component::Normal(name) = part {
+                path.push(name);
+            }
+            path
+        }))
 }
 
 /// Absolute forbidden roots equivalent to the registered entries.
