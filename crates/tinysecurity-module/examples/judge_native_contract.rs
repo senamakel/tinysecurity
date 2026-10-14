@@ -274,7 +274,13 @@ async fn verify_matrix(
         assert_eq!(row.record.state, ApprovalLifecycle2::Pending);
         assert!(row.record.attribution.is_none());
         let evidence = row.record.judge.as_ref().ok_or("matrix evidence")?;
-        assert_eq!(evidence.outcome, expected);
+        // The SDK deadline and the judge deadline race; both are fail-to-human.
+        assert!(
+            evidence.outcome == expected
+                || (delay > 0 && evidence.outcome == JudgeOutcome2::Timeout),
+            "unexpected outcome {:?}",
+            evidence.outcome
+        );
         assert_eq!(
             evidence.question_ids,
             ["intent", "reversible", "exfiltrate"]
