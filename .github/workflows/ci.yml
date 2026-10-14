@@ -445,3 +445,24 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check all
+
+  # Release-build latency gate for the native policy hot path. Hosted runners
+  # are noisy, so the budget (docs/performance.md) is deliberately generous
+  # relative to measured release numbers.
+  perf:
+    name: Release latency budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Evaluate/Check p50/p99 within budget
+        env:
+          TINYSECURITY_PERF_BUDGET: "1"
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p tinysecurity-module
+          cargo run --release --locked -p tinysecurity-module --example verify_module -- target/release/libtinysecurity_module.so

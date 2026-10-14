@@ -27,12 +27,28 @@ must be agreed against a representative released-module workload and its
 number of calls per turn before host callers move. Bootstrap remains
 release-gated irrespective of this synthetic result.
 
+## Release budget (enforced in CI)
+
+Release build, same workload (500 samples per method, Linux x86_64, October 14,
+2026): Evaluate 50.6 us p50 / 62.9 us p99; Check (two checks) 52.1 us p50 /
+68.6 us p99.
+
+The agreed budget per bus call on a supported native runner is p50 <= 1 ms and
+p99 <= 10 ms for both Evaluate and Check, roughly 20x and 150x headroom over
+the measured release numbers so noisy hosted runners do not flake. The CI `perf`
+job builds in release mode and runs the verifier with
+`TINYSECURITY_PERF_BUDGET=1`, which fails the run when either method exceeds
+the budget (and refuses to run on a debug build). Tighten the constants in
+`verify_module.rs` if a dedicated controlled runner is added.
+
 Reproduce with:
 
 ```sh
 cargo build --all-targets --all-features
 cargo run -p tinysecurity-module --example verify_module -- target/debug/libtinysecurity_module.so
 ```
+
+Budget check: `TINYSECURITY_PERF_BUDGET=1 cargo run --release -p tinysecurity-module --example verify_module -- target/release/libtinysecurity_module.so`.
 
 Use the platform library extension on macOS/Windows. Archive timing can be run
 with release URL, archive name and published digest as the three arguments.
