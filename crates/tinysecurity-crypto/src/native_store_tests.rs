@@ -11,7 +11,8 @@ fn unique(label: &str) -> std::result::Result<String, Box<dyn std::error::Error>
 
 #[tokio::test]
 async fn encrypted_file_backend_round_trips_and_deletes() -> TestResult {
-    let dir = std::env::temp_dir().join(unique("dir")?);
+    // The driver rejects symlinked components (macOS /var is one); use the real path.
+    let dir = std::env::temp_dir().canonicalize()?.join(unique("dir")?);
     std::fs::create_dir_all(&dir)?;
     let store = open("tinysecurity-test", Backend::EncryptedFile(dir.clone()))?;
     assert!(store.get("user:token").await?.is_none());

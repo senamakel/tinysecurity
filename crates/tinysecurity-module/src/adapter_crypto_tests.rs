@@ -81,7 +81,9 @@ async fn fixture(allow: bool) -> Result<(Fixture, Consenter), Box<dyn std::error
     let host = Connection::connect(bus.connect().await?).await?;
     let module = Connection::connect(bus.connect().await?).await?;
     let host_peer = host.unique_name().ok_or("host")?;
-    let dir = std::env::temp_dir().join(format!("tinysecurity-crypto-{}", std::process::id()));
+    let dir = std::env::temp_dir()
+        .canonicalize()?
+        .join(format!("tinysecurity-crypto-{}", std::process::id()));
     let dir = dir.join(format!("{:x}", std::ptr::addr_of!(bus) as usize));
     std::fs::create_dir_all(&dir)?;
     let mut init = initialization(&module, host_peer.as_str());
