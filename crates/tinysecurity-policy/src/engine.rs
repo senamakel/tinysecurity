@@ -1,9 +1,12 @@
 //! Atomic policy activation and ordered evaluation.
 use crate::{
     AccessTier, CONTRACT_VERSION, CallerContext, Check, CheckRequest, CheckResponse, Decision,
-    DenialReason, Error, EvaluateRequest, ModuleConfig, Origin, PolicyInfo, Result, Verdict,
-    command, names, path,
+    DenialReason, Error, EvaluateRequest, ModuleConfig, Origin, POLICY_CHANGE_TOOL, PolicyConfig,
+    PolicyInfo, Result, Verdict, command, names, path,
 };
+
+/// Registered command-scope check used instead of the bootstrap allowlist.
+pub(crate) type CommandHook<'a> = dyn Fn(&str) -> std::result::Result<(), DenialReason> + 'a;
 /// Active validated policy instance. Failed reconfiguration never changes it.
 #[derive(Clone, Debug)]
 pub struct Policy {
@@ -43,6 +46,23 @@ impl Policy {
             generation: self.generation,
             policy: self.config.policy.clone(),
             capabilities: names::METHODS.iter().map(|s| (*s).into()).collect(),
+            judge: self.config.judge.as_ref().map(|j| crate::JudgeInfo {
+                provider: j.provider,
+                threshold_millis: j.threshold_millis,
+                exfiltrate_millis: j.exfiltrate_millis,
+                thresholds: j.thresholds.clone(),
+                timeout_ms: j.timeout_ms,
+                origins: j.origins.clone(),
+                max_requests: j.max_requests,
+                budget_window_ms: j.budget_window_ms,
+                cache_entries: j.cache_entries,
+                cache_ttl_ms: j.cache_ttl_ms,
+            }),
+            callbacks: crate::CallbackAvailability {
+                judge: self.config.judge.is_some(),
+                ..crate::CallbackAvailability::default()
+            },
+            scoped_policies: 0,
         }
     }
     /// Clone the active immutable registry without exposing initialization secrets.
@@ -54,6 +74,17 @@ impl Policy {
     /// # Errors
     /// Reserved for module failures; ordinary denial is a successful result.
     pub fn evaluate(&self, request: &EvaluateRequest) -> Result<Decision> {
+        self.evaluate_with(&self.config.policy, None, request)
+    }
+    /// Evaluate under per-subject settings and an optional registered command scope.
+    /// # Errors
+    /// Reserved for module failures; ordinary denial is a successful result.
+    pub(crate) fn evaluate_with(
+        &self,
+        settings: &PolicyConfig,
+        commands: Option<&CommandHook<'_>>,
+        request: &EvaluateRequest,
+    ) -> Result<Decision> {
         let matching = !request.call.checks.is_empty()
             && match request.call.tool.as_str() {
                 "local_diagnostic" => request
@@ -71,6 +102,11 @@ impl Policy {
                     .checks
                     .iter()
                     .all(|c| matches!(c, Check::Command { .. })),
+                POLICY_CHANGE_TOOL => request
+                    .call
+                    .checks
+                    .iter()
+                    .all(|c| matches!(c, Check::PolicyChange { .. })),
                 _ => false,
             };
         if !matching {
@@ -86,7 +122,7 @@ impl Policy {
             return Ok(self.denied(reason));
         }
         for check in &request.call.checks {
-            let decision = self.one(&request.caller, check);
+            let decision = self.one(settings, commands, &request.caller, check);
             if decision.verdict != Verdict::Allow {
                 return Ok(decision);
             }
@@ -97,35 +133,54 @@ impl Policy {
     /// # Errors
     /// Reserved for module failures; individual denials remain ordered results.
     pub fn check(&self, request: &CheckRequest) -> Result<CheckResponse> {
-        Ok(CheckResponse {
-            generation: self.generation,
-            decisions: request
-                .checks
-                .iter()
-                .map(|check| self.one(&request.caller, check))
-                .collect(),
-        })
+        Ok(self.check_with(&self.config.policy, None, &request.caller, &request.checks))
     }
-    fn one(&self, caller: &CallerContext, check: &Check) -> Decision {
+    /// Ordered batch under per-subject settings and an optional command scope.
+    pub(crate) fn check_with(
+        &self,
+        settings: &PolicyConfig,
+        commands: Option<&CommandHook<'_>>,
+        caller: &CallerContext,
+        checks: &[Check],
+    ) -> CheckResponse {
+        CheckResponse {
+            generation: self.generation,
+            decisions: checks
+                .iter()
+                .map(|check| self.one(settings, commands, caller, check))
+                .collect(),
+        }
+    }
+    /// Module generation.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub(crate) fn deny_with(&self, reason: DenialReason) -> Decision {
+        self.denied(reason)
+    }
+    fn one(
+        &self,
+        settings: &PolicyConfig,
+        commands: Option<&CommandHook<'_>>,
+        caller: &CallerContext,
+        check: &Check,
+    ) -> Decision {
         if caller.agent.is_empty() || caller.call_id.is_empty() {
             return self.denied(DenialReason::InvalidContext);
         }
         let result = match check {
             Check::LocalDiagnostic {} => Ok(()),
             Check::Unknown { .. } => Err(DenialReason::UnsupportedEffect),
-            Check::Path { path, write } => {
-                path::check(&self.config.policy, path, *write).and_then(|()| {
-                    if *write && caller.tier == AccessTier::Read {
-                        Err(DenialReason::Access)
-                    } else if *write
-                        && (caller.origin == Origin::Cron || self.config.policy.enabled)
-                    {
-                        Err(DenialReason::ApprovalUnavailable)
-                    } else {
-                        Ok(())
-                    }
-                })
-            }
+            Check::PolicyChange { .. } => Err(DenialReason::ApprovalUnavailable),
+            Check::Path { path, write } => path::check(settings, path, *write).and_then(|()| {
+                if *write && caller.tier == AccessTier::Read {
+                    Err(DenialReason::Access)
+                } else if *write && (caller.origin == Origin::Cron || settings.enabled) {
+                    Err(DenialReason::ApprovalUnavailable)
+                } else {
+                    Ok(())
+                }
+            }),
             Check::Command { command } => self
                 .redactor
                 .scan_prompt(&crate::ScanPromptRequest {
@@ -134,7 +189,10 @@ impl Policy {
                 .map_err(|_| DenialReason::Content)
                 .and_then(|scan| match scan_denial(&scan.verdict) {
                     Some(reason) => Err(reason),
-                    None => command::check(&self.config.policy, command),
+                    None => match commands {
+                        Some(hook) => hook(command),
+                        None => command::check(settings, command),
+                    },
                 }),
         };
         match result {
@@ -157,6 +215,23 @@ impl Policy {
         }
     }
 }
+/// Validate one subject's base settings with the same rules as module configuration.
+pub(crate) fn validate_settings(p: &PolicyConfig) -> Result<()> {
+    if p.enabled && (!path::valid_root(&p.action_dir) || !path::valid_root(&p.workspace_dir)) {
+        return Err(Error::InvalidConfig);
+    }
+    if p.forbidden_paths
+        .iter()
+        .any(|root| !std::path::Path::new(root).is_absolute() || path::floor(root))
+        || p.allowed_commands
+            .iter()
+            .any(|c| c.is_empty() || c.chars().any(char::is_whitespace))
+    {
+        return Err(Error::InvalidConfig);
+    }
+    Ok(())
+}
+
 fn validate(config: &ModuleConfig) -> Result<()> {
     if config.contract_version.0 != CONTRACT_VERSION.0
         || config.contract_version.1 > CONTRACT_VERSION.1

@@ -1,4 +1,5 @@
 //! Policy invocation and SDK configuration types.
+use crate::PolicyId;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 /// Verified host context; never populated directly from model arguments.
@@ -81,6 +82,11 @@ pub enum Check {
     },
     /// Pure local, side-effect-free diagnostic.
     LocalDiagnostic {},
+    /// Replacement of a registered policy; always requires human approval.
+    PolicyChange {
+        /// SHA-256 over the previous id and the exact replacement.
+        digest: String,
+    },
     /// An effect not supported by this engine.
     Unknown {
         /// Content-free descriptor.
@@ -349,10 +355,74 @@ pub struct PolicyInfo {
     pub policy: PolicyConfig,
     /// Advertised implemented methods.
     pub capabilities: Vec<String>,
+    /// Nonsensitive native judge settings; never credentials or the endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge: Option<JudgeInfo>,
+    /// Which host callbacks and native authorities are configured.
+    #[serde(default, skip_serializing_if = "zero")]
+    pub callbacks: CallbackAvailability,
+    /// Number of active registered scoped policies.
+    #[serde(default, skip_serializing_if = "zero")]
+    pub scoped_policies: u32,
+}
+
+/// Nonsensitive judge settings. Credentials and endpoint are init-only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JudgeInfo {
+    /// Response dialect.
+    pub provider: JudgeProvider,
+    /// Default minimum intent/reversibility score.
+    pub threshold_millis: u16,
+    /// Default maximum exfiltration score.
+    pub exfiltrate_millis: u16,
+    /// Class/origin thresholds.
+    pub thresholds: Vec<JudgeThresholdRule>,
+    /// Total request deadline.
+    pub timeout_ms: u32,
+    /// Opted-in origins.
+    pub origins: Vec<Origin>,
+    /// Request reservations per window.
+    pub max_requests: u32,
+    /// Budget window.
+    pub budget_window_ms: u32,
+    /// Cache entries.
+    pub cache_entries: u16,
+    /// Cache lifetime.
+    pub cache_ttl_ms: u32,
+}
+
+/// Availability of configured callbacks and native authorities.
+#[allow(clippy::struct_excessive_bools)] // independent wire flags, one per authority
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallbackAvailability {
+    /// Audit sink callback configured.
+    pub audit: bool,
+    /// Audit is required before permission.
+    pub audit_required: bool,
+    /// Approval store and prompt callbacks configured.
+    pub approvals: bool,
+    /// Native judge configured.
+    pub judge: bool,
+    /// Sandbox authority configured.
+    pub sandbox: bool,
+    /// Confidential secret authority configured.
+    pub secret: bool,
+    /// Confidential config cipher configured.
+    pub secret_cipher: bool,
+    /// Confidential device authority configured.
+    pub device: bool,
 }
 /// Accepted configuration change notification.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyChanged {
     /// New generation.
     pub generation: u64,
+    /// Scoped policy that was activated, absent for module reinit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_id: Option<PolicyId>,
+    /// New lineage generation of that scoped policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_generation: Option<u64>,
 }

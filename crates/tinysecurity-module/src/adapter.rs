@@ -1,13 +1,16 @@
 //! SDK-configured native policy service, with no lifecycle RPC members.
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use tinybus::{Connection, Result as BusResult};
-use tinysecurity::{CommandPolicyRegistry, EgressPolicyRegistry, PathPolicyRegistry, Policy};
+use tinysecurity::{
+    CommandPolicyRegistry, EgressPolicyRegistry, PathPolicyRegistry, Policy, ScopedPolicyRegistry,
+};
 use tinysecurity_bus::{
     CheckRequest, CheckResponse, Decision, EvaluateRequest, ModuleConfig, PolicyInfo, names,
 };
 
 static PATH_SCOPES: OnceLock<Arc<Mutex<PathPolicyRegistry>>> = OnceLock::new();
 static COMMAND_SCOPES: OnceLock<Arc<Mutex<CommandPolicyRegistry>>> = OnceLock::new();
+static SCOPED_POLICIES: OnceLock<Arc<Mutex<ScopedPolicyRegistry>>> = OnceLock::new();
 static EGRESS_SCOPES: OnceLock<Arc<Mutex<EgressPolicyRegistry>>> = OnceLock::new();
 static AUDIT_CLIENT: OnceLock<Option<Arc<crate::callbacks::AuditClient>>> = OnceLock::new();
 static HOST_BINDING: OnceLock<crate::callbacks::PeerBinding> = OnceLock::new();
@@ -37,6 +40,8 @@ struct PolicyService {
     paths: Arc<Mutex<PathPolicyRegistry>>,
     commands: Arc<Mutex<CommandPolicyRegistry>>,
     egress: Arc<Mutex<EgressPolicyRegistry>>,
+    scoped: Arc<Mutex<ScopedPolicyRegistry>>,
+    signals: Option<Connection>,
 }
 fn failure(error: &tinysecurity_bus::Error) -> tinybus::Error {
     tinybus::Error::failed(error.to_string())
@@ -745,8 +750,193 @@ impl PolicyService {
             .await
     }
     async fn policy_info(&self) -> BusResult<PolicyInfo> {
-        let info = { self.read()?.info() };
+        let mut info = { self.read()?.info() };
+        info.callbacks.audit = self.audit.is_some();
+        info.callbacks.audit_required = self.requires_bound_audit();
+        info.callbacks.approvals = self.approvals.is_some();
+        info.callbacks.sandbox = self.sandbox.is_some();
+        info.callbacks.secret = self.secret.is_some();
+        info.callbacks.secret_cipher = self.secret_cipher.is_some();
+        info.callbacks.device = self.device.is_some();
+        info.scoped_policies = self
+            .scoped
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .active();
         std::future::ready(Ok(info)).await
+    }
+
+    // Private host-only configuration. The subject is a trusted-adapter claim.
+    async fn register_policy(
+        &self,
+        policy: tinysecurity_bus::RegisteredPolicy,
+    ) -> BusResult<tinysecurity_bus::PolicyId> {
+        let (paths, commands, scoped) = (
+            Arc::clone(&self.paths),
+            Arc::clone(&self.commands),
+            Arc::clone(&self.scoped),
+        );
+        tokio::task::spawn_blocking(move || {
+            let paths = paths
+                .lock()
+                .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
+            let commands = commands
+                .lock()
+                .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
+            scoped
+                .lock()
+                .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+                .register(policy, &paths, &commands)
+                .map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+    }
+    async fn supersede_policy(
+        &self,
+        request: tinysecurity_bus::SupersedePolicyRequest,
+    ) -> BusResult<tinysecurity_bus::SupersedePolicyResponse> {
+        let (paths, commands, scoped) = (
+            Arc::clone(&self.paths),
+            Arc::clone(&self.commands),
+            Arc::clone(&self.scoped),
+        );
+        let (previous_id, next, caller) = (
+            request.previous.clone(),
+            request.next.clone(),
+            request.caller.clone(),
+        );
+        // Validate and diff without exposing anything. Locks drop before any await.
+        let (prepared, previous, review) = tokio::task::spawn_blocking(move || {
+            let paths = paths
+                .lock()
+                .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
+            let commands = commands
+                .lock()
+                .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
+            let registry = scoped
+                .lock()
+                .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
+            let previous = registry
+                .get_owned(&previous_id)
+                .map_err(|error| failure(&error))?;
+            if caller.agent != previous.registered().subject_scope.agent {
+                return Err(failure(&tinysecurity_bus::Error::InvalidArguments));
+            }
+            let prepared = registry
+                .prepare_supersede(&previous_id, next.clone(), &paths, &commands)
+                .map_err(|error| failure(&error))?;
+            let review = previous.review_request(&caller, &next);
+            Ok((prepared, previous, review))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
+        let widenings = prepared.widenings().to_vec();
+        if !widenings.is_empty() {
+            let Some(approval) = request.approval else {
+                return Ok(tinysecurity_bus::SupersedePolicyResponse::ReviewRequired {
+                    review,
+                    widenings,
+                });
+            };
+            // The human approved this exact review under the old policy. Reservation
+            // is once-only and happens after validation, before any activation.
+            let engine = self
+                .approvals
+                .as_ref()
+                .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?;
+            engine
+                .consume(tinysecurity_bus::ApprovalActionRequest2 {
+                    scope_id: approval.scope_id,
+                    request_id: approval.request_id,
+                    request: review,
+                    audit: approval.audit,
+                })
+                .await
+                .map_err(approval_failure)?;
+        }
+        let generation = self.read()?.info().generation;
+        let next_generation = previous.generation().saturating_add(1);
+        let scoped = Arc::clone(&self.scoped);
+        let signals = self.signals.clone();
+        let (policy_id, policy_generation) = tokio::task::spawn_blocking(move || {
+            let mut registry = scoped
+                .lock()
+                .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
+            // Queue publication first: a full outbox rejects and keeps the old policy.
+            let (id, pg) = (prepared_id(&prepared), next_generation);
+            queue_scoped_changed(signals.as_ref(), generation, &id, pg)?;
+            registry
+                .commit_supersede(prepared)
+                .map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
+        Ok(tinysecurity_bus::SupersedePolicyResponse::Activated {
+            policy_id,
+            policy_generation,
+        })
+    }
+    async fn evaluate_scoped(
+        &self,
+        request: tinysecurity_bus::ScopedEvaluateRequest,
+    ) -> BusResult<tinysecurity_bus::ScopedDecision> {
+        let scope = self
+            .scoped
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .get_owned(&request.policy_id)
+            .map_err(|error| failure(&error))?;
+        let policy = self.read()?.clone();
+        let bound = self.requires_bound_audit();
+        let mut decision = tokio::task::spawn_blocking(move || {
+            scope
+                .evaluate(&policy, &request)
+                .map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
+        if bound {
+            deny_allow(&mut decision.decision);
+        }
+        Ok(decision)
+    }
+    async fn check_scoped(
+        &self,
+        request: tinysecurity_bus::ScopedCheckRequest,
+    ) -> BusResult<tinysecurity_bus::ScopedCheckResponse> {
+        let scope = self
+            .scoped
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .get_owned(&request.policy_id)
+            .map_err(|error| failure(&error))?;
+        let policy = self.read()?.clone();
+        let bound = self.requires_bound_audit();
+        let mut response = tokio::task::spawn_blocking(move || {
+            scope
+                .check(&policy, &request)
+                .map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
+        if bound {
+            response.decisions.iter_mut().for_each(deny_allow);
+        }
+        Ok(response)
+    }
+    async fn scoped_policy_info(
+        &self,
+        id: tinysecurity_bus::PolicyId,
+    ) -> BusResult<tinysecurity_bus::ScopedPolicyInfo> {
+        let scope = self
+            .scoped
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .get_owned(&id)
+            .map_err(|error| failure(&error))?;
+        let generation = self.read()?.info().generation;
+        std::future::ready(Ok(scope.info(generation))).await
     }
 }
 fn permission_payload(mut original: serde_json::Value) -> BusResult<String> {
@@ -801,6 +991,10 @@ fn service_for(
         paths: Arc::clone(
             PATH_SCOPES.get_or_init(|| Arc::new(Mutex::new(PathPolicyRegistry::default()))),
         ),
+        scoped: Arc::clone(
+            SCOPED_POLICIES.get_or_init(|| Arc::new(Mutex::new(ScopedPolicyRegistry::default()))),
+        ),
+        signals: None,
     }
 }
 fn configured_approvals(
@@ -946,7 +1140,11 @@ fn host_binding(requested: Option<&str>) -> BusResult<crate::callbacks::PeerBind
     }
 }
 fn queue_policy_changed(connection: &Connection, generation: u64) -> BusResult<()> {
-    let event = tinysecurity_bus::PolicyChanged { generation };
+    let event = tinysecurity_bus::PolicyChanged {
+        generation,
+        policy_id: None,
+        policy_generation: None,
+    };
     let signal = tinybus::Message::signal(
         names::OBJECT_PATH.try_into()?,
         names::INTERFACE.try_into()?,
@@ -954,6 +1152,29 @@ fn queue_policy_changed(connection: &Connection, generation: u64) -> BusResult<(
         serde_json::to_value((event,))?,
     );
     connection.try_send(signal)
+}
+fn queue_scoped_changed(
+    connection: Option<&Connection>,
+    generation: u64,
+    id: &tinysecurity_bus::PolicyId,
+    policy_generation: u64,
+) -> BusResult<()> {
+    let connection = connection.ok_or_else(|| failure(&tinysecurity_bus::Error::Unavailable))?;
+    let event = tinysecurity_bus::PolicyChanged {
+        generation,
+        policy_id: Some(id.clone()),
+        policy_generation: Some(policy_generation),
+    };
+    let signal = tinybus::Message::signal(
+        names::OBJECT_PATH.try_into()?,
+        names::INTERFACE.try_into()?,
+        names::POLICY_CHANGED.try_into()?,
+        serde_json::to_value((event,))?,
+    );
+    connection.try_send(signal)
+}
+fn prepared_id(prepared: &tinysecurity::PreparedSupersede) -> tinysecurity_bus::PolicyId {
+    prepared.next_id().clone()
 }
 fn activate_authorities(
     device: Option<&Arc<tinysecurity::crypto::device_handles::Registry>>,
@@ -1093,6 +1314,7 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
     service.device.clone_from(&device);
     service.secret.clone_from(&secret);
     service.secret_cipher.clone_from(&secret_cipher);
+    service.signals = Some(connection.clone());
     service.sandbox_clock = device_clock;
     service.sandbox = sandbox.as_ref().map(|(_, engine)| Arc::clone(engine));
     service.approvals = approvals.as_ref().map(|(_, engine)| Arc::clone(engine));
@@ -1154,7 +1376,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
+    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = ["ai.tinyhumans.tinysecurity.SecretCipherConsumer2", "ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],

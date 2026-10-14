@@ -18,6 +18,7 @@ tinysecurity-redact.workspace = true
 tinysecurity-bus = { workspace = true }
 thiserror = { workspace = true }
 getrandom = { workspace = true }
+sha2 = { workspace = true }
 unicode-normalization = { workspace = true }
 
 [dev-dependencies]

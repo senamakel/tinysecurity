@@ -139,7 +139,7 @@ pub(crate) fn original(
     let external = request.call.checks.iter().any(|check| match check {
         Check::LocalDiagnostic {} => false,
         Check::Path { write, .. } => *write,
-        Check::Command { .. } | Check::Unknown { .. } => true,
+        Check::Command { .. } | Check::PolicyChange { .. } | Check::Unknown { .. } => true,
     });
     let mut value = serde_json::json!({"scope":reg.subject,"policy_ref":reg.policy_ref,"generation":reg.generation,"caller":request.caller,"tool":request.call.tool,"checks":request.call.checks,"arguments":args,"external_effect":external});
     depth(&value, 0)?;
