@@ -60,11 +60,13 @@ pub enum SourceTrust {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxBackend {
-    /// Namespace state.
+    /// Kernel namespace isolation. Legacy `firejail` and `bubblewrap` host
+    /// settings map here; the module never plans them as separate backends.
     Namespace,
     /// `MicroVm` state.
     MicroVm,
-    /// Jail state.
+    /// Path-jail executor. It is planned only when it reports enforced kernel
+    /// isolation, so an untrusted tier never receives a best-effort jail.
     Jail,
     /// Docker state.
     Docker,
