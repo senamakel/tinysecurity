@@ -344,7 +344,7 @@ fn supersede_without_widening_activates_atomically_and_retires_the_old_id() -> T
     let prepared = f
         .scoped
         .prepare_supersede(&old, narrower, &f.paths, &f.commands)?;
-    assert!(prepared.widenings().is_empty());
+    assert_eq!(prepared.widenings(), []);
     let (new, generation) = f.scoped.commit_supersede(prepared)?;
     assert_eq!(generation, 2);
     assert_ne!(new, old);
