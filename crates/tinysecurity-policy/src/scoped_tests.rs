@@ -776,7 +776,7 @@ fn unfiltered_scopes_surface_prompts_as_unavailable_approval_and_blocks_as_denia
 }
 
 #[test]
-fn fingerprints_cover_every_check_kind() -> TestResult {
+fn fingerprints_cover_every_check_kind() {
     let id = PolicyId("p".into());
     let who = caller("a", "1");
     let kinds = [
@@ -804,7 +804,6 @@ fn fingerprints_cover_every_check_kind() -> TestResult {
             assert_ne!(a, b);
         }
     }
-    Ok(())
 }
 
 #[test]
