@@ -9,6 +9,8 @@ pub(super) struct Stub {
     pub(super) endpoint: String,
     pub(super) requests: Arc<Mutex<Vec<serde_json::Value>>>,
     pub(super) response: Arc<Mutex<(u16, String)>>,
+    #[allow(dead_code)] // only the standalone native example delays replies
+    pub(super) delay_ms: Arc<std::sync::atomic::AtomicU64>,
     stop: oneshot::Sender<()>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -24,13 +26,15 @@ impl Stub {
         let (stop, mut stopped) = oneshot::channel();
         let captured = Arc::clone(&requests);
         let replies = Arc::clone(&response);
+        let delay_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let delays = Arc::clone(&delay_ms);
         let task = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     _ = &mut stopped => break,
                     accepted = listener.accept() => {
                         let Ok((stream,_)) = accepted else { break; };
-                        let _ = tokio::time::timeout(std::time::Duration::from_secs(2),exchange(stream,&captured,&replies)).await;
+                        let _ = tokio::time::timeout(std::time::Duration::from_secs(2),exchange(stream,&captured,&replies,&delays)).await;
                     }
                 }
             }
@@ -39,6 +43,7 @@ impl Stub {
             endpoint,
             requests,
             response,
+            delay_ms,
             stop,
             task,
         })
@@ -53,6 +58,7 @@ async fn exchange(
     mut stream: TcpStream,
     requests: &Mutex<Vec<serde_json::Value>>,
     response: &Mutex<(u16, String)>,
+    delay_ms: &std::sync::atomic::AtomicU64,
 ) -> std::io::Result<()> {
     let mut bytes = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -91,6 +97,10 @@ async fn exchange(
             return Err(std::io::ErrorKind::OutOfMemory.into());
         }
         requests.push(value);
+    }
+    let delay = delay_ms.load(std::sync::atomic::Ordering::SeqCst);
+    if delay > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     }
     let (status, body) = response
         .lock()

@@ -61,7 +61,7 @@ fn judge(endpoint: String) -> JudgeConfig {
         thresholds: vec![],
         timeout_ms: 1000,
         origins: vec![Origin::Operator],
-        max_requests: 3,
+        max_requests: 6,
         budget_window_ms: 60_000,
         cache_entries: 10,
         cache_ttl_ms: 1000,
@@ -118,6 +118,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     GENERATION.store(2, Ordering::SeqCst);
     verify_scoring(&proxy, &stub).await?;
     verify_fallback(&proxy, &stub, &store).await?;
+    verify_matrix(&proxy, &stub).await?;
     let mut invalid = configuration.clone();
     invalid.judge.as_mut().ok_or("judge")?.endpoint = "http://not-loopback.invalid/jev".into();
     invalid.judge.as_mut().ok_or("judge")?.credential = Secret("invalid-candidate-key".into());
@@ -129,11 +130,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     );
     let info: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
     assert_eq!(info.generation, 2);
+    verify_info(&info, &stub)?;
     verify_retained_scoring(&proxy, &stub).await?;
     prompt_failure.store(true, Ordering::SeqCst);
     assert!(
         proxy
-            .call::<EvaluateApprovalResponse2>(names::methods::EVALUATE_APPROVAL2, (begin(7, 10),))
+            .call::<EvaluateApprovalResponse2>(names::methods::EVALUATE_APPROVAL2, (begin(7, 14),))
             .await
             .is_err()
     );
@@ -163,13 +165,29 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn verify_info(
+    info: &PolicyInfo,
+    stub: &stub::Stub,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    assert!(info.callbacks.judge && info.callbacks.approvals);
+    let public = info.judge.as_ref().ok_or("judge info")?;
+    assert_eq!(public.origins, vec![Origin::Operator]);
+    assert_eq!(
+        (public.threshold_millis, public.exfiltrate_millis),
+        (900, 100)
+    );
+    let info_text = serde_json::to_string(info)?;
+    assert!(!info_text.contains("fake-judge-key") && !info_text.contains(&stub.endpoint));
+    Ok(())
+}
+
 async fn verify_retained_scoring(
     proxy: &tinybus::Proxy,
     stub: &stub::Stub,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     *stub.response.lock().map_err(|_| "stub")? = (200, stub::response([1.0, 1.0, 0.0]));
     let retained: EvaluateApprovalResponse2 = proxy
-        .call(names::methods::EVALUATE_APPROVAL2, (begin(9, 7),))
+        .call(names::methods::EVALUATE_APPROVAL2, (begin(9, 11),))
         .await?;
     assert_eq!(retained.decision.verdict, Verdict::Allow);
     assert_eq!(retained.record.attribution.as_deref(), Some("auto:jev"));
@@ -185,7 +203,7 @@ async fn verify_retained_scoring(
         let captured = stub.requests.lock().map_err(|_| "stub")?;
         assert_eq!(
             captured.len(),
-            3,
+            6,
             "fresh identity must use retained SDK endpoint and credential"
         );
         assert_eq!(
@@ -199,14 +217,14 @@ async fn verify_retained_scoring(
             (ApprovalActionRequest2 {
                 scope_id: "a".repeat(32),
                 request_id: retained.record.request_id,
-                request: begin(9, 8).request,
-                audit: audit(8),
+                request: begin(9, 12).request,
+                audit: audit(12),
             },),
         )
         .await?;
     assert_eq!(consumed.state, ApprovalLifecycle2::Reserved);
     let budget: EvaluateApprovalResponse2 = proxy
-        .call(names::methods::EVALUATE_APPROVAL2, (begin(6, 9),))
+        .call(names::methods::EVALUATE_APPROVAL2, (begin(6, 13),))
         .await?;
     assert_eq!(
         budget
@@ -217,7 +235,67 @@ async fn verify_retained_scoring(
             .outcome,
         JudgeOutcome2::Budget
     );
-    assert_eq!(stub.requests.lock().map_err(|_| "stub")?.len(), 3);
+    assert_eq!(stub.requests.lock().map_err(|_| "stub")?.len(), 6);
+    Ok(())
+}
+
+/// Low confidence, malformed and timed-out (SDK reports both as unavailable) replies, and `SaaS` all reach a human, never Allow.
+async fn verify_matrix(
+    proxy: &tinybus::Proxy,
+    stub: &stub::Stub,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let cases = [
+        (stub::response([0.1, 1.0, 0.0]), 0, JudgeOutcome2::Uncertain),
+        (
+            "{\"model\":\"jev-latest\",\"answers\":".to_owned(),
+            0,
+            JudgeOutcome2::Unavailable,
+        ),
+        (
+            stub::response([1.0, 1.0, 0.0]),
+            1500,
+            JudgeOutcome2::Unavailable,
+        ),
+    ];
+    for (offset, (body, delay, expected)) in cases.into_iter().enumerate() {
+        *stub.response.lock().map_err(|_| "stub")? = (200, body);
+        stub.delay_ms.store(delay, Ordering::SeqCst);
+        let sequence = 7 + u64::try_from(offset)?;
+        let row: EvaluateApprovalResponse2 = proxy
+            .call(
+                names::methods::EVALUATE_APPROVAL2,
+                (begin(30 + sequence, sequence),),
+            )
+            .await?;
+        assert!(matches!(
+            row.decision.verdict,
+            Verdict::RequireApproval { .. }
+        ));
+        assert_eq!(row.record.state, ApprovalLifecycle2::Pending);
+        assert!(row.record.attribution.is_none());
+        let evidence = row.record.judge.as_ref().ok_or("matrix evidence")?;
+        assert_eq!(evidence.outcome, expected);
+        assert_eq!(
+            evidence.question_ids,
+            ["intent", "reversible", "exfiltrate"]
+        );
+        assert_eq!(evidence.thresholds.intent, 900);
+        assert_eq!(evidence.thresholds.exfiltrate, 100);
+    }
+    stub.delay_ms.store(0, Ordering::SeqCst);
+    // The SaaS origin is not opted in: it never reaches the judge and needs its own prompt.
+    let before = stub.requests.lock().map_err(|_| "stub")?.len();
+    let mut saas = begin(40, 10);
+    saas.request.caller.origin = Origin::Saas;
+    let pending: EvaluateApprovalResponse2 = proxy
+        .call(names::methods::EVALUATE_APPROVAL2, (saas,))
+        .await?;
+    assert!(matches!(
+        pending.decision.verdict,
+        Verdict::RequireApproval { .. }
+    ));
+    assert!(pending.record.judge.is_none());
+    assert_eq!(stub.requests.lock().map_err(|_| "stub")?.len(), before);
     Ok(())
 }
 
