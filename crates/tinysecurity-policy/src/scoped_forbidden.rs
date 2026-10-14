@@ -68,6 +68,11 @@ pub(crate) fn effective_forbidden(
     let action_dir = Path::new(&policy.action_dir);
     let mut out: Vec<String> = Vec::new();
     for entry in &policy.forbidden_paths {
+        // The floor is spelled the same on every OS, so a Unix floor entry in a
+        // portable default list is a no-op on Windows rather than "not absolute".
+        if !entry.starts_with('~') && !traverses(entry) && !entry.is_empty() && path::floor(entry) {
+            continue;
+        }
         let resolved = resolve_entry(entry, action_dir, home)?
             .to_string_lossy()
             .into_owned();

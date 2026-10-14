@@ -1,5 +1,13 @@
 use super::*;
 
+fn abs(tail: &str) -> PathBuf {
+    std::env::temp_dir().join(tail)
+}
+
+fn text(path: &Path) -> String {
+    path.display().to_string()
+}
+
 fn policy(action: &str, entries: &[&str]) -> PolicyConfig {
     PolicyConfig {
         enabled: true,
@@ -10,26 +18,28 @@ fn policy(action: &str, entries: &[&str]) -> PolicyConfig {
     }
 }
 
-fn effective(entries: &[&str], home: Option<&str>) -> Result<Vec<String>> {
-    effective_forbidden(&policy("/work/action", entries), home.map(Path::new))
+fn effective(entries: &[&str], home: Option<&Path>) -> Result<Vec<String>> {
+    effective_forbidden(&policy(&text(&abs("action")), entries), home)
 }
 
 #[test]
 fn absolute_entries_pass_through_unchanged_and_deduplicate() {
+    let (secret, other) = (text(&abs("secret")), text(&abs("other")));
     assert_eq!(
-        effective(&["/work/secret", "/work/secret", "/work/other"], None),
-        Ok(vec!["/work/secret".into(), "/work/other".into()])
+        effective(&[&secret, &secret, &other], None),
+        Ok(vec![secret, other])
     );
 }
 
 #[test]
 fn tilde_entries_expand_against_the_registered_home() {
+    let home = abs("home");
     assert_eq!(
-        effective(&["~/.config/app", "~", "~\\win"], Some("/home/u")),
+        effective(&["~/.config/app", "~", "~\\win"], Some(&home)),
         Ok(vec![
-            "/home/u/.config/app".into(),
-            "/home/u".into(),
-            "/home/u/win".into()
+            text(&home.join(".config").join("app")),
+            text(&home),
+            text(&home.join("win"))
         ])
     );
 }
@@ -39,18 +49,19 @@ fn tilde_without_a_registered_home_or_with_a_user_form_is_rejected() {
     assert_eq!(effective(&["~/x"], None), Err(Error::InvalidArguments));
     assert_eq!(effective(&["~"], None), Err(Error::InvalidArguments));
     assert_eq!(
-        effective(&["~other/x"], Some("/home/u")),
+        effective(&["~other/x"], Some(&abs("home"))),
         Err(Error::InvalidArguments)
     );
 }
 
 #[test]
 fn relative_entries_resolve_against_the_action_dir() {
+    let action = abs("action");
     assert_eq!(
         effective(&["private", "a/b"], None),
         Ok(vec![
-            "/work/action/private".into(),
-            "/work/action/a/b".into()
+            text(&action.join("private")),
+            text(&action.join("a").join("b"))
         ])
     );
 }
@@ -62,9 +73,10 @@ fn relative_entries_cannot_be_anchored_without_an_absolute_action_dir() {
         Err(Error::InvalidArguments)
     );
     // Absolute entries do not need an anchor.
+    let abs_entry = text(&abs("abs"));
     assert_eq!(
-        effective_forbidden(&policy("relative-action", &["/abs"]), None),
-        Ok(vec!["/abs".into()])
+        effective_forbidden(&policy("relative-action", &[&abs_entry]), None),
+        Ok(vec![abs_entry])
     );
 }
 
@@ -76,9 +88,10 @@ fn rooted_entries_without_a_drive_are_refused_on_windows() {
 
 #[test]
 fn traversal_nul_and_empty_entries_are_rejected_not_dropped() {
+    let home = abs("home");
     for entry in ["", "../up", "a/../b", "/abs/../x", "~/../x", "nul\0byte"] {
         assert_eq!(
-            effective(&[entry], Some("/home/u")),
+            effective(&[entry], Some(&home)),
             Err(Error::InvalidArguments),
             "{entry:?}"
         );
@@ -87,16 +100,12 @@ fn traversal_nul_and_empty_entries_are_rejected_not_dropped() {
 
 #[test]
 fn entries_inside_the_unconditional_floor_are_redundant_noops() {
+    let (home, kept) = (abs("home"), text(&abs("secret")));
     assert_eq!(
         effective(
-            &[
-                "/etc/passwd",
-                "~/.ssh",
-                "~/.aws/credentials",
-                "/work/secret"
-            ],
-            Some("/home/u")
+            &["/etc/passwd", "~/.ssh", "~/.aws/credentials", &kept],
+            Some(&home)
         ),
-        Ok(vec!["/work/secret".into()])
+        Ok(vec![kept])
     );
 }

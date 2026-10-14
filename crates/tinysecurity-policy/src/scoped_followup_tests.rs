@@ -223,7 +223,12 @@ fn forbidden_paths_fall_back_to_the_command_scope_home_and_reject_unresolvable_e
     let id = f.register(r.clone())?;
     assert_eq!(
         f.scoped.get_owned(&id)?.effective_policy().forbidden_paths,
-        [f.dir.path().join("home/secret").display().to_string()]
+        [f.dir
+            .path()
+            .join("home")
+            .join("secret")
+            .display()
+            .to_string()]
     );
     for bad in ["../escape", "", "~user/x", "a/../b"] {
         let mut other = f.registered("b", true, CommandAutonomy::Full)?;
