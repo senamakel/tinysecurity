@@ -222,6 +222,7 @@ async fn serve_approvals(
         None,
     );
     service.approvals = Some(engine);
+    service.signals = Some(module.clone());
     module
         .serve_at(
             names::OBJECT_PATH.parse()?,
@@ -609,5 +610,288 @@ async fn verify_judge_one_shot(
             .await
             .is_err()
     );
+    Ok(())
+}
+
+fn change_subject() -> SubjectScope {
+    SubjectScope {
+        user: "user".into(),
+        workspace: "workspace".into(),
+        agent: "agent".into(),
+    }
+}
+fn change_caller() -> CallerContext {
+    CallerContext {
+        agent: "agent".into(),
+        call_id: "change-1".into(),
+        thread: Some("thread".into()),
+        tier: AccessTier::Full,
+        ..Default::default()
+    }
+}
+async fn registered_policy(
+    proxy: &tinybus::Proxy,
+    root: &std::path::Path,
+    judge: bool,
+) -> std::result::Result<RegisteredPolicy, Box<dyn std::error::Error>> {
+    let path_policy_id: PathPolicyId = proxy
+        .call(
+            names::methods::REGISTER_PATH_POLICY,
+            (fixture_policy(root),),
+        )
+        .await?;
+    let command_policy_id: CommandPolicyId = proxy
+        .call(
+            names::methods::REGISTER_COMMAND_POLICY,
+            (CommandPolicy {
+                action_dir: root.into(),
+                ..command_fixture()?
+            },),
+        )
+        .await?;
+    Ok(RegisteredPolicy {
+        path_policy_id,
+        settings: PolicySettings {
+            policy: PolicyConfig {
+                enabled: true,
+                action_dir: root.display().to_string(),
+                workspace_dir: root.display().to_string(),
+                allowed_commands: vec![],
+                forbidden_paths: vec![],
+            },
+            privacy: PrivacyMode::Standard,
+            egress_hosts: vec![],
+            command_classes: vec![],
+            auto_origins: vec![],
+            judge_enabled: judge,
+        },
+        tool_rules: vec![],
+        command_policy_id,
+        subject_scope: change_subject(),
+    })
+}
+async fn supersede(
+    proxy: &tinybus::Proxy,
+    previous: &PolicyId,
+    next: &RegisteredPolicy,
+    approval: Option<PolicyChangeApproval>,
+) -> tinybus::Result<SupersedePolicyResponse> {
+    proxy
+        .call(
+            names::methods::SUPERSEDE_POLICY,
+            (SupersedePolicyRequest {
+                caller: change_caller(),
+                previous: previous.clone(),
+                next: next.clone(),
+                approval,
+            },),
+        )
+        .await
+}
+#[tokio::test]
+async fn widening_policy_change_needs_one_human_approval_under_the_old_policy()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = Connection::connect(bus.connect().await?).await?;
+    let module = Connection::connect(bus.connect().await?).await?;
+    let dir = tempfile::tempdir()?;
+    let ledger = dir.path().join("ledger");
+    std::fs::write(&ledger, [])?;
+    let store = Arc::new(Mutex::new(store::DiskStore::open(&ledger)?));
+    let clock = Arc::new(TestClock(AtomicU64::new(1000)));
+    let failure = Arc::new(AtomicBool::new(false));
+    serve_approvals(&host, &module, &clock, &store, &failure, None).await?;
+    let module_peer = module.unique_name().ok_or("module peer")?;
+    let proxy = host.proxy(module_peer.as_str(), names::OBJECT_PATH, names::INTERFACE)?;
+
+    let root = dir.path().join("root");
+    std::fs::create_dir_all(&root)?;
+    let base = registered_policy(&proxy, &root, false).await?;
+    let old: PolicyId = proxy
+        .call(names::methods::REGISTER_POLICY, (base.clone(),))
+        .await?;
+    let same: PolicyId = proxy
+        .call(names::methods::REGISTER_POLICY, (base.clone(),))
+        .await?;
+    assert_eq!(old, same);
+
+    // The review is only ever requested when the replacement widens.
+    let wide = registered_policy(&proxy, &root, true).await?;
+    let SupersedePolicyResponse::ReviewRequired { review, widenings } =
+        supersede(&proxy, &old, &wide, None).await?
+    else {
+        return Err("widening change activated without review".into());
+    };
+    assert!(widenings.iter().any(|w| w.kind == WideningKind::Judge));
+    let info: ScopedPolicyInfo = proxy
+        .call(names::methods::SCOPED_POLICY_INFO, (old.clone(),))
+        .await?;
+    assert!(
+        !info.superseded,
+        "an unapproved widening must leave the old policy active"
+    );
+
+    // Unapproved or foreign approvals cannot activate it.
+    let pending: EvaluateApprovalResponse2 = proxy
+        .call(
+            names::methods::EVALUATE_APPROVAL2,
+            (EvaluateApprovalRequest2 {
+                scope_id: "a".repeat(32),
+                request: review.clone(),
+                ttl_ms: None,
+                summary: "policy change".into(),
+                audit: audit(1),
+            },),
+        )
+        .await?;
+    // The fixture's reentrant human approves the first prompt; the policy change was
+    // parked for that human rather than allowed by Evaluate.
+    assert_eq!(pending.record.state, ApprovalLifecycle2::Approved);
+    assert_eq!(pending.record.tool_name, POLICY_CHANGE_TOOL);
+    assert!(pending.record.external_effect);
+    let claim = |sequence| PolicyChangeApproval {
+        scope_id: "a".repeat(32),
+        request_id: pending.record.request_id.clone(),
+        audit: audit(sequence),
+    };
+    let mut bogus = claim(3);
+    bogus.request_id = "f".repeat(32);
+    assert!(supersede(&proxy, &old, &wide, Some(bogus)).await.is_err());
+    let still: ScopedPolicyInfo = proxy
+        .call(names::methods::SCOPED_POLICY_INFO, (old.clone(),))
+        .await?;
+    assert!(
+        !still.superseded,
+        "a failed approval must leave the old policy active"
+    );
+    // The approval is bound to the exact replacement, not to any change.
+    let other = registered_policy(&proxy, &root, true).await?;
+    let mut other = other;
+    other.settings.auto_origins.push(Origin::Cron);
+    assert!(
+        supersede(&proxy, &old, &other, Some(claim(3)))
+            .await
+            .is_err()
+    );
+    let SupersedePolicyResponse::Activated {
+        policy_id,
+        policy_generation,
+    } = supersede(&proxy, &old, &wide, Some(claim(3))).await?
+    else {
+        return Err("approved change did not activate".into());
+    };
+    assert_eq!(policy_generation, 2);
+    let old_info: ScopedPolicyInfo = proxy
+        .call(names::methods::SCOPED_POLICY_INFO, (old.clone(),))
+        .await?;
+    assert!(old_info.superseded);
+    let new_info: ScopedPolicyInfo = proxy
+        .call(names::methods::SCOPED_POLICY_INFO, (policy_id,))
+        .await?;
+    assert!(new_info.settings.judge_enabled && !new_info.superseded);
+    // Replaying the consumed approval cannot widen again.
+    assert!(
+        supersede(&proxy, &old, &wide, Some(claim(4)))
+            .await
+            .is_err()
+    );
+    broker.abort();
+    Ok(())
+}
+#[tokio::test]
+async fn narrowing_policy_change_activates_without_review_and_scoped_calls_follow_it()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let server = Connection::connect(bus.connect().await?).await?;
+    let dir = tempfile::tempdir()?;
+    let mut service = service_for(
+        Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
+        None,
+    );
+    service.signals = Some(server.clone());
+    server
+        .serve_at(names::OBJECT_PATH.try_into()?, service)
+        .await?;
+    server.request_name(names::INTERFACE).await?;
+    let client = Connection::connect(bus.connect().await?).await?;
+    let proxy = client.proxy(names::INTERFACE, names::OBJECT_PATH, names::INTERFACE)?;
+    let mut base = registered_policy(&proxy, dir.path(), true).await?;
+    base.subject_scope.agent = "agent-narrow".into();
+    let old: PolicyId = proxy
+        .call(names::methods::REGISTER_POLICY, (base.clone(),))
+        .await?;
+    let mut narrow = base.clone();
+    narrow.settings.privacy = PrivacyMode::LocalOnly;
+    let mut caller = change_caller();
+    caller.agent = "agent-narrow".into();
+    let request = |next: &RegisteredPolicy| SupersedePolicyRequest {
+        caller: caller.clone(),
+        previous: old.clone(),
+        next: next.clone(),
+        approval: None,
+    };
+    let SupersedePolicyResponse::Activated {
+        policy_id,
+        policy_generation,
+    } = proxy
+        .call(names::methods::SUPERSEDE_POLICY, (request(&narrow),))
+        .await?
+    else {
+        return Err("narrowing change required review".into());
+    };
+    assert_eq!(policy_generation, 2);
+    let scoped = |id: &PolicyId| ScopedEvaluateRequest {
+        policy_id: id.clone(),
+        caller: caller.clone(),
+        call: ToolCall {
+            tool: "local_diagnostic".into(),
+            arguments_json: "{}".into(),
+            checks: vec![Check::LocalDiagnostic {}],
+        },
+    };
+    let now: ScopedDecision = proxy
+        .call(names::methods::EVALUATE_SCOPED, (scoped(&policy_id),))
+        .await?;
+    assert_eq!(now.decision.verdict, Verdict::Allow);
+    assert_eq!(now.policy_generation, 2);
+    let retired: ScopedDecision = proxy
+        .call(names::methods::EVALUATE_SCOPED, (scoped(&old),))
+        .await?;
+    assert_eq!(
+        retired.decision.verdict,
+        Verdict::Deny {
+            reason: DenialReason::InvalidContext
+        }
+    );
+    let checked: ScopedCheckResponse = proxy
+        .call(
+            names::methods::CHECK_SCOPED,
+            (ScopedCheckRequest {
+                policy_id: policy_id.clone(),
+                caller: caller.clone(),
+                checks: vec![Check::LocalDiagnostic {}],
+            },),
+        )
+        .await?;
+    assert_eq!(checked.decisions[0].verdict, Verdict::Allow);
+    assert_eq!(checked.fingerprint.len(), 64);
+    // A different agent cannot use another subject's policy id.
+    let mut foreign = scoped(&policy_id);
+    foreign.caller.agent = "someone-else".into();
+    let denied: ScopedDecision = proxy
+        .call(names::methods::EVALUATE_SCOPED, (foreign,))
+        .await?;
+    assert_eq!(
+        denied.decision.verdict,
+        Verdict::Deny {
+            reason: DenialReason::InvalidContext
+        }
+    );
+    let info: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
+    assert!(info.scoped_policies >= 1);
+    assert!(!info.callbacks.approvals && !info.callbacks.audit && !info.callbacks.judge);
+    broker.abort();
     Ok(())
 }

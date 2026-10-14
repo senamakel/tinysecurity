@@ -37,6 +37,9 @@ impl RegisteredCommandPolicy {
     pub fn budget(&self) -> Arc<CommandBudget> {
         Arc::clone(&self.budget)
     }
+    pub(crate) fn policy(&self) -> &CommandPolicy {
+        self.scope.policy()
+    }
     /// Informational classification only; never grants permission to execute.
     /// # Errors
     /// Rejects oversized command input.

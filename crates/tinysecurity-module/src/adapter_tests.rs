@@ -431,6 +431,8 @@ fn only_implemented_members_are_advertised() -> std::result::Result<(), Box<dyn 
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
         egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+        scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
+        signals: None,
     };
     assert_eq!(service.name().as_str(), names::INTERFACE);
     assert_eq!(
@@ -464,6 +466,8 @@ async fn native_dispatch_rejects_malformed_args_and_serves_ordered_checks()
                 paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
                 commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
                 egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+                scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
+                signals: None,
             },
         )
         .await?;
@@ -799,6 +803,8 @@ async fn blocked_filesystem_query_does_not_block_policy_info_or_another_scope()
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
         egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+        scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
+        signals: None,
     };
     let bus = MemoryBus::new();
     let broker = Broker::new().spawn(bus.clone());
@@ -873,6 +879,8 @@ async fn blocked_registration_does_not_block_policy_info_or_another_scope()
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
         egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+        scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
+        signals: None,
     };
     let bus = MemoryBus::new();
     let broker = Broker::new().spawn(bus.clone());
@@ -1277,6 +1285,8 @@ async fn native_egress_dispatch_binds_scope_and_denies_legacy_or_generic_local_c
                 paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
                 commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
                 egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+                scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
+                signals: None,
             },
         )
         .await?;
@@ -1417,6 +1427,8 @@ async fn consumption_work_runs_off_the_sole_sdk_worker_without_registry_locks()
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
         egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+        scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
+        signals: None,
     };
     let subject = SubjectScope {
         user: "user".into(),

@@ -49,6 +49,16 @@ pub mod methods {
     pub const VALIDATE_PARENT: &str = "ValidateParent";
     /// Boolean filesystem policy query.
     pub const CHECK_PATH: &str = "CheckPath";
+    /// Register an immutable per-subject policy over path and command scopes.
+    pub const REGISTER_POLICY: &str = "RegisterPolicy";
+    /// Atomically replace an active policy, with human review when it widens.
+    pub const SUPERSEDE_POLICY: &str = "SupersedePolicy";
+    /// Evaluate an original call under a registered policy.
+    pub const EVALUATE_SCOPED: &str = "EvaluateScoped";
+    /// Check an ordered batch under a registered policy.
+    pub const CHECK_SCOPED: &str = "CheckScoped";
+    /// Effective settings of one registered policy.
+    pub const SCOPED_POLICY_INFO: &str = "ScopedPolicyInfo";
     /// Register a fresh immutable agent command scope and hourly budget.
     pub const REGISTER_COMMAND_POLICY: &str = "RegisterCommandPolicy";
     /// Informational classification; never an execution grant.
@@ -146,6 +156,11 @@ pub const METHODS: &[&str] = &[
     methods::IMPORT_APPROVAL_HISTORY2,
     methods::PARSE_REPLY,
     methods::POLICY_INFO,
+    methods::REGISTER_POLICY,
+    methods::SUPERSEDE_POLICY,
+    methods::EVALUATE_SCOPED,
+    methods::CHECK_SCOPED,
+    methods::SCOPED_POLICY_INFO,
 ];
 /// Accepted policy activation event.
 pub const POLICY_CHANGED: &str = "PolicyChanged";
