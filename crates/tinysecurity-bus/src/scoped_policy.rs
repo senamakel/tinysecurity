@@ -151,7 +151,7 @@ pub struct Widening {
 }
 
 /// Exact approval previously requested for a widening replacement.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyChangeApproval {
     /// Trusted approval registration of the subject.
@@ -160,11 +160,6 @@ pub struct PolicyChangeApproval {
     pub request_id: String,
     /// Exact audit phase for the reservation.
     pub audit: AuditCorrelation2,
-}
-impl std::fmt::Debug for PolicyChangeApproval {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("PolicyChangeApproval([REDACTED])")
-    }
 }
 
 /// Atomically replace an active policy of one subject.
