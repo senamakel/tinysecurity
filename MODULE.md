@@ -255,19 +255,27 @@ references, not credentials, and registration is a trusted-host operation.
 the registered subject, so one tenant cannot use another's id. Decisions carry
 the module generation, the policy's lineage generation and a SHA-256 call
 fingerprint over the policy id, caller (excluding only the call instance) and
-the original call, so a host decision cache keys on (generation, fingerprint).
-Commands run through the registered command scope, so budgets and classes are
-per subject. A superseded id denies with `invalid_context`.
+the original call. The fingerprint correlates and binds a decision to its call;
+it does not make the decision reusable. Hosts may reuse a decision only when its
+`cacheable` flag is true, and scoped decisions are never cacheable because command
+checks reserve budget. The registered filesystem scope applies on top of the base
+settings, and commands run through the registered command scope, so budgets and
+classes are per subject. A superseded id denies with `invalid_context`. Scoped
+members return `approval_unavailable` for permitted work while required audit is
+configured; an audited scoped variant is a follow-up.
 
 `SupersedePolicy` replaces a subject's active policy atomically; the old policy
 stays active on any failure. If the replacement widens authority (new or broader
 roots, removed restrictions, new hosts or tools, higher command autonomy,
-classes, allowlist entries or budget, new auto origins, judge enabled, enforcement
-disabled or privacy loosened) the response is `ReviewRequired` with the exact
+classes, allowlist entries or budget, a different command scope or execution
+context, which starts a fresh hourly ledger, new auto origins, judge enabled,
+enforcement or the registered path scope disabled, or privacy loosened) the response is `ReviewRequired` with the exact
 `policy_change` call. The host passes it to `EvaluateApproval2` under the old
 policy's approval scope; after a human decision it repeats the request with
-`PolicyChangeApproval`, which reserves the approval once before activation. A
-narrowing change activates without review. Activation emits `PolicyChanged`
+`PolicyChangeApproval`, which reserves the approval once before activation. Only a
+row decided by an authenticated human qualifies; automatic, judge and reused
+approvals are refused. A
+narrowing change activates without review. Committed activation emits `PolicyChanged`
 carrying the new `policy_id` and `policy_generation`.
 
 `PolicyInfo` adds nonsensitive judge settings, callback and authority

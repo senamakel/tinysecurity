@@ -196,9 +196,19 @@ async fn serve_approvals(
     failure: &Arc<AtomicBool>,
     automatic: Option<Arc<tinysecurity::auto::Engine>>,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    serve_approvals_with(host, module, clock, store, failure, automatic, settings()).await
+}
+async fn serve_approvals_with(
+    host: &Connection,
+    module: &Connection,
+    clock: &Arc<TestClock>,
+    store: &Arc<Mutex<store::DiskStore>>,
+    failure: &Arc<AtomicBool>,
+    automatic: Option<Arc<tinysecurity::auto::Engine>>,
+    (config, audit_config): (ApprovalConfig2, AuditConfig2),
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let host_peer = host.unique_name().ok_or("host peer")?;
     let module_peer = module.unique_name().ok_or("module peer")?;
-    let (config, audit_config) = settings();
     let subject = audit_config.scope.clone();
     let redactor = tinysecurity::Redactor::new(&RedactorConfig {
         secrets: vec![Secret("fake-judge-key".into())],
@@ -892,6 +902,78 @@ async fn narrowing_policy_change_activates_without_review_and_scoped_calls_follo
     let info: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
     assert!(info.scoped_policies >= 1);
     assert!(!info.callbacks.approvals && !info.callbacks.audit && !info.callbacks.judge);
+    broker.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn automatic_approval_cannot_authorize_a_widening_policy_change()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = Connection::connect(bus.connect().await?).await?;
+    let module = Connection::connect(bus.connect().await?).await?;
+    let dir = tempfile::tempdir()?;
+    let ledger = dir.path().join("ledger");
+    std::fs::write(&ledger, [])?;
+    let store = Arc::new(Mutex::new(store::DiskStore::open(&ledger)?));
+    let clock = Arc::new(TestClock(AtomicU64::new(1000)));
+    let failure = Arc::new(AtomicBool::new(false));
+    let (mut config, audit_config) = settings();
+    config.scopes[0].auto_approve_all = true;
+    serve_approvals_with(
+        &host,
+        &module,
+        &clock,
+        &store,
+        &failure,
+        None,
+        (config, audit_config),
+    )
+    .await?;
+    let module_peer = module.unique_name().ok_or("module peer")?;
+    let proxy = host.proxy(module_peer.as_str(), names::OBJECT_PATH, names::INTERFACE)?;
+    let root = dir.path().join("root");
+    std::fs::create_dir_all(&root)?;
+    // The registry is process-wide, so this test owns a distinct subject.
+    let mut base = registered_policy(&proxy, &root, false).await?;
+    base.subject_scope.workspace = "workspace-auto".into();
+    let old: PolicyId = proxy.call(names::methods::REGISTER_POLICY, (base,)).await?;
+    let mut wide = registered_policy(&proxy, &root, true).await?;
+    wide.subject_scope.workspace = "workspace-auto".into();
+    let SupersedePolicyResponse::ReviewRequired { review, .. } =
+        supersede(&proxy, &old, &wide, None).await?
+    else {
+        return Err("widening change activated without review".into());
+    };
+    let approved: EvaluateApprovalResponse2 = proxy
+        .call(
+            names::methods::EVALUATE_APPROVAL2,
+            (EvaluateApprovalRequest2 {
+                scope_id: "a".repeat(32),
+                request: review,
+                ttl_ms: None,
+                summary: "policy change".into(),
+                audit: audit(1),
+            },),
+        )
+        .await?;
+    // The configuration approves automatically, which is not a human decision.
+    assert_eq!(approved.record.state, ApprovalLifecycle2::Approved);
+    assert_eq!(
+        approved.record.attribution.as_deref(),
+        Some("auto:host-policy")
+    );
+    let claim = PolicyChangeApproval {
+        scope_id: "a".repeat(32),
+        request_id: approved.record.request_id,
+        audit: audit(2),
+    };
+    assert!(supersede(&proxy, &old, &wide, Some(claim)).await.is_err());
+    let info: ScopedPolicyInfo = proxy
+        .call(names::methods::SCOPED_POLICY_INFO, (old,))
+        .await?;
+    assert!(!info.superseded);
     broker.abort();
     Ok(())
 }
