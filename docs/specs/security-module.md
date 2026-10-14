@@ -202,6 +202,36 @@ The stable journal supplies receipt authority; rotated files are reconstructable
 views. Process termination/recovery tests do not imply physical power-loss or
 Windows directory-creation durability guarantees.
 
+
+### Audit versus Audit2
+
+One ordered, contiguous audit stream per trusted scope and stream identity carries
+policy-change, native-routine, approval, judge, shell, execution and sandbox
+decisions as `AuditKind2` events. `Audit2` (callback `AuditSink2`) is the only
+served audit member. The legacy `Audit` name and `AuditKind`/bool-receipt
+vocabulary are reserved and never served: a bool cannot prove which event
+committed, in what order, or against which tail. Every legacy kind keeps its
+serialized name in `AuditKind2`; `shell` is the one added category.
+
+`Audit2` takes an exact sanitized batch with `expected_tail` and returns an exact
+receipt (`AuditEventReceipt2` per event, `new_tail`) only after data and metadata
+sync. `EvaluateAudited2`/`CheckAudited2` (and the scoped variants) derive the
+pre-execution event from the original request and computed verdict, so the host
+never supplies the verdict. Terminal `RecordExecution2` events are a separate
+phase.
+
+Local files: Unix creates journal, lock and JSONL projections fd-relative with
+mode 0600 and verifies owner and mode on every open. Windows requires a
+preprovisioned protected current-user DACL and creates new views with restricted
+inherited access; it never widens an existing ACL. Rotation runs before the
+journal append, so a rotation failure (including a Windows sharing/lock violation
+on rename) denies the candidate before any journal byte is written, and the same
+retry commits exactly once after the blocker releases.
+
+Failure semantics: required audit denies pre-execution on any callback or storage
+failure, timeout, malformed receipt or stale generation. Optional audit reports
+degraded health, never fabricates a receipt and never sets `committed`; scope and
+sanitation failures deny even when audit is optional.
 ## Sandbox and crypto
 
 Contract 1.9 implements `Plan2`, `EvaluateSandboxApproval2` and
