@@ -20,18 +20,21 @@ a controlled runner and representative workload.
 
 The characterized host debug path over two checks was 35 us p50 / 63 us p99.
 The native boundary is substantially slower in this debug workload. These
-numbers do not establish release-build performance, or a product migration
-budget. A provisional gate to measure before migration is <=1 ms p50 and
-<=10 ms p99 per batched Check on the same supported native runner. That gate
-must be agreed against a representative released-module workload and its
-number of calls per turn before host callers move. Bootstrap remains
-release-gated irrespective of this synthetic result.
+debug numbers are historical; the release-build figures and the agreed budget
+below supersede them.
 
 ## Release budget (enforced in CI)
 
-Release build, same workload (500 samples per method, Linux x86_64, October 14,
-2026): Evaluate 50.6 us p50 / 62.9 us p99; Check (two checks) 52.1 us p50 /
-68.6 us p99.
+Release build, same workload (500 samples per method, Linux 7.0.0-31-generic
+x86_64, October 14, 2026):
+
+| Native method | p50 | p99 |
+| --- | --- | --- |
+| Evaluate | 50.6 us | 62.9 us |
+| Check (two checks) | 52.1 us | 68.6 us |
+
+Release is roughly 9x faster at p50 than the debug run above, so debug numbers
+must not be used for budgeting.
 
 The agreed budget per bus call on a supported native runner is p50 <= 1 ms and
 p99 <= 10 ms for both Evaluate and Check, roughly 20x and 150x headroom over
