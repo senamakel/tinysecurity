@@ -139,7 +139,10 @@ pub(crate) fn original(
     let external = request.call.checks.iter().any(|check| match check {
         Check::LocalDiagnostic {} => false,
         Check::Path { write, .. } => *write,
-        Check::Command { .. } | Check::PolicyChange { .. } | Check::Unknown { .. } => true,
+        Check::Command { .. }
+        | Check::PolicyChange { .. }
+        | Check::HostTool {}
+        | Check::Unknown { .. } => true,
     });
     let mut value = serde_json::json!({"scope":reg.subject,"policy_ref":reg.policy_ref,"generation":reg.generation,"caller":request.caller,"tool":request.call.tool,"checks":request.call.checks,"arguments":args,"external_effect":external});
     depth(&value, 0)?;
@@ -273,7 +276,12 @@ fn lifecycle_valid(row: &ApprovalRow2) -> bool {
                 && (row.decision_ticket_sha256.is_some()
                     || matches!(
                         row.attribution.as_deref(),
-                        Some("auto:host-policy" | "exact-reviewed-grant")
+                        Some(
+                            "auto:host-policy"
+                                | "auto:tool-grant"
+                                | "auto:flow-grant"
+                                | "exact-reviewed-grant"
+                        )
                     )
                     || (row.attribution.as_deref() == Some("auto:jev")
                         && row.choice == Some(ApprovalChoice2::Once)

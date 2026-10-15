@@ -41,6 +41,12 @@ pub mod methods {
     pub const EXPIRE_APPROVAL2: &str = "ExpireApproval2";
     /// Bounded exact already-reviewed flow grant validation.
     pub const PREAUTHORIZE_FLOW2: &str = "PreauthorizeFlow2";
+    /// Register a runtime approval scope and its tool and flow grants (contract 1.17).
+    pub const REGISTER_APPROVAL_SCOPE2: &str = "RegisterApprovalScope2";
+    /// Atomically replace one scope's posture, grants or policy reference (contract 1.17).
+    pub const REPLACE_APPROVAL_SCOPE2: &str = "ReplaceApprovalScope2";
+    /// Retire a scope so later calls under it deny (contract 1.17).
+    pub const RETIRE_APPROVAL_SCOPE2: &str = "RetireApprovalScope2";
     /// Evaluate member.
     pub const EVALUATE: &str = "Evaluate";
     /// Check member.
@@ -169,6 +175,9 @@ pub const METHODS: &[&str] = &[
     methods::CANCEL_APPROVAL2,
     methods::EXPIRE_APPROVAL2,
     methods::PREAUTHORIZE_FLOW2,
+    methods::REGISTER_APPROVAL_SCOPE2,
+    methods::REPLACE_APPROVAL_SCOPE2,
+    methods::RETIRE_APPROVAL_SCOPE2,
     methods::IMPORT_APPROVAL_HISTORY2,
     methods::PARSE_REPLY,
     methods::POLICY_INFO,

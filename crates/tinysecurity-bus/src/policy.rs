@@ -87,6 +87,11 @@ pub enum Check {
         /// SHA-256 over the previous id and the exact replacement.
         digest: String,
     },
+    /// A host-registered tool with an external effect the module cannot inspect
+    /// beyond its other checks (contract 1.17). Alone it always needs approval; it
+    /// never relaxes a path or command check carried beside it, and it is valid only
+    /// for tool names outside the reserved effect classes.
+    HostTool {},
     /// An effect not supported by this engine.
     Unknown {
         /// Content-free descriptor.

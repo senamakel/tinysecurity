@@ -770,6 +770,39 @@ impl PolicyService {
             .await
             .map_err(approval_failure)
     }
+    // Private host-only configuration: the subject is a trusted-adapter claim.
+    async fn register_approval_scope2(
+        &self,
+        request: tinysecurity_bus::RegisterApprovalScopeRequest2,
+    ) -> BusResult<tinysecurity_bus::ApprovalScopeReceipt2> {
+        self.approvals
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?
+            .register_scope(request)
+            .await
+            .map_err(approval_failure)
+    }
+    async fn replace_approval_scope2(
+        &self,
+        request: tinysecurity_bus::RegisterApprovalScopeRequest2,
+    ) -> BusResult<tinysecurity_bus::ApprovalScopeReceipt2> {
+        let engine = self
+            .approvals
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?;
+        std::future::ready(engine.replace_scope(request).map_err(approval_failure)).await
+    }
+    async fn retire_approval_scope2(
+        &self,
+        request: tinysecurity_bus::RetireApprovalScopeRequest2,
+    ) -> BusResult<tinysecurity_bus::ApprovalScopeReceipt2> {
+        self.approvals
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?
+            .retire_scope(request)
+            .await
+            .map_err(approval_failure)
+    }
     async fn import_approval_history2(
         &self,
         request: tinysecurity_bus::ApprovalHistoryImport2,
@@ -1599,7 +1632,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanToolDefinition"],
+    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = ["ai.tinyhumans.tinysecurity.KeyringConsent2", "ai.tinyhumans.tinysecurity.SecretCipherConsumer2", "ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],

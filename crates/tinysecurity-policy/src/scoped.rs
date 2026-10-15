@@ -104,6 +104,7 @@ fn check_fields(h: &mut Sha256, check: &Check) {
             field(h, command);
         }
         Check::LocalDiagnostic {} => field(h, "local_diagnostic"),
+        Check::HostTool {} => field(h, "host_tool"),
         Check::PolicyChange { digest } => {
             field(h, "policy_change");
             field(h, digest);

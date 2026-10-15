@@ -115,6 +115,16 @@ impl Policy {
                     .checks
                     .iter()
                     .all(|c| matches!(c, Check::PolicyChange { .. })),
+                tool if tinysecurity_bus::is_host_tool_name2(tool) => {
+                    request
+                        .call
+                        .checks
+                        .iter()
+                        .any(|c| matches!(c, Check::HostTool {}))
+                        && request.call.checks.iter().all(|c| {
+                            !matches!(c, Check::Unknown { .. } | Check::PolicyChange { .. })
+                        })
+                }
                 _ => false,
             };
         if !matching {
@@ -179,7 +189,9 @@ impl Policy {
         let result = match check {
             Check::LocalDiagnostic {} => Ok(()),
             Check::Unknown { .. } => Err(DenialReason::UnsupportedEffect),
-            Check::PolicyChange { .. } => Err(DenialReason::ApprovalUnavailable),
+            Check::HostTool {} | Check::PolicyChange { .. } => {
+                Err(DenialReason::ApprovalUnavailable)
+            }
             Check::Path { path, write } => path::check(settings, path, *write)
                 .and_then(|()| hooks.map_or(Ok(()), |h| (h.path)(path, *write)))
                 .and_then(|()| {

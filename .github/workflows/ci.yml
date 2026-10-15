@@ -171,6 +171,8 @@ jobs:
           $verifier = (Resolve-Path 'target/debug/examples/verify_module.exe').Path
           cargo run --locked --package tinysecurity-module --example approval_native_contract -- $verifiedModule
           if ($LASTEXITCODE -ne 0) { throw 'native approval verifier failed in workspace' }
+          cargo run --locked --package tinysecurity-module --example approval_scope_native_contract -- $verifiedModule
+          if ($LASTEXITCODE -ne 0) { throw 'native approval scope verifier failed in workspace' }
           cargo run --locked --package tinysecurity-module --example judge_native_contract -- $verifiedModule
           if ($LASTEXITCODE -ne 0) { throw 'native judge verifier failed in workspace' }
           cargo run --locked --package tinysecurity-module --example secret_cipher_native_contract -- $verifiedModule
@@ -224,6 +226,7 @@ jobs:
           cargo run -p tinysecurity-module --example verify_module -- "$module"
           cargo run -p tinysecurity-module --example audit_native_contract -- "$module"
           cargo run -p tinysecurity-module --example approval_native_contract -- "$module"
+          cargo run -p tinysecurity-module --example approval_scope_native_contract -- "$module"
           cargo run -p tinysecurity-module --example judge_native_contract -- "$module"
           cargo run -p tinysecurity-module --example sandbox_native_contract -- "$module"
           cargo run -p tinysecurity-module --example secret_cipher_native_contract -- "$module"
@@ -239,6 +242,7 @@ jobs:
           (cd target && ./debug/examples/verify_module "$module")
           (cd target && ./debug/examples/audit_native_contract "$module")
           (cd target && ./debug/examples/approval_native_contract "$module")
+          (cd target && ./debug/examples/approval_scope_native_contract "$module")
           (cd target && ./debug/examples/judge_native_contract "$module")
           (cd target && ./debug/examples/sandbox_native_contract "$module")
 

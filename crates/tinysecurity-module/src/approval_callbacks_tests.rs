@@ -804,3 +804,95 @@ async fn actual_registry_engine_and_linked_callbacks_compose_exact_human_once_au
     broker.abort();
     Ok(())
 }
+
+fn runtime_scope(n: u64) -> ApprovalScope2 {
+    ApprovalScope2 {
+        scope_id: format!("{n:032x}"),
+        subject: SubjectScope {
+            user: format!("user-{n}"),
+            workspace: "workspace".into(),
+            agent: format!("agent-{n}"),
+        },
+        policy_ref: "runtime".into(),
+        generation: 1,
+        ceiling: AccessTier::Full,
+        require_approval: true,
+        auto_approve_all: false,
+    }
+}
+
+#[tokio::test]
+async fn store_client_admits_releases_and_bounds_runtime_subjects()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = tinybus::Connection::connect(bus.connect().await?).await?;
+    let module = tinybus::Connection::connect(bus.connect().await?).await?;
+    let peer = host.unique_name().ok_or("host peer")?;
+    let client = ApprovalStoreClient::new(module, Some(peer.as_str()), &config())?;
+    let handle = tinysecurity::approval::scope_handle(&runtime_scope(1).subject)?;
+    assert!(client.scope(&handle).is_err());
+    client.admit(handle.clone())?;
+    client.admit(handle.clone())?;
+    assert!(client.scope(&handle).is_ok());
+    assert_eq!(client.scopes.read().map_err(|_| "lock")?.len(), 2);
+    client.release(&handle)?;
+    assert!(client.scope(&handle).is_err());
+    // Filling to the cap refuses the next new subject, and re-admitting a held one stays fine.
+    for n in 0..(tinysecurity_bus::MAX_APPROVAL_SCOPES2 - 1) {
+        client.admit(tinysecurity::approval::scope_handle(&SubjectScope {
+            user: format!("u{n}"),
+            workspace: "w".into(),
+            agent: "a".into(),
+        })?)?;
+    }
+    assert!(client.admit(handle).is_err());
+    broker.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn clients_admit_a_runtime_subject_with_its_own_stream_and_release_it()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = tinybus::Connection::connect(bus.connect().await?).await?;
+    let module = tinybus::Connection::connect(bus.connect().await?).await?;
+    let peer = host.unique_name().ok_or("host peer")?;
+    let base = config();
+    let redactor =
+        tinysecurity::Redactor::new(&tinysecurity_bus::RedactorConfig { secrets: vec![] })?;
+    let clients = ApprovalClients::new(
+        &module,
+        Some(peer.as_str()),
+        &base,
+        &native_audit_config(base.scopes[0].subject.clone(), false),
+        &redactor,
+    )?;
+    let scope = runtime_scope(2);
+    let handle = tinysecurity::approval::scope_handle(&scope.subject)?;
+    // A malformed stream never admits the subject.
+    assert!(clients.admit_scope(&scope, "short").await.is_err());
+    assert!(clients.store.scope(&handle).is_err());
+    clients.admit_scope(&scope, &"d".repeat(32)).await?;
+    clients.admit_scope(&scope, &"d".repeat(32)).await?;
+    assert!(clients.store.scope(&handle).is_ok());
+    {
+        let held = clients.audit.read().map_err(|_| "lock")?;
+        assert_eq!(held.iter().filter(|(s, _)| s == &handle).count(), 1);
+        let (_, client) = held.iter().find(|(s, _)| s == &handle).ok_or("client")?;
+        assert_eq!(client.stream_id(), "d".repeat(32));
+    }
+    clients.release_scope(&scope).await?;
+    assert!(clients.store.scope(&handle).is_err());
+    assert!(
+        clients
+            .audit
+            .read()
+            .map_err(|_| "lock")?
+            .iter()
+            .all(|(s, _)| s != &handle)
+    );
+    broker.abort();
+    Ok(())
+}

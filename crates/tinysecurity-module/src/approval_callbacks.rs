@@ -1,19 +1,19 @@
 //! Bounded exact approval callback clients, fixed to the trusted unique init peer.
 use crate::callbacks::{AuditClient, PeerBinding};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tinysecurity::approval::{Error, NativeAuditAcknowledgement, Ports, Result};
 use tinysecurity_bus::{
     ApprovalCasRequest2, ApprovalCasResponse2, ApprovalConfig2, ApprovalDeliveryRequest2,
     ApprovalDeliveryResponse2, ApprovalLifecycle2, ApprovalLoadRequest2, ApprovalLoadResponse2,
-    ApprovalRow2, AuditConfig2, AuditEvent2, AuditKind2, AuditSinkRequest2, AuditSinkResponse2,
-    HumanDecisionReceipt2, SubjectScope, VerifyHumanRequest2, callback_names2,
+    ApprovalRow2, ApprovalScope2, AuditConfig2, AuditEvent2, AuditKind2, AuditSinkRequest2,
+    AuditSinkResponse2, HumanDecisionReceipt2, SubjectScope, VerifyHumanRequest2, callback_names2,
 };
 /// Captured registered callback identity; no model-provided destination or scope.
 pub(crate) struct ApprovalStoreClient {
     connection: tinybus::Connection,
     peer: tinybus::BusName,
     timeout_ms: u32,
-    scopes: Vec<SubjectScope>,
+    scopes: RwLock<Vec<SubjectScope>>,
 }
 impl std::fmt::Debug for ApprovalStoreClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -45,15 +45,38 @@ impl ApprovalStoreClient {
             connection,
             peer,
             timeout_ms: config.timeout_ms,
-            scopes,
+            scopes: RwLock::new(scopes),
         })
     }
     fn scope(&self, scope: &SubjectScope) -> Result<()> {
-        if self.scopes.contains(scope) {
+        if self
+            .scopes
+            .read()
+            .map_err(|_| Error::Unavailable)?
+            .contains(scope)
+        {
             Ok(())
         } else {
             Err(Error::Denied)
         }
+    }
+    /// Admit a runtime subject, bounded like the init set plus the engine's own cap.
+    fn admit(&self, handle: SubjectScope) -> Result<()> {
+        let mut scopes = self.scopes.write().map_err(|_| Error::Unavailable)?;
+        if !scopes.contains(&handle) {
+            if scopes.len() >= tinysecurity_bus::MAX_APPROVAL_SCOPES2 {
+                return Err(Error::Unavailable);
+            }
+            scopes.push(handle);
+        }
+        Ok(())
+    }
+    fn release(&self, handle: &SubjectScope) -> Result<()> {
+        self.scopes
+            .write()
+            .map_err(|_| Error::Unavailable)?
+            .retain(|scope| scope != handle);
+        Ok(())
     }
     fn proxy(&self, interface: &str) -> Result<tinybus::Proxy> {
         self.connection
@@ -92,7 +115,15 @@ impl ApprovalStoreClient {
 /// Real authenticated store, delivery, human-ticket verification and audit ports.
 pub(crate) struct ApprovalClients {
     store: ApprovalStoreClient,
-    audit: Vec<(SubjectScope, Arc<AuditClient>)>,
+    audit: RwLock<Vec<(SubjectScope, Arc<AuditClient>)>>,
+    /// Runtime subjects forward audit to the host sink under this base policy.
+    runtime: RuntimeAudit,
+}
+struct RuntimeAudit {
+    connection: tinybus::Connection,
+    binding: PeerBinding,
+    base: AuditConfig2,
+    redactor: tinysecurity::Redactor,
 }
 impl std::fmt::Debug for ApprovalClients {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -109,6 +140,12 @@ impl ApprovalClients {
     ) -> tinybus::Result<Self> {
         let store = ApprovalStoreClient::new(connection.clone(), peer, config)?;
         let binding = PeerBinding::new(peer)?;
+        let runtime = RuntimeAudit {
+            connection: connection.clone(),
+            binding: binding.clone(),
+            base: audit.clone(),
+            redactor: redactor.clone(),
+        };
         let mut clients = Vec::new();
         for registration in &config.scopes {
             let scope = tinysecurity::approval::scope_handle(&registration.subject)
@@ -127,8 +164,24 @@ impl ApprovalClients {
         }
         Ok(Self {
             store,
-            audit: clients,
+            audit: RwLock::new(clients),
+            runtime,
         })
+    }
+    /// Build the audit client of a runtime subject: its own persisted stream, always
+    /// forwarded to the host sink so no extra native journal is opened.
+    fn runtime_client(&self, scope: &ApprovalScope2, stream_id: &str) -> Result<AuditClient> {
+        let mut config = self.runtime.base.clone();
+        config.scope = scope.subject.clone();
+        config.stream_id = stream_id.into();
+        config.native_path = None;
+        AuditClient::new(
+            self.runtime.connection.clone(),
+            self.runtime.binding.clone(),
+            config,
+            self.runtime.redactor.clone(),
+        )
+        .map_err(|_| Error::Invalid)
     }
 }
 #[async_trait::async_trait]
@@ -182,6 +235,24 @@ impl Ports for ApprovalClients {
     async fn audit(&self, row: ApprovalRow2) -> Result<()> {
         self.append_row(row, false).await.map(|_| ())
     }
+    async fn admit_scope(&self, scope: &ApprovalScope2, audit_stream_id: &str) -> Result<()> {
+        let handle = tinysecurity::approval::scope_handle(&scope.subject)?;
+        let client = Arc::new(self.runtime_client(scope, audit_stream_id)?);
+        self.store.admit(handle.clone())?;
+        let mut audit = self.audit.write().map_err(|_| Error::Unavailable)?;
+        if !audit.iter().any(|(s, _)| s == &handle) {
+            audit.push((handle, client));
+        }
+        Ok(())
+    }
+    async fn release_scope(&self, scope: &ApprovalScope2) -> Result<()> {
+        let handle = tinysecurity::approval::scope_handle(&scope.subject)?;
+        self.audit
+            .write()
+            .map_err(|_| Error::Unavailable)?
+            .retain(|(s, _)| s != &handle);
+        self.store.release(&handle)
+    }
     async fn native_audit(&self, row: ApprovalRow2) -> Result<NativeAuditAcknowledgement> {
         let (receipt, expected_scope) = self.append_row(row.clone(), true).await?;
         NativeAuditAcknowledgement::from_verified_sink(row, expected_scope, receipt)
@@ -193,10 +264,13 @@ impl ApprovalClients {
         row: ApprovalRow2,
         required: bool,
     ) -> Result<(AuditSinkResponse2, SubjectScope)> {
-        let (_, client) = self
+        let client = self
             .audit
+            .read()
+            .map_err(|_| Error::Unavailable)?
             .iter()
             .find(|(s, _)| s == &row.binding.scope)
+            .map(|(_, client)| Arc::clone(client))
             .ok_or(Error::Denied)?;
         if required && !client.required() {
             return Err(Error::Denied);
