@@ -1052,31 +1052,22 @@ async fn verify_redaction_dispatch(
         .err()
         .ok_or("malformed mode accepted")?;
     assert!(!error.to_string().contains("private-value"));
-    let with: RedactResponse = proxy
-        .call(
-            names::methods::REDACT_WITH,
-            (tinysecurity_bus::RedactWithRequest {
-                text: "call tenant-key-12345 ok".into(),
-                mode: RedactMode::CredentialsOnly,
-                secrets: vec![tinysecurity_bus::Secret("tenant-key-12345".into())],
-            },),
-        )
-        .await?;
-    assert_eq!(with.text, "call [REDACTED] ok");
-    assert!(with.changed);
+    // RedactWith carries exact credentials, so it is confidential: an
+    // unattested in-process proxy is refused and nothing is echoed. The attested
+    // answer is pinned by the native contract example.
     let refused = proxy
         .call::<RedactResponse>(
             names::methods::REDACT_WITH,
             (tinysecurity_bus::RedactWithRequest {
                 text: "text".into(),
                 mode: RedactMode::Text,
-                secrets: vec![tinysecurity_bus::Secret("abc".into())],
+                secrets: vec![tinysecurity_bus::Secret("tenant-key-12345".into())],
             },),
         )
         .await
         .err()
-        .ok_or("a too-short literal was accepted")?;
-    assert!(!refused.to_string().contains("abc"));
+        .ok_or("RedactWith answered a non-confidential call")?;
+    assert!(!refused.to_string().contains("tenant-key-12345"));
     let tool: ScanResponse = proxy
         .call(
             names::methods::SCAN_TOOL_DEFINITION,
@@ -1089,7 +1080,6 @@ async fn verify_redaction_dispatch(
     assert_eq!(tool.verdict, ScanVerdict::Blocked);
     for method in [
         names::methods::REDACT,
-        names::methods::REDACT_WITH,
         names::methods::SCAN_PROMPT,
         names::methods::SCAN_TOOL_DEFINITION,
     ] {

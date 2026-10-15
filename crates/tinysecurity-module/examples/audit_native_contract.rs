@@ -515,6 +515,31 @@ async fn verify_permission_phases(
         .call_confidential(names::methods::CHECK_AUDITED2, (before.clone(),))
         .await?;
     assert!(permit.audit.permitted && permit.audit.committed);
+    // RedactWith carries a tenant's exact credential for this call only and is
+    // confidential: the attested native module answers it, the literal is gone,
+    // and the next call does not remember it.
+    let with: tinysecurity_bus::RedactResponse = proxy
+        .call_confidential(
+            names::methods::REDACT_WITH,
+            (tinysecurity_bus::RedactWithRequest {
+                text: "call tenant-key-12345 ok".into(),
+                mode: tinysecurity_bus::RedactMode::CredentialsOnly,
+                secrets: vec![tinysecurity_bus::Secret("tenant-key-12345".into())],
+            },),
+        )
+        .await?;
+    assert_eq!(with.text, "call [REDACTED] ok");
+    let forgotten: tinysecurity_bus::RedactResponse = proxy
+        .call_confidential(
+            names::methods::REDACT_WITH,
+            (tinysecurity_bus::RedactWithRequest {
+                text: "call tenant-key-12345 ok".into(),
+                mode: tinysecurity_bus::RedactMode::CredentialsOnly,
+                secrets: vec![],
+            },),
+        )
+        .await?;
+    assert_eq!(forgotten.text, "call tenant-key-12345 ok");
     if matches!(permit.decision.decisions[0].verdict, Verdict::Allow) {
         executions += 1;
     }
