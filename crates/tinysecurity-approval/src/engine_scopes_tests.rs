@@ -486,7 +486,7 @@ async fn host_tool_marker_is_an_external_effect_that_cron_cannot_reach() -> Resu
 }
 
 #[test]
-fn init_rejects_duplicate_identities_and_duplicate_subjects() -> Result<()> {
+fn init_rejects_duplicate_identities_and_duplicate_subjects() {
     let build = |cfg: ApprovalConfig2| {
         Engine::new(
             cfg,
@@ -503,5 +503,4 @@ fn init_rejects_duplicate_identities_and_duplicate_subjects() -> Result<()> {
     twin.scope_id = id(9);
     same_subject.scopes.push(twin);
     assert_eq!(build(same_subject).err(), Some(Error::Invalid));
-    Ok(())
 }
