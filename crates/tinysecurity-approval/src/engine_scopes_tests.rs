@@ -484,3 +484,24 @@ async fn host_tool_marker_is_an_external_effect_that_cron_cannot_reach() -> Resu
     assert!(owner.begin(host_tool).await.is_err());
     Ok(())
 }
+
+#[test]
+fn init_rejects_duplicate_identities_and_duplicate_subjects() -> Result<()> {
+    let build = |cfg: ApprovalConfig2| {
+        Engine::new(
+            cfg,
+            Arc::new(Fixture::default()),
+            Arc::new(TestClock::default()),
+            Redactor::new(&RedactorConfig::default()).map_err(|_| Error::Invalid)?,
+        )
+    };
+    let mut same_identity = config();
+    same_identity.scopes.push(same_identity.scopes[0].clone());
+    assert_eq!(build(same_identity).err(), Some(Error::Invalid));
+    let mut same_subject = config();
+    let mut twin = same_subject.scopes[0].clone();
+    twin.scope_id = id(9);
+    same_subject.scopes.push(twin);
+    assert_eq!(build(same_subject).err(), Some(Error::Invalid));
+    Ok(())
+}

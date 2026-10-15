@@ -323,7 +323,9 @@ impl Engine {
         let mut entries = ScopeTable::default();
         for scope in config.scopes {
             Self::validate_scope(&scope)?;
-            if entries.by_id.contains_key(&scope.scope_id) {
+            // One identity and one subject per registration: the audit and store
+            // ports key by subject, and retiring one scope must not orphan another.
+            if entries.by_id.contains_key(&scope.scope_id) || entries.holds_subject(&scope) {
                 return Err(Error::Invalid);
             }
             entries.insert(ScopeEntry::init(scope));
