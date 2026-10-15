@@ -363,3 +363,24 @@ pins the returned sockets, so the grant is a preflight: DNS rebinding after the
 verdict is the executor's risk. `PinnedDirect` stays the only pinned transport, and
 a local capability never accepts a preflight transport. Both fields are omitted from
 the wire when unset, so existing policies serialize unchanged.
+
+## Per-call exact credentials: `RedactWith` (contract 1.16)
+
+Additive: a 1.15 host keeps working against a 1.16 module, and a 1.16 host
+refuses a 1.15 module (it requires `RedactWith`).
+
+`RedactWith` takes a `RedactRequest` plus `secrets`, exact credentials that apply
+to that call only. They supplement the initialization registry; they never
+replace it, and the next call does not see them. A host that serves many tenants
+(each with its own provider key) therefore redacts a tenant's own credential from
+that tenant's output without a process-wide `Reinit`, which would serialize the
+tenants and let one tenant's key set be visible to another's call.
+
+Limits match the initialization registry: at most 128 literals of 4 to 4096 bytes,
+16384 bytes in all, none equal to or containing a redaction marker. A violation is
+a refused request (`InvalidArguments`), never echoed. The module keeps a bounded
+cache (32) of compiled registries keyed by a digest of the literals, so repeated
+calls with the same key do not recompile the rule set; an evicted registry is
+rebuilt on demand. The member is confidential: the literals are not logged or
+observable on the bus.
+

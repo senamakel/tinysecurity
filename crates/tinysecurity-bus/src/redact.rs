@@ -50,6 +50,24 @@ pub struct RedactRequest {
     /// Redaction surface.
     pub mode: RedactMode,
 }
+/// `RedactWithRequest` payload (contract 1.16): a [`RedactRequest`] plus exact
+/// credentials that apply to this call only.
+///
+/// The extra literals supplement, never replace, the initialization registry:
+/// one trusted host serving many tenants redacts each tenant's own credential
+/// without a process-wide reinitialization. They are bounded like the init
+/// registry (at most 128 literals of 4..=4096 bytes, 16384 bytes in all) and
+/// never echoed; `Debug` shows only [`crate::Secret`]'s redacted form.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RedactWithRequest {
+    /// Sensitive input.
+    pub text: String,
+    /// Redaction surface.
+    pub mode: RedactMode,
+    /// Exact credentials for this call.
+    pub secrets: Vec<crate::Secret>,
+}
 /// `RedactResponse` payload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

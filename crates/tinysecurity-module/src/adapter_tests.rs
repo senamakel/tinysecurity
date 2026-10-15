@@ -434,6 +434,7 @@ fn only_implemented_members_are_advertised() -> std::result::Result<(), Box<dyn 
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
         egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+        extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
         scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
         signals: None,
     };
@@ -470,6 +471,7 @@ async fn native_dispatch_rejects_malformed_args_and_serves_ordered_checks()
                 paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
                 commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
                 egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+                extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
                 scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
                 signals: None,
             },
@@ -808,6 +810,7 @@ async fn blocked_filesystem_query_does_not_block_policy_info_or_another_scope()
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
         egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+        extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
         scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
         signals: None,
     };
@@ -885,6 +888,7 @@ async fn blocked_registration_does_not_block_policy_info_or_another_scope()
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
         egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+        extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
         scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
         signals: None,
     };
@@ -1048,6 +1052,31 @@ async fn verify_redaction_dispatch(
         .err()
         .ok_or("malformed mode accepted")?;
     assert!(!error.to_string().contains("private-value"));
+    let with: RedactResponse = proxy
+        .call(
+            names::methods::REDACT_WITH,
+            (tinysecurity_bus::RedactWithRequest {
+                text: "call tenant-key-12345 ok".into(),
+                mode: RedactMode::CredentialsOnly,
+                secrets: vec![tinysecurity_bus::Secret("tenant-key-12345".into())],
+            },),
+        )
+        .await?;
+    assert_eq!(with.text, "call [REDACTED] ok");
+    assert!(with.changed);
+    let refused = proxy
+        .call::<RedactResponse>(
+            names::methods::REDACT_WITH,
+            (tinysecurity_bus::RedactWithRequest {
+                text: "text".into(),
+                mode: RedactMode::Text,
+                secrets: vec![tinysecurity_bus::Secret("abc".into())],
+            },),
+        )
+        .await
+        .err()
+        .ok_or("a too-short literal was accepted")?;
+    assert!(!refused.to_string().contains("abc"));
     let tool: ScanResponse = proxy
         .call(
             names::methods::SCAN_TOOL_DEFINITION,
@@ -1060,6 +1089,7 @@ async fn verify_redaction_dispatch(
     assert_eq!(tool.verdict, ScanVerdict::Blocked);
     for method in [
         names::methods::REDACT,
+        names::methods::REDACT_WITH,
         names::methods::SCAN_PROMPT,
         names::methods::SCAN_TOOL_DEFINITION,
     ] {
@@ -1292,6 +1322,7 @@ async fn native_egress_dispatch_binds_scope_and_denies_legacy_or_generic_local_c
                 paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
                 commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
                 egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+                extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
                 scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
                 signals: None,
             },
@@ -1392,6 +1423,7 @@ async fn native_open_public_policy_and_credentials_only_redaction_dispatch()
                 paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
                 commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
                 egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+                extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
                 scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
                 signals: None,
             },
@@ -1536,6 +1568,7 @@ async fn consumption_work_runs_off_the_sole_sdk_worker_without_registry_locks()
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
         egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+        extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
         scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
         signals: None,
     };

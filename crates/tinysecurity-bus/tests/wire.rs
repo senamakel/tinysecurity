@@ -343,7 +343,7 @@ fn redactor_init_is_additive_and_secrets_never_enter_public_info()
         serde_json::to_value(&config)?["redactor"]["secrets"][0],
         "literal-private"
     );
-    assert_eq!(CONTRACT_VERSION, (1, 15));
+    assert_eq!(CONTRACT_VERSION, (1, 16));
     for (mode, wire) in [
         (RedactMode::Text, "text"),
         (RedactMode::StructuredArguments, "structured_arguments"),
@@ -372,4 +372,33 @@ fn confidential_master_facade_is_additive_and_has_no_generic_secret_members() {
     for absent in ["GetSecret", "PutSecret", "DeleteSecret", "ReadMaster"] {
         assert!(!tinysecurity_bus::names::METHODS.contains(&absent));
     }
+}
+
+#[test]
+fn redact_with_request_carries_literals_without_echoing_them()
+-> std::result::Result<(), serde_json::Error> {
+    let request = RedactWithRequest {
+        text: "see value".into(),
+        mode: RedactMode::CredentialsOnly,
+        secrets: vec![Secret("literal-private".into())],
+    };
+    assert!(!format!("{request:?}").contains("literal-private"));
+    let wire = serde_json::to_value(&request)?;
+    assert_eq!(wire["mode"], "credentials_only");
+    assert_eq!(wire["secrets"][0], "literal-private");
+    assert_eq!(serde_json::from_value::<RedactWithRequest>(wire)?, request);
+    assert!(
+        serde_json::from_value::<RedactWithRequest>(
+            serde_json::json!({"text":"x","mode":"text","secrets":[],"extra":1})
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<RedactWithRequest>(serde_json::json!({"text":"x","mode":"text"}))
+            .is_err(),
+        "secrets is required so a Redact payload is not mistaken for RedactWith"
+    );
+    assert_eq!(names::methods::REDACT_WITH, "RedactWith");
+    assert!(names::METHODS.contains(&names::methods::REDACT_WITH));
+    Ok(())
 }
