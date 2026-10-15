@@ -7,6 +7,7 @@ pub(crate) struct Patterns {
     rules: Vec<(Regex, Validator)>,
     pem: Regex,
     assignment: Regex,
+    gated_assignment: Regex,
     cookie: Regex,
     home: Regex,
     endpoint: Regex,
@@ -101,6 +102,9 @@ impl Patterns {
             assignment: compile(
                 r#"(?i)\b(authorization["']?[ \t]*[=:][ \t]*(?:(?:bearer|basic|digest|token)[ \t]+)?|bearer[ \t]+|(?:x-api-key|api[_-]?(?:key|secret)|access[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|client[_-]?secret|proxy-authorization|passwd|password|secret|token)["']?[ \t]*[=:][ \t]*)(?:\[REDACTED\]|"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\}\]]+)"#,
             )?,
+            gated_assignment: compile(
+                r#"(?i)\b(authorization["']?[ \t]*[=:][ \t]*(?:(?:bearer|basic|digest|token)[ \t]+)?|bearer[ \t]+|(?:x-api-key|api[_-]?(?:key|secret)|access[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|client[_-]?secret|proxy-authorization|passwd|password|secret|token)["']?[ \t]*[=:][ \t]*)(\[REDACTED\]|"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\}\]]+)"#,
+            )?,
             // A Cookie header is a `;`-separated list; the whole line is the credential.
             cookie: compile(
                 r#"(?i)\b((?:set-)?cookie["']?[ \t]*[=:][ \t]*)(?:\[REDACTED\]|"[^"\r\n]*"|'[^'\r\n]*'|[^\r\n]+)"#,
@@ -175,6 +179,40 @@ impl Patterns {
         output_bounded(&out)?;
         Ok(out)
     }
+    /// Credential-only sanitation for free-form tool output: the exact registry,
+    /// provider token shapes, JWTs, private keys, cookie headers and labelled
+    /// values that look like a credential. Contact data, cards, addresses,
+    /// home paths and URLs are left alone, and a labelled value that reads as
+    /// ordinary source code (`token = get_token()`, `token: string`) is kept.
+    pub(crate) fn credentials(&self, text: &str) -> Result<String> {
+        let mut out = self.literal(text);
+        out = self.pem.replace_all(&out, MARKER).into_owned();
+        for (regex, _) in self.rules.iter().take(2) {
+            out = regex.replace_all(&out, MARKER).into_owned();
+        }
+        let source = out.clone();
+        out = self
+            .gated_assignment
+            .replace_all(&source, |caps: &regex::Captures<'_>| {
+                let whole = caps.get(0).map_or(0, |m| m.end());
+                if secret_like(&caps[1], &caps[2], &source[whole..]) {
+                    format!("{}{MARKER}", &caps[1])
+                } else {
+                    caps[0].to_string()
+                }
+            })
+            .into_owned();
+        out = self
+            .cookie
+            .replace_all(&out, |caps: &regex::Captures<'_>| {
+                format!("{}{MARKER}", &caps[1])
+            })
+            .into_owned();
+        output_bounded(&out)?;
+        let out = self.literal(&out);
+        output_bounded(&out)?;
+        Ok(out)
+    }
     pub(crate) fn retained_endpoint_is_sensitive(&self, text: &str) -> bool {
         self.literal.as_ref().is_some_and(|r| r.is_match(text))
             || self.assignment.is_match(text)
@@ -184,6 +222,68 @@ impl Patterns {
                 .iter()
                 .any(|(rule, validator)| rule.find_iter(text).any(|m| validator.valid(m.as_str())))
     }
+}
+/// Decide whether a labelled value is a credential rather than source code.
+fn secret_like(label: &str, raw: &str, rest: &str) -> bool {
+    let value = raw.trim_matches(|c| c == '"' || c == '\'');
+    if value == MARKER {
+        return false;
+    }
+    if [
+        "sk-",
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "ghr_",
+        "github_pat_",
+        "AKIA",
+        "ASIA",
+        "eyJ",
+        "xox",
+    ]
+    .iter()
+    .any(|prefix| value.starts_with(prefix))
+    {
+        return true;
+    }
+    let scheme = label.to_ascii_lowercase();
+    let scheme = scheme.trim_end();
+    if scheme.starts_with("bearer") || scheme.ends_with("bearer") || scheme.ends_with("basic") {
+        return value.len() >= 8;
+    }
+    if value.len() < 8 || value.chars().any(char::is_whitespace) {
+        return false;
+    }
+    if value
+        .find('<')
+        .is_some_and(|open| value[open..].contains('>'))
+    {
+        return false;
+    }
+    if value.starts_with('=') {
+        return false;
+    }
+    let mut after = rest.chars();
+    match after.next() {
+        Some('(' | '[') => return false,
+        Some('.') if after.next().is_some_and(|c| c.is_alphabetic() || c == '_') => return false,
+        _ => {}
+    }
+    if value.contains(['(', ')', '{', '[']) {
+        return false;
+    }
+    // A digitless identifier or dotted member path reads a value in code. A
+    // credential of that shape is caught by the exact registry instead.
+    let unquoted = raw.len() == value.len();
+    if unquoted
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphabetic() || matches!(c, '_' | '.'))
+    {
+        return false;
+    }
+    value.parse::<f64>().is_err()
 }
 fn marker_collision(secret: &str) -> bool {
     let skeleton: String = secret.chars().filter(|c| !c.is_ascii_digit()).collect();

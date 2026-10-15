@@ -458,6 +458,11 @@ async fn verify_native_redaction(
             "native-private",
         ),
         (r"C:\Users\alice\report.txt", RedactMode::HomePath, "alice"),
+        (
+            "export TOKEN=ghp_nativeprivate0123456789",
+            RedactMode::CredentialsOnly,
+            "ghp_nativeprivate0123456789",
+        ),
     ] {
         let out: RedactResponse = proxy
             .call(
@@ -734,6 +739,8 @@ async fn verify_native_egress(
         data_categories: vec![DataCategory::UserContent],
         local_capabilities: vec![],
         validity_ms: 30000,
+        open_public: false,
+        preflight_transports: vec![],
     };
     let id: EgressPolicyId = proxy
         .call(names::methods::REGISTER_EGRESS_POLICY, (policy.clone(),))

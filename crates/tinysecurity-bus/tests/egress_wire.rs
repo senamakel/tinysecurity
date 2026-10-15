@@ -27,3 +27,26 @@ fn scoped_contracts_reject_legacy_or_invocation_authority_fields() {
     );
     assert!(serde_json::from_str::<EgressPolicy>(r#"{"owner":{"user":"u","workspace":"w","agent":"a"},"ceiling":"full","privacy":"standard","destinations":[],"data_categories":[],"local_capabilities":[],"validity_ms":1000,"allow_private":true}"#).is_err());
 }
+#[test]
+fn open_public_and_preflight_fields_round_trip_and_stay_off_the_legacy_wire()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let json = r#"{"owner":{"user":"u","workspace":"w","agent":"a"},"ceiling":"full","privacy":"standard","destinations":[],"data_categories":["user_content"],"local_capabilities":[],"validity_ms":1000,"open_public":true,"preflight_transports":["browser","proxy"]}"#;
+    let policy: EgressPolicy = serde_json::from_str(json)?;
+    assert!(policy.open_public);
+    assert_eq!(
+        policy.preflight_transports,
+        [EgressTransport::Browser, EgressTransport::Proxy]
+    );
+    assert_eq!(
+        serde_json::to_value(&policy)?,
+        serde_json::from_str::<Value>(json)?
+    );
+    let closed = EgressPolicy {
+        open_public: false,
+        preflight_transports: vec![],
+        ..policy
+    };
+    let wire = serde_json::to_value(&closed)?;
+    assert!(wire.get("open_public").is_none() && wire.get("preflight_transports").is_none());
+    Ok(())
+}

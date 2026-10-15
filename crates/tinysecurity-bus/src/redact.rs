@@ -24,6 +24,11 @@ pub enum RedactMode {
     IdentifierHash,
     /// Historical first-four-character mask; existing masks are fixed points.
     LegacyMask,
+    /// Credentials only, for free-form tool output: the exact registry, provider
+    /// token shapes, JWTs, private keys, cookie headers and labelled values that
+    /// look like a credential. Contact data, URLs and paths are retained, and a
+    /// labelled value that reads as source code is not rewritten.
+    CredentialsOnly,
 }
 /// `ScanVerdict` vocabulary.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

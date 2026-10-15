@@ -418,6 +418,8 @@ async fn verify_unbound_authorizations(
                     category: DataCategory::HostMetadata,
                 }],
                 validity_ms: 30000,
+                open_public: false,
+                preflight_transports: vec![],
             },),
         )
         .await?;

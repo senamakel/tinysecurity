@@ -343,7 +343,7 @@ fn redactor_init_is_additive_and_secrets_never_enter_public_info()
         serde_json::to_value(&config)?["redactor"]["secrets"][0],
         "literal-private"
     );
-    assert_eq!(CONTRACT_VERSION, (1, 14));
+    assert_eq!(CONTRACT_VERSION, (1, 15));
     for (mode, wire) in [
         (RedactMode::Text, "text"),
         (RedactMode::StructuredArguments, "structured_arguments"),
@@ -358,6 +358,7 @@ fn redactor_init_is_additive_and_secrets_never_enter_public_info()
             "structured_log_arguments",
         ),
         (RedactMode::BrowserResult, "browser_result"),
+        (RedactMode::CredentialsOnly, "credentials_only"),
     ] {
         assert_eq!(serde_json::to_value(mode)?, wire);
     }

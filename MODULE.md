@@ -334,3 +334,32 @@ The X25519/HKDF device tunnel remains the `EvaluateDevice2`/`ExecuteDevice2`
 surface above. The OS keyring test runs on every platform and is required to
 use the real credential store when `TINYSECURITY_REQUIRE_OS_KEYRING=1`; it
 always removes its entry.
+
+## Credentials-only redaction and open public egress (contract 1.15)
+
+Both additions are additive. A 1.14 host keeps working against a 1.15 module,
+and a 1.15 host refuses a 1.14 module.
+
+`RedactMode::CredentialsOnly` (`credentials_only`) is for free-form tool output,
+where `Text` over-redacts. It removes the exact initialization registry, provider
+token shapes (`sk-`, `gh*_`, `github_pat_`, `AKIA`/`ASIA`, `xox*`, Stripe, Google,
+npm, GitLab), JWTs, PEM private keys, `Cookie`/`Set-Cookie` headers, and labelled
+values (`token`, `api_key`, `password`, `secret`, `Authorization: Bearer ...`) that
+look like a credential. It keeps e-mail, phone, card, address, IP, URL and home-path
+content, and keeps labelled values that read as source code (`token = get_token()`,
+`accessToken: string`, `password = None`, numbers, `<placeholders>`). It is not a
+privacy surface: use `Text` for logs and audit. Rotating a credential is a policy
+`Reinit` with the new `RedactorConfig`; the registry is immutable per generation.
+
+`EgressPolicy.open_public` registers every `http`/`https` destination, so
+`destinations` and `local_capabilities` must be empty and `LocalOnly` is refused.
+The address floor is unchanged: loopback, private, link-local, metadata, CGNAT and
+reserved addresses are refused for literals and for every resolved candidate, and
+the privacy mode and data-category checks still run first.
+
+`EgressPolicy.preflight_transports` (`browser`, `proxy`; no duplicates) lets those
+transports receive a verdict. The module cannot verify that a browser or proxy
+pins the returned sockets, so the grant is a preflight: DNS rebinding after the
+verdict is the executor's risk. `PinnedDirect` stays the only pinned transport, and
+a local capability never accepts a preflight transport. Both fields are omitted from
+the wire when unset, so existing policies serialize unchanged.

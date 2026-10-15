@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tinysecurity_bus::{
-    DataCategory, EgressDenial, EgressPolicy, EgressPolicyId, EgressTransport, Error,
+    DataCategory, EgressDenial, EgressPolicy, EgressPolicyId, EgressTransport, Error, PrivacyMode,
     RedactorConfig, Result, ScopedEgressRequest, ScopedEgressResponse, SubjectScope,
     TransportAuthorization,
 };
@@ -103,7 +103,7 @@ impl RegisteredEgressPolicy {
         if !self.matches_scope(request) {
             return Err(EgressDenial::Scope);
         }
-        if request.transport != EgressTransport::PinnedDirect {
+        if !self.transport_allowed(request) {
             return Err(EgressDenial::Transport);
         }
         privacy::check(&self.policy, request, redactor).map_err(|_| EgressDenial::Privacy)?;
@@ -134,12 +134,7 @@ impl RegisteredEgressPolicy {
             if endpoint.ip.is_some_and(url_guard::forbidden) {
                 return Err(EgressDenial::Address);
             }
-            if !self
-                .policy
-                .destinations
-                .iter()
-                .any(|rule| url_guard::matches(rule, &endpoint))
-            {
+            if !self.destination_registered(&endpoint) {
                 return Err(EgressDenial::Destination);
             }
             let addresses = match endpoint.ip {
@@ -273,6 +268,24 @@ impl RegisteredEgressPolicy {
         state.issued.swap_remove(index);
         true
     }
+    /// Pinned direct always; Browser/Proxy only as an opted-in preflight, never for local capabilities.
+    fn transport_allowed(&self, request: &ScopedEgressRequest) -> bool {
+        request.transport == EgressTransport::PinnedDirect
+            || (request.local_capability.is_none()
+                && self
+                    .policy
+                    .preflight_transports
+                    .contains(&request.transport))
+    }
+    /// Open public mode registers every destination; the address floor still decides afterwards.
+    fn destination_registered(&self, endpoint: &Endpoint) -> bool {
+        self.policy.open_public
+            || self
+                .policy
+                .destinations
+                .iter()
+                .any(|rule| url_guard::matches(rule, endpoint))
+    }
     fn matches_scope(&self, request: &ScopedEgressRequest) -> bool {
         request.policy_id == self.id
             && request.subject == self.policy.owner
@@ -390,6 +403,21 @@ impl EgressPolicyRegistry {
         {
             return Err(Error::InvalidArguments);
         }
+        if policy.preflight_transports.len() > 2
+            || policy
+                .preflight_transports
+                .iter()
+                .enumerate()
+                .any(|(index, transport)| {
+                    !matches!(transport, EgressTransport::Browser | EgressTransport::Proxy)
+                        || policy.preflight_transports[..index].contains(transport)
+                })
+            || (policy.open_public
+                && (!policy.destinations.is_empty() || !policy.local_capabilities.is_empty()))
+            || (policy.open_public && policy.privacy == PrivacyMode::LocalOnly)
+        {
+            return Err(Error::InvalidArguments);
+        }
         policy.destinations = policy
             .destinations
             .iter()
@@ -449,6 +477,9 @@ impl EgressPolicyRegistry {
 #[cfg(test)]
 #[path = "guard_corpus_tests.rs"]
 mod guard_corpus_tests;
+#[cfg(test)]
+#[path = "open_public_tests.rs"]
+mod open_public_tests;
 #[cfg(test)]
 #[path = "registry_tests.rs"]
 mod tests;
