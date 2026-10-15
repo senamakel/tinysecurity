@@ -1317,6 +1317,8 @@ async fn native_egress_dispatch_binds_scope_and_denies_legacy_or_generic_local_c
             category: DataCategory::HostMetadata,
         }],
         validity_ms: 30000,
+        open_public: false,
+        preflight_transports: vec![],
     };
     let id: EgressPolicyId = proxy
         .call(names::methods::REGISTER_EGRESS_POLICY, (policy,))
@@ -1368,6 +1370,105 @@ async fn native_egress_dispatch_binds_scope_and_denies_legacy_or_generic_local_c
     Ok(())
 }
 
+#[tokio::test]
+async fn native_open_public_policy_and_credentials_only_redaction_dispatch()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let task = Broker::new().spawn(bus.clone());
+    let server = Connection::connect(bus.connect().await?).await?;
+    server
+        .serve_at(
+            names::OBJECT_PATH.try_into()?,
+            PolicyService {
+                device: None,
+                crypto: None,
+                secret: None,
+                secret_cipher: None,
+                sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
+                sandbox: None,
+                approvals: None,
+                audit: None,
+                policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
+                paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
+                commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
+                egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+                scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
+                signals: None,
+            },
+        )
+        .await?;
+    server.request_name(names::INTERFACE).await?;
+    let client = Connection::connect(bus.connect().await?).await?;
+    let proxy = client.proxy(names::INTERFACE, names::OBJECT_PATH, names::INTERFACE)?;
+    let subject = SubjectScope {
+        user: "user".into(),
+        workspace: "workspace".into(),
+        agent: "agent".into(),
+    };
+    let policy = EgressPolicy {
+        owner: subject.clone(),
+        ceiling: AccessTier::Full,
+        privacy: PrivacyMode::Standard,
+        destinations: vec![],
+        data_categories: vec![DataCategory::UserContent],
+        local_capabilities: vec![],
+        validity_ms: 30000,
+        open_public: true,
+        preflight_transports: vec![EgressTransport::Browser],
+    };
+    let id: EgressPolicyId = proxy
+        .call(names::methods::REGISTER_EGRESS_POLICY, (policy,))
+        .await?;
+    let request = |url: &str, transport| ScopedEgressRequest {
+        policy_id: id.clone(),
+        subject: subject.clone(),
+        tier: AccessTier::Full,
+        url: url.into(),
+        method: "GET".into(),
+        category: DataCategory::UserContent,
+        payload: String::new(),
+        headers: vec![],
+        transport,
+        local_capability: None,
+        transformation: None,
+    };
+    for (url, transport, denial) in [
+        (
+            "https://93.184.216.34/a",
+            EgressTransport::PinnedDirect,
+            None,
+        ),
+        ("https://93.184.216.34/a", EgressTransport::Browser, None),
+        (
+            "https://93.184.216.34/a",
+            EgressTransport::Proxy,
+            Some(EgressDenial::Transport),
+        ),
+        (
+            "http://169.254.169.254/",
+            EgressTransport::Browser,
+            Some(EgressDenial::Address),
+        ),
+    ] {
+        let response: ScopedEgressResponse = proxy
+            .call(names::methods::SCOPED_URL_GUARD, (request(url, transport),))
+            .await?;
+        assert_eq!(response.denial, denial, "{url}");
+    }
+    let redacted: RedactResponse = proxy
+        .call(
+            names::methods::REDACT,
+            (RedactRequest {
+                text: "token: ghp_abcdefghijklmnop1234 mail a@example.com".into(),
+                mode: RedactMode::CredentialsOnly,
+            },),
+        )
+        .await?;
+    assert_eq!(redacted.text, "token: [REDACTED] mail a@example.com");
+    assert!(redacted.changed);
+    task.abort();
+    Ok(())
+}
 async fn assert_legacy_egress_is_denied(
     proxy: &tinybus::Proxy,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -1456,6 +1557,8 @@ async fn consumption_work_runs_off_the_sole_sdk_worker_without_registry_locks()
                 category: DataCategory::HostMetadata,
             }],
             validity_ms: 30000,
+            open_public: false,
+            preflight_transports: vec![],
         })
         .await?;
     let request = ScopedEgressRequest {
@@ -1537,6 +1640,8 @@ async fn assert_native_review_regressions(
         data_categories: vec![DataCategory::UserContent],
         local_capabilities: vec![],
         validity_ms: 30000,
+        open_public: false,
+        preflight_transports: vec![],
     };
     let id: EgressPolicyId = proxy
         .call(names::methods::REGISTER_EGRESS_POLICY, (policy,))
@@ -1618,6 +1723,8 @@ async fn issue_reinit_egress_grants(
             category: DataCategory::HostMetadata,
         }],
         validity_ms: 30000,
+        open_public: false,
+        preflight_transports: vec![],
     };
     let id: EgressPolicyId = proxy
         .call(names::methods::REGISTER_EGRESS_POLICY, (policy,))

@@ -49,6 +49,8 @@ fn policy() -> EgressPolicy {
         data_categories: vec![DataCategory::UserContent, DataCategory::HostMetadata],
         local_capabilities: vec![],
         validity_ms: 1000,
+        open_public: false,
+        preflight_transports: vec![],
     }
 }
 fn request(id: EgressPolicyId) -> ScopedEgressRequest {

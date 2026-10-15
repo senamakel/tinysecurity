@@ -153,6 +153,20 @@ pub struct EgressPolicy {
     pub local_capabilities: Vec<LocalEgressCapability>,
     /// Bounded validity in milliseconds, between 1 and 30000.
     pub validity_ms: u32,
+    /// Open public-internet mode (contract 1.15): any `http`/`https` destination
+    /// is registered, so `destinations` must be empty. The unconditional address
+    /// floor still applies to the literal and to every resolved candidate, so
+    /// loopback, private, link-local, metadata, CGNAT and reserved addresses stay
+    /// refused. Privacy mode and data-category checks are unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub open_public: bool,
+    /// Transports other than [`EgressTransport::PinnedDirect`] this policy accepts
+    /// for a preflight verdict (contract 1.15): only `Browser` and `Proxy`. The
+    /// module cannot verify those executors pin the returned sockets, so the
+    /// authorization is a best-effort verdict and DNS rebinding after it is the
+    /// executor's risk. Local capabilities never use them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preflight_transports: Vec<EgressTransport>,
 }
 /// Scoped URL request, version 1.4. Registration and invocation require a confidential host bus.
 /// Debug deliberately suppresses all payload, destination and identity values.

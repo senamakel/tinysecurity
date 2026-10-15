@@ -81,6 +81,7 @@ impl Redactor {
                     format!("{}***", request.text.chars().take(4).collect::<String>())
                 }
             }
+            RedactMode::CredentialsOnly => self.0.patterns.credentials(&request.text)?,
             _ => self.structured_or_text(&request.text, &request.mode, 0)?,
         };
         output_bounded(&text)?;

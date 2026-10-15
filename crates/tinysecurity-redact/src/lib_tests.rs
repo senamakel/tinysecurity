@@ -104,3 +104,85 @@ fn direct_credential_transfers_block_unknown_tool_json() -> Result<()> {
     }
     Ok(())
 }
+
+fn credentials(registry: &Redactor, text: &str) -> Result<String> {
+    Ok(registry
+        .redact(&RedactRequest {
+            text: text.into(),
+            mode: RedactMode::CredentialsOnly,
+        })?
+        .text)
+}
+#[test]
+fn credentials_only_removes_credentials_and_keeps_ordinary_content() -> Result<()> {
+    let registry = Redactor::new(&RedactorConfig::default())?;
+    for secret in [
+        "key sk-ant-abcdefghijklmnop1234",
+        "export GITHUB_TOKEN=ghp_abcdefghijklmnop1234",
+        "aws AKIAIOSFODNN7EXAMPLE",
+        "jwt eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.c2lnbmF0dXJlMTIz",
+        "Authorization: Bearer abcdef0123456789",
+        "api_key = \"s3cr3t-value-123\"",
+        "password: hunter2hunter2",
+        "Cookie: sid=abc123; theme=dark",
+        "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----",
+    ] {
+        let out = credentials(&registry, secret)?;
+        assert!(out.contains("[REDACTED]"), "{secret} -> {out}");
+        for leaked in [
+            "abcdefghijklmnop1234",
+            "AKIAIOSFODNN7EXAMPLE",
+            "c2lnbmF0dXJlMTIz",
+            "abcdef0123456789",
+            "s3cr3t-value-123",
+            "hunter2hunter2",
+            "sid=abc123",
+        ] {
+            assert!(!out.contains(leaked), "{secret} -> {out}");
+        }
+    }
+    for kept in [
+        "mail alice@example.com or call 415-555-0134",
+        "card 4111 1111 1111 1111 at 12 Main Street from 10.1.2.3",
+        "see https://user@example.com/path?q=1 in /home/alice/notes",
+        "token = get_token()",
+        "self.token = self.vocab.token_id",
+        "accessToken: string",
+        "token_count = 4096",
+        "if token == expected_token {",
+        "let token = \"<your key here>\";",
+        "password = None",
+        "secret: 1.5e-3",
+        "api_key=[REDACTED]",
+    ] {
+        assert_eq!(credentials(&registry, kept)?, kept, "{kept}");
+    }
+    Ok(())
+}
+#[test]
+fn credentials_only_applies_the_exact_registry_and_is_idempotent() -> Result<()> {
+    let registry = Redactor::new(&RedactorConfig {
+        secrets: vec![tinysecurity_bus::Secret("plain-word-credential".into())],
+    })?;
+    let once = credentials(
+        &registry,
+        "the plain-word-credential is here, bob@example.com",
+    )?;
+    assert_eq!(once, "the [REDACTED] is here, bob@example.com");
+    assert_eq!(credentials(&registry, &once)?, once);
+    // JSON-shaped tool output is treated as text; quoting does not hide a value.
+    let json = credentials(&registry, r#"{"token":"abcdefgh12345678","n":4}"#)?;
+    assert!(
+        !json.contains("abcdefgh12345678") && json.contains("\"n\":4"),
+        "{json}"
+    );
+    assert!(
+        registry
+            .redact(&RedactRequest {
+                text: "x".repeat(MAX_INPUT + 1),
+                mode: RedactMode::CredentialsOnly,
+            })
+            .is_err()
+    );
+    Ok(())
+}
