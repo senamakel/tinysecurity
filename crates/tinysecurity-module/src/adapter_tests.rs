@@ -1814,3 +1814,56 @@ async fn assert_invalid_sdk_reinitializations(
     );
     Ok(())
 }
+
+/// `RedactWith` is confidential on the bus, so the in-process dispatch tests
+/// cannot call it; the member body is exercised directly here and over the
+/// attested bus in the native contract example.
+#[tokio::test]
+async fn redact_with_removes_call_literals_and_refuses_bad_ones_without_echo()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let service = PolicyService {
+        device: None,
+        crypto: None,
+        secret: None,
+        secret_cipher: None,
+        sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
+        sandbox: None,
+        approvals: None,
+        audit: None,
+        policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
+        paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
+        commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
+        egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+        extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
+        scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
+        signals: None,
+    };
+    let redacted = service
+        .redact_with(tinysecurity_bus::RedactWithRequest {
+            text: "call tenant-key-12345 ok".into(),
+            mode: RedactMode::CredentialsOnly,
+            secrets: vec![tinysecurity_bus::Secret("tenant-key-12345".into())],
+        })
+        .await?;
+    assert_eq!(redacted.text, "call [REDACTED] ok");
+    assert!(redacted.changed);
+    let plain = service
+        .redact_with(tinysecurity_bus::RedactWithRequest {
+            text: "call tenant-key-12345 ok".into(),
+            mode: RedactMode::CredentialsOnly,
+            secrets: vec![],
+        })
+        .await?;
+    assert_eq!(plain.text, "call tenant-key-12345 ok");
+    let refused = service
+        .redact_with(tinysecurity_bus::RedactWithRequest {
+            text: "text".into(),
+            mode: RedactMode::Text,
+            secrets: vec![tinysecurity_bus::Secret("abc".into())],
+        })
+        .await
+        .err()
+        .ok_or("a too-short literal was accepted")?;
+    assert!(!refused.to_string().contains("abc"));
+    Ok(())
+}
