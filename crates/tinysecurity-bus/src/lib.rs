@@ -38,11 +38,12 @@ pub use future::*;
 pub use path_policy::*;
 pub use policy::*;
 pub use prompt::*;
+pub use redact::RedactWithRequest;
 pub use redact::RedactorConfig;
 pub use scoped_policy::*;
 pub mod names;
 /// Current wire vocabulary version, independent of the artifact version.
-pub const CONTRACT_VERSION: (u32, u32) = (1, 15);
+pub const CONTRACT_VERSION: (u32, u32) = (1, 16);
 /// Whether a remote module's advertised version supplies this host's vocabulary.
 ///
 /// `version` is the provider version received by the host, not a host requirement

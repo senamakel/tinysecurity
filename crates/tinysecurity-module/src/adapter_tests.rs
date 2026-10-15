@@ -434,6 +434,7 @@ fn only_implemented_members_are_advertised() -> std::result::Result<(), Box<dyn 
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
         egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+        extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
         scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
         signals: None,
     };
@@ -470,6 +471,7 @@ async fn native_dispatch_rejects_malformed_args_and_serves_ordered_checks()
                 paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
                 commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
                 egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+                extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
                 scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
                 signals: None,
             },
@@ -808,6 +810,7 @@ async fn blocked_filesystem_query_does_not_block_policy_info_or_another_scope()
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
         egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+        extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
         scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
         signals: None,
     };
@@ -885,6 +888,7 @@ async fn blocked_registration_does_not_block_policy_info_or_another_scope()
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
         egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+        extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
         scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
         signals: None,
     };
@@ -1048,6 +1052,22 @@ async fn verify_redaction_dispatch(
         .err()
         .ok_or("malformed mode accepted")?;
     assert!(!error.to_string().contains("private-value"));
+    // RedactWith carries exact credentials, so it is confidential: an
+    // unattested in-process proxy is refused and nothing is echoed. The attested
+    // answer is pinned by the native contract example.
+    let refused = proxy
+        .call::<RedactResponse>(
+            names::methods::REDACT_WITH,
+            (tinysecurity_bus::RedactWithRequest {
+                text: "text".into(),
+                mode: RedactMode::Text,
+                secrets: vec![tinysecurity_bus::Secret("tenant-key-12345".into())],
+            },),
+        )
+        .await
+        .err()
+        .ok_or("RedactWith answered a non-confidential call")?;
+    assert!(!refused.to_string().contains("tenant-key-12345"));
     let tool: ScanResponse = proxy
         .call(
             names::methods::SCAN_TOOL_DEFINITION,
@@ -1292,6 +1312,7 @@ async fn native_egress_dispatch_binds_scope_and_denies_legacy_or_generic_local_c
                 paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
                 commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
                 egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+                extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
                 scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
                 signals: None,
             },
@@ -1392,6 +1413,7 @@ async fn native_open_public_policy_and_credentials_only_redaction_dispatch()
                 paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
                 commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
                 egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+                extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
                 scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
                 signals: None,
             },
@@ -1536,6 +1558,7 @@ async fn consumption_work_runs_off_the_sole_sdk_worker_without_registry_locks()
         paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
         commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
         egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+        extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
         scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
         signals: None,
     };
@@ -1789,5 +1812,58 @@ async fn assert_invalid_sdk_reinitializations(
         .await
         .is_err()
     );
+    Ok(())
+}
+
+/// `RedactWith` is confidential on the bus, so the in-process dispatch tests
+/// cannot call it; the member body is exercised directly here and over the
+/// attested bus in the native contract example.
+#[tokio::test]
+async fn redact_with_removes_call_literals_and_refuses_bad_ones_without_echo()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let service = PolicyService {
+        device: None,
+        crypto: None,
+        secret: None,
+        secret_cipher: None,
+        sandbox_clock: Arc::new(tinysecurity::approval::SystemClock::default()),
+        sandbox: None,
+        approvals: None,
+        audit: None,
+        policy: Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
+        paths: Arc::new(Mutex::new(PathPolicyRegistry::default())),
+        commands: Arc::new(Mutex::new(CommandPolicyRegistry::default())),
+        egress: Arc::new(Mutex::new(EgressPolicyRegistry::default())),
+        extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
+        scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
+        signals: None,
+    };
+    let redacted = service
+        .redact_with(tinysecurity_bus::RedactWithRequest {
+            text: "call tenant-key-12345 ok".into(),
+            mode: RedactMode::CredentialsOnly,
+            secrets: vec![tinysecurity_bus::Secret("tenant-key-12345".into())],
+        })
+        .await?;
+    assert_eq!(redacted.text, "call [REDACTED] ok");
+    assert!(redacted.changed);
+    let plain = service
+        .redact_with(tinysecurity_bus::RedactWithRequest {
+            text: "call tenant-key-12345 ok".into(),
+            mode: RedactMode::CredentialsOnly,
+            secrets: vec![],
+        })
+        .await?;
+    assert_eq!(plain.text, "call tenant-key-12345 ok");
+    let refused = service
+        .redact_with(tinysecurity_bus::RedactWithRequest {
+            text: "text".into(),
+            mode: RedactMode::Text,
+            secrets: vec![tinysecurity_bus::Secret("abc".into())],
+        })
+        .await
+        .err()
+        .ok_or("a too-short literal was accepted")?;
+    assert!(!refused.to_string().contains("abc"));
     Ok(())
 }

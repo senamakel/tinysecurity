@@ -13,6 +13,7 @@
 //! assert!(!result.text.contains("private-token"));
 //! # Ok::<(), tinysecurity_bus::Error>(())
 //! ```
+mod extended;
 mod patterns;
 mod prompt;
 mod structured;
@@ -27,12 +28,15 @@ pub(crate) const MAX_INPUT: usize = 65_536;
 pub(crate) const MAX_OUTPUT: usize = 131_072;
 pub(crate) const MAX_DEPTH: usize = 32;
 pub(crate) const MARKER: &str = "[REDACTED]";
+pub use extended::ExtendedRedactors;
 /// Immutable shared matching registry; Debug intentionally exposes no patterns or secrets.
 #[derive(Clone)]
 pub struct Redactor(Arc<Registry>);
 struct Registry {
     patterns: patterns::Patterns,
     scanner: prompt::Scanner,
+    /// The initialization literals, kept so a per-call extension can union them.
+    base: RedactorConfig,
 }
 impl fmt::Debug for Redactor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -49,6 +53,7 @@ impl Redactor {
         Ok(Self(Arc::new(Registry {
             patterns: patterns::Patterns::new(config)?,
             scanner: prompt::Scanner::new()?,
+            base: config.clone(),
         })))
     }
     /// Sanitize a bounded surface. Failed sanitation returns no original payload.

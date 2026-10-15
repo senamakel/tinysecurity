@@ -12,6 +12,7 @@ static PATH_SCOPES: OnceLock<Arc<Mutex<PathPolicyRegistry>>> = OnceLock::new();
 static COMMAND_SCOPES: OnceLock<Arc<Mutex<CommandPolicyRegistry>>> = OnceLock::new();
 static SCOPED_POLICIES: OnceLock<Arc<Mutex<ScopedPolicyRegistry>>> = OnceLock::new();
 static EGRESS_SCOPES: OnceLock<Arc<Mutex<EgressPolicyRegistry>>> = OnceLock::new();
+static EXTENDED_REDACTORS: OnceLock<Arc<tinysecurity::ExtendedRedactors>> = OnceLock::new();
 static AUDIT_CLIENT: OnceLock<Option<Arc<crate::callbacks::AuditClient>>> = OnceLock::new();
 static HOST_BINDING: OnceLock<crate::callbacks::PeerBinding> = OnceLock::new();
 static APPROVALS: OnceLock<
@@ -41,6 +42,7 @@ struct PolicyService {
     paths: Arc<Mutex<PathPolicyRegistry>>,
     commands: Arc<Mutex<CommandPolicyRegistry>>,
     egress: Arc<Mutex<EgressPolicyRegistry>>,
+    extended: Arc<tinysecurity::ExtendedRedactors>,
     scoped: Arc<Mutex<ScopedPolicyRegistry>>,
     signals: Option<Connection>,
 }
@@ -574,6 +576,21 @@ impl PolicyService {
         let registry = self.read()?.redactor();
         tokio::task::spawn_blocking(move || {
             registry.redact(&request).map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+    }
+    #[tinybus(confidential)]
+    async fn redact_with(
+        &self,
+        request: tinysecurity_bus::RedactWithRequest,
+    ) -> BusResult<tinysecurity_bus::RedactResponse> {
+        let registry = self.read()?.redactor();
+        let extended = Arc::clone(&self.extended);
+        tokio::task::spawn_blocking(move || {
+            extended
+                .redact(&registry, &request)
+                .map_err(|error| failure(&error))
         })
         .await
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
@@ -1117,6 +1134,9 @@ fn service_for(
         egress: Arc::clone(
             EGRESS_SCOPES.get_or_init(|| Arc::new(Mutex::new(EgressPolicyRegistry::default()))),
         ),
+        extended: Arc::clone(
+            EXTENDED_REDACTORS.get_or_init(|| Arc::new(tinysecurity::ExtendedRedactors::new())),
+        ),
         commands: Arc::clone(
             COMMAND_SCOPES.get_or_init(|| Arc::new(Mutex::new(CommandPolicyRegistry::default()))),
         ),
@@ -1579,7 +1599,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "ScanPrompt", "ScanToolDefinition"],
+    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = ["ai.tinyhumans.tinysecurity.KeyringConsent2", "ai.tinyhumans.tinysecurity.SecretCipherConsumer2", "ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],

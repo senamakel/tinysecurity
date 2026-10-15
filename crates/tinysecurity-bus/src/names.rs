@@ -93,6 +93,8 @@ pub mod methods {
     pub const PARSE_REPLY: &str = "ParseReply";
     /// Redact member.
     pub const REDACT: &str = "Redact";
+    /// Redact with exact credentials supplied for this call only (contract 1.16).
+    pub const REDACT_WITH: &str = "RedactWith";
     /// `ScanPrompt` member.
     pub const SCAN_PROMPT: &str = "ScanPrompt";
     /// `ScanToolDefinition` member.
@@ -155,6 +157,7 @@ pub const METHODS: &[&str] = &[
     methods::URL_GUARD,
     methods::EGRESS_CHECK,
     methods::REDACT,
+    methods::REDACT_WITH,
     methods::SCAN_PROMPT,
     methods::SCAN_TOOL_DEFINITION,
     methods::AUDIT2,
