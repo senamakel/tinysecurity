@@ -7,7 +7,7 @@ is `ai.tinyhumans.tinysecurity.Policy`, with object
 Accepted SDK reinit advances a generation and emits `PolicyChanged`; rejected
 configurations retain the old policy and generation. There are no Init/Reinit
 RPC methods. Configuration requires `contract_version` and `policy`. The optional
-`judge` field may be omitted or set to `null` in this bootstrap.
+`judge` field may be omitted or set to `null`, which leaves automatic scoring off.
 
 ```json
 {
@@ -23,8 +23,10 @@ RPC methods. Configuration requires `contract_version` and `policy`. The optiona
 }
 ```
 
-Judge configuration has redacted Debug, travels only in SDK config, and is
-rejected as unavailable rather than accepted without a functioning engine.
+Judge configuration has redacted Debug and travels only in SDK config. A non-null
+`judge` is accepted only with its full trusted initialization (resolved credential,
+exact endpoint, approval store and configured audit); otherwise init or reinit
+rejects and keeps the old policy. See [native approval scoring](crates/tinysecurity-auto/README.md).
 Invalid thresholds/timeouts are rejected before capability admission.
 `PolicyInfo` never returns credentials. The wire version is separate from
 release version. Hosts require matching major and module minor >= host minor;
@@ -79,9 +81,15 @@ Durable approval lifecycle/flow/reply, redaction/scanning, scoped egress guards
 and audit have implemented members in the generated method inventory.
 Contract 1.7 approvals use explicit initialization and authenticated callbacks;
 see [durable exact approvals](crates/tinysecurity-approval/README.md).
-Network/DNS connection pinning, sandbox isolation and judge remain unavailable;
-keyring consent is implemented by the confidential crypto members below. Their reserved payloads do not advertise callable members.
-Unsupported member calls return the bus's unknown-member error.
+Scoped egress ([egress](docs/egress.md)) issues DNS-vetted, single-use socket grants;
+this module never opens the connection, so each transport owner must connect only to
+the approved sockets (connection pinning is the transport's job, not claimed here).
+Sandbox planning ([sandbox](crates/tinysecurity-sandbox/README.md)) selects and audits
+a plan; TinyBox enforces isolation at launch. The optional judge
+([scoring](crates/tinysecurity-auto/README.md)) only scores requests that still need
+approval and never grants human-only authority. Keyring consent and the password and
+pairing members are in the confidential crypto section below. Unsupported member calls
+return the bus's unknown-member error.
 
 ## Packaging and smoke checks
 
@@ -101,8 +109,9 @@ verification also rejects a wrong digest and tampered bytes before activation,
 rejects missing SDK configuration, and confirms stopped modules refuse reinit.
 Fault-injection and timeout latching remain SDK conformance work, not a
 bootstrap claim. Timing uses 500 sequential calls per method, one Evaluate call for one diagnostic or
-one Check call for two checks per sample. See measured results and migration
-budgets in [performance](docs/performance.md).
+one Check call for two checks per sample. See measured results and the enforced
+release budget in [performance](docs/performance.md). OpenHuman's host-side view is
+the [security architecture page](https://github.com/tinyhumansai/openhuman/blob/main/gitbooks/developing/architecture/security.md).
 
 ## Confidential device handles
 
@@ -195,9 +204,9 @@ policy publication; valid-clock publication rejection preserves old authority.
 Accepted generations invalidate pending native work and clear aliases, while
 persistent resolver uncertainty remains unavailable. Native clock faults still
 close authority permanently. Device replay capacity and every scope epoch are
-checked before publication; bootstrap evidence survives accepted reinit. Native OS providers, physical files, passwords, encryption,
-plaintext delivery, routine native consumers, pairing and production host
-migration remain outside this subset.
+checked before publication; bootstrap evidence survives accepted reinit. Physical files, plaintext delivery and routine native consumers remain outside
+this subset; password, OS keyring and pairing members are in contract 1.14 below
+(`PasswordCrypt2`, `KeyringAccess2`, `PairingControl2`).
 
 ## Confidential native config cipher (contract 1.11)
 
@@ -237,8 +246,7 @@ the real hashed TinySecurity cdylib and a separately admitted host-trusted nativ
 callback fixture. This proves module-to-admitted-native-consumer composition;
 it does not prove ordinary OpenHuman host callback admission. That TinyBus
 integration gap remains open. SDK serde/frame/partial-decode copies and process
-abort are outside the owned-buffer wiping guarantee. Host migration, passwords,
-pairing and app document storage remain separate unfinished capabilities.
+abort are outside the owned-buffer wiping guarantee. App document storage remains a separate unfinished capability.
 
 ## Registered subject policies (contract 1.12, extended in 1.13)
 
