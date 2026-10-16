@@ -4,7 +4,10 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fmt,
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 use tinysecurity_bus::{
     AccessTier, CallerContext, Check, ConstraintEnforcement2, Decision, DenialReason,
@@ -20,6 +23,9 @@ struct Scope {
     paths: Arc<PathScope>,
     /// Registered after init; only these can be retired.
     runtime: bool,
+    /// Distinguishes this registration from any other under the same identity, so a
+    /// candidate planned for a retired scope can never be staged under its successor.
+    incarnation: u64,
 }
 /// Outcome of a runtime registration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +39,7 @@ pub enum Registration {
 #[derive(Clone)]
 pub struct Engine {
     scopes: Arc<RwLock<BTreeMap<String, Scope>>>,
+    incarnations: Arc<AtomicU64>,
     issued: crate::registry::Registry,
 }
 impl fmt::Debug for Engine {
@@ -200,6 +207,7 @@ fn admit(facts: SandboxScope2, runtime: bool) -> Result<Scope> {
         facts,
         paths,
         runtime,
+        incarnation: 0,
     })
 }
 impl Engine {
@@ -212,14 +220,17 @@ impl Engine {
         }
         let mut scopes = BTreeMap::new();
         let initial = config.scopes.len();
+        let incarnations = Arc::new(AtomicU64::new(1));
         for facts in config.scopes {
-            let scope = admit(facts, false)?;
+            let mut scope = admit(facts, false)?;
+            scope.incarnation = incarnations.fetch_add(1, Ordering::SeqCst);
             if scopes.insert(scope.facts.scope_id.clone(), scope).is_some() {
                 return Err(Error::InvalidConfig);
             }
         }
         Ok(Self {
             scopes: Arc::new(RwLock::new(scopes)),
+            incarnations,
             issued: crate::registry::Registry::new(initial, crate::registry::MAX_RUNTIME_ISSUED),
         })
     }
@@ -239,7 +250,7 @@ impl Engine {
     /// `InvalidConfig` for malformed facts, `Conflict` for a changed identity and
     /// `Capacity` when `MAX_SANDBOX_SCOPES2` scopes are live.
     pub fn register_scope(&self, facts: SandboxScope2) -> Result<Registration> {
-        let scope = admit(facts, true)?;
+        let mut scope = admit(facts, true)?;
         let mut table = self.scopes.write().map_err(|_| Error::InvalidOperation)?;
         if let Some(existing) = table.get(&scope.facts.scope_id) {
             return if existing.facts == scope.facts {
@@ -252,6 +263,7 @@ impl Engine {
             return Err(Error::Capacity);
         }
         self.issued.mark_runtime(&scope.facts.scope_id);
+        scope.incarnation = self.incarnations.fetch_add(1, Ordering::SeqCst);
         table.insert(scope.facts.scope_id.clone(), scope);
         Ok(Registration::Created)
     }
@@ -487,21 +499,46 @@ impl Engine {
         };
         Ok((artifact, approval_scope, original))
     }
-    /// Stage a candidate in the bounded native registry before its canonical audit.
-    /// This internal method grants no execution and must never be exposed on the bus.
+    /// The registration a scope identity currently has, to be captured before planning
+    /// and handed to [`Self::stage_for`]. `None` when no such scope is registered.
     /// # Errors
-    /// Rejects entropy failure, full registry, expired candidate or invalid identity.
-    pub fn stage(&self, artifact: SandboxArtifact2, now_ms: u64) -> Result<SandboxArtifact2> {
+    /// Fails closed if the table is poisoned.
+    pub fn incarnation(&self, scope_id: &str) -> Result<Option<u64>> {
+        Ok(self.table()?.get(scope_id).map(|scope| scope.incarnation))
+    }
+    /// Stage a candidate in the bounded native registry before its canonical audit,
+    /// only while the scope it was planned under is still the registration the caller
+    /// captured. A scope that was retired, even if the same identity registered again
+    /// since, refuses the candidate. This internal method grants no execution and must
+    /// never be exposed on the bus.
+    /// # Errors
+    /// Rejects entropy failure, full registry, expired candidate, invalid identity and
+    /// a scope that is no longer the captured incarnation.
+    pub fn stage_for(
+        &self,
+        incarnation: u64,
+        artifact: SandboxArtifact2,
+        now_ms: u64,
+    ) -> Result<SandboxArtifact2> {
         // Held across the insert so `retire_scope` (which purges under the write lock)
         // either removes this row or makes the scope check below fail.
         let table = self.table()?;
-        if !table
-            .get(&artifact.scope_id)
-            .is_some_and(|scope| scope.facts.subject == artifact.subject)
-        {
+        if !table.get(&artifact.scope_id).is_some_and(|scope| {
+            scope.facts.subject == artifact.subject && scope.incarnation == incarnation
+        }) {
             return Err(Error::InvalidOperation);
         }
         self.issued.stage(artifact, now_ms)
+    }
+    /// [`Self::stage_for`] under the scope's current registration. For a caller that
+    /// plans and stages with no retirement possible between the two.
+    /// # Errors
+    /// As [`Self::stage_for`].
+    pub fn stage(&self, artifact: SandboxArtifact2, now_ms: u64) -> Result<SandboxArtifact2> {
+        let incarnation = self
+            .incarnation(&artifact.scope_id)?
+            .ok_or(Error::InvalidOperation)?;
+        self.stage_for(incarnation, artifact, now_ms)
     }
     /// Remove a failed pending artifact; activated permissions cannot be removed by this port.
     pub fn discard(&self, artifact: &SandboxArtifact2) {

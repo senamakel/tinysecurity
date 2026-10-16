@@ -516,3 +516,39 @@ async fn a_plan_in_flight_when_its_scope_retires_keeps_its_own_stream_and_never_
     assert!(sent.iter().all(|row| row.stream_id != "c".repeat(32)));
     Ok(())
 }
+
+#[tokio::test]
+async fn a_plan_in_flight_never_activates_under_a_scope_registered_again_meanwhile() -> TestResult {
+    let h = with_runtime().await?;
+    let mut own = h.facts.clone();
+    own.scope_id = "own-runtime".into();
+    own.approval_scope_id = None;
+    h.service
+        .register_sandbox_scope2(registration(&own, TENANT_STREAM, false))
+        .await?;
+    h.sink.mode.store(4, Ordering::SeqCst);
+    let plan = h.service.plan2(fixture::request(&own, 1));
+    let reregister = async {
+        while rows(&h).is_empty() {
+            tokio::task::yield_now().await;
+        }
+        h.service
+            .retire_sandbox_scope2(RetireSandboxScopeRequest2 {
+                scope_id: own.scope_id.clone(),
+            })
+            .await?;
+        h.service
+            .register_sandbox_scope2(registration(&own, TENANT_STREAM, false))
+            .await?;
+        h.sink.barrier.wait().await;
+        Ok::<_, tinybus::Error>(())
+    };
+    let (plan, reregistered) = tokio::join!(plan, reregister);
+    reregistered?;
+    let plan = plan?;
+    // The identity, subject and facts are the same, but the candidate was planned for
+    // the previous registration: it neither activates nor survives to be consumed.
+    assert!(plan.artifact.is_none());
+    assert_ne!(plan.decision.verdict, tinysecurity_bus::Verdict::Allow);
+    Ok(())
+}

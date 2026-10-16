@@ -277,6 +277,11 @@ impl PolicyService {
             return Ok(refused(generation));
         };
         let audit_client = self.sandbox_audit_client(&engine, &request.scope_id)?;
+        // The registration this plan is for. If the scope is retired meanwhile, even
+        // if the same identity registers again, the candidate is refused at staging.
+        let incarnation = engine
+            .incarnation(&request.scope_id)
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
         let original = request.clone();
         let worker = Arc::clone(&engine);
         let now = self.wall_ms()?;
@@ -296,7 +301,9 @@ impl PolicyService {
             response.artifact = Some(artifact);
         }
         let staged = if let Some(artifact) = response.artifact.take() {
-            if let Ok(artifact) = engine.stage(artifact, self.wall_ms()?) {
+            if let Some(incarnation) = incarnation
+                && let Ok(artifact) = engine.stage_for(incarnation, artifact, self.wall_ms()?)
+            {
                 response.artifact = Some(artifact.clone());
                 Some(artifact)
             } else {

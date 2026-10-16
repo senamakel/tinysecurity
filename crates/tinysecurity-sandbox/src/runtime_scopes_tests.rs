@@ -254,3 +254,29 @@ fn saturated_runtime_scopes_never_starve_initialized_artifact_capacity() -> Test
     assert!(engine.stage(init_candidate, 100).is_err());
     Ok(())
 }
+
+#[test]
+fn a_candidate_is_bound_to_the_scope_incarnation_it_was_planned_under() -> TestResult {
+    let (_dir, init, base) = fixture()?;
+    let engine = engine_with(vec![init.clone()])?;
+    let runtime = runtime_variant(&init, "tenant");
+    let request = request_for(&base, &runtime);
+    engine.register_scope(runtime.clone())?;
+    let first = engine.incarnation("tenant")?.ok_or("registered")?;
+    let candidate = engine
+        .plan(&request, 1, 100)?
+        .artifact
+        .ok_or("plan denied")?;
+    // Retired and registered again under the same identity, facts and subject.
+    engine.retire_scope("tenant")?;
+    assert_eq!(engine.incarnation("tenant")?, None);
+    engine.register_scope(runtime)?;
+    let second = engine.incarnation("tenant")?.ok_or("registered")?;
+    assert_ne!(first, second, "every registration is its own incarnation");
+    assert!(engine.stage_for(first, candidate.clone(), 100).is_err());
+    assert!(engine.stage_for(second, candidate, 100).is_ok());
+    // Initialized scopes have an incarnation too, and nothing for an unknown identity.
+    assert!(engine.incarnation("scope")?.is_some());
+    assert_eq!(engine.incarnation("missing")?, None);
+    Ok(())
+}
