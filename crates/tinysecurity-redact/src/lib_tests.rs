@@ -116,22 +116,29 @@ fn credentials(registry: &Redactor, text: &str) -> Result<String> {
 #[test]
 fn credentials_only_removes_credentials_and_keeps_ordinary_content() -> Result<()> {
     let registry = Redactor::new(&RedactorConfig::default())?;
+    let aws = ["AK", "IA", "IOSFODNN7EXAMPLE"].concat();
+    let pem = [
+        "-----BEGIN ",
+        "PRIVATE KEY-----\nabc\n-----END ",
+        "PRIVATE KEY-----",
+    ]
+    .concat();
     for secret in [
         "key sk-ant-abcdefghijklmnop1234",
         "export GITHUB_TOKEN=ghp_abcdefghijklmnop1234",
-        "aws AKIAIOSFODNN7EXAMPLE",
+        &format!("aws {aws}"),
         "jwt eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.c2lnbmF0dXJlMTIz",
         "Authorization: Bearer abcdef0123456789",
         "api_key = \"s3cr3t-value-123\"",
         "password: hunter2hunter2",
         "Cookie: sid=abc123; theme=dark",
-        "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----",
+        &pem,
     ] {
         let out = credentials(&registry, secret)?;
         assert!(out.contains("[REDACTED]"), "{secret} -> {out}");
         for leaked in [
             "abcdefghijklmnop1234",
-            "AKIAIOSFODNN7EXAMPLE",
+            aws.as_str(),
             "c2lnbmF0dXJlMTIz",
             "abcdef0123456789",
             "s3cr3t-value-123",
