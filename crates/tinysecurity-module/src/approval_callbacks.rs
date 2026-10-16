@@ -168,23 +168,33 @@ impl ApprovalClients {
             )?;
             clients.push((scope, Arc::new(client)));
         }
+        // Initialized subjects keep their base stream as well, so a retired one
+        // cannot come back on another stream.
+        let streams = config
+            .scopes
+            .iter()
+            .map(|scope| (Self::stream_key(scope), audit.stream_id.clone()))
+            .collect();
         Ok(Self {
             store,
             audit: RwLock::new(clients),
             runtime,
-            streams: RwLock::new(std::collections::BTreeMap::new()),
+            streams: RwLock::new(streams),
         })
+    }
+    fn stream_key(scope: &ApprovalScope2) -> (String, String, String) {
+        (
+            scope.subject.user.clone(),
+            scope.subject.workspace.clone(),
+            scope.subject.agent.clone(),
+        )
     }
     /// Remember a subject's stream on first use and refuse any other one afterwards.
     fn pin_stream(&self, scope: &ApprovalScope2, stream_id: &str) -> Result<()> {
         if stream_id.len() != 32 || !stream_id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(Error::Invalid);
         }
-        let key = (
-            scope.subject.user.clone(),
-            scope.subject.workspace.clone(),
-            scope.subject.agent.clone(),
-        );
+        let key = Self::stream_key(scope);
         let mut streams = self.streams.write().map_err(|_| Error::Unavailable)?;
         match streams.get(&key) {
             Some(pinned) if pinned != stream_id => Err(Error::Conflict),

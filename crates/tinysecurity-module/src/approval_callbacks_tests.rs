@@ -900,3 +900,30 @@ async fn clients_admit_a_runtime_subject_with_its_own_stream_and_release_it()
     broker.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn initialized_subjects_keep_their_base_stream_for_the_modules_lifetime()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = tinybus::Connection::connect(bus.connect().await?).await?;
+    let module = tinybus::Connection::connect(bus.connect().await?).await?;
+    let peer = host.unique_name().ok_or("host peer")?;
+    let base = config();
+    let redactor =
+        tinysecurity::Redactor::new(&tinysecurity_bus::RedactorConfig { secrets: vec![] })?;
+    let clients = ApprovalClients::new(
+        &module,
+        Some(peer.as_str()),
+        &base,
+        &native_audit_config(base.scopes[0].subject.clone(), false),
+        &redactor,
+    )?;
+    // The init subject came back as a runtime scope: only on its original stream.
+    let mut again = runtime_scope(3);
+    again.subject = base.scopes[0].subject.clone();
+    assert!(clients.admit_scope(&again, &"b".repeat(32)).await.is_err());
+    clients.admit_scope(&again, &"a".repeat(32)).await?;
+    broker.abort();
+    Ok(())
+}

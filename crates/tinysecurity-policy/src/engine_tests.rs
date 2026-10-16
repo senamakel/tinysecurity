@@ -217,3 +217,34 @@ fn host_tool_marker_never_masks_a_later_hard_denial() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn an_earlier_approval_requirement_never_masks_a_later_hard_denial() -> Result<()> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    let write = Check::Path {
+        path: "/tmp/scratch-output".into(),
+        write: true,
+    };
+    let floor = Check::Path {
+        path: "/root/.ssh/id_rsa".into(),
+        write: false,
+    };
+    let call = |checks| {
+        let mut request = host_call("path_check", checks);
+        request.caller.origin = Origin::Cron;
+        request.caller.tier = AccessTier::Write;
+        verdict(&policy, &request)
+    };
+    // Control: a Cron write alone needs approval.
+    let needs_approval = Verdict::Deny {
+        reason: DenialReason::ApprovalUnavailable,
+    };
+    assert_eq!(call(vec![write.clone()])?, needs_approval);
+    // Either order, the hard denial wins.
+    let first = call(vec![write.clone(), floor.clone()])?;
+    let second = call(vec![floor, write])?;
+    assert_eq!(first, second);
+    assert!(matches!(first, Verdict::Deny { .. }));
+    assert_ne!(first, needs_approval);
+    Ok(())
+}
