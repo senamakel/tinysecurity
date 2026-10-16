@@ -977,3 +977,5 @@ async fn automatic_approval_cannot_authorize_a_widening_policy_change()
     broker.abort();
     Ok(())
 }
+#[path = "adapter_scope_tests.rs"]
+mod adapter_scope_tests;

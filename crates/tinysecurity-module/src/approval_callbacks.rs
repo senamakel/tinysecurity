@@ -1,19 +1,23 @@
 //! Bounded exact approval callback clients, fixed to the trusted unique init peer.
 use crate::callbacks::{AuditClient, PeerBinding};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tinysecurity::approval::{Error, NativeAuditAcknowledgement, Ports, Result};
 use tinysecurity_bus::{
     ApprovalCasRequest2, ApprovalCasResponse2, ApprovalConfig2, ApprovalDeliveryRequest2,
     ApprovalDeliveryResponse2, ApprovalLifecycle2, ApprovalLoadRequest2, ApprovalLoadResponse2,
-    ApprovalRow2, AuditConfig2, AuditEvent2, AuditKind2, AuditSinkRequest2, AuditSinkResponse2,
-    HumanDecisionReceipt2, SubjectScope, VerifyHumanRequest2, callback_names2,
+    ApprovalRow2, ApprovalScope2, AuditConfig2, AuditEvent2, AuditKind2, AuditSinkRequest2,
+    AuditSinkResponse2, HumanDecisionReceipt2, SubjectScope, VerifyHumanRequest2, callback_names2,
 };
+/// Most live or recently released runtime subjects whose stream the clients remember.
+const MAX_PINNED_STREAMS: usize = 1 << 20;
+/// How long a released subject keeps its stream: well past any callback deadline.
+const STREAM_PIN_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
 /// Captured registered callback identity; no model-provided destination or scope.
 pub(crate) struct ApprovalStoreClient {
     connection: tinybus::Connection,
     peer: tinybus::BusName,
     timeout_ms: u32,
-    scopes: Vec<SubjectScope>,
+    scopes: RwLock<Vec<SubjectScope>>,
 }
 impl std::fmt::Debug for ApprovalStoreClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -45,15 +49,38 @@ impl ApprovalStoreClient {
             connection,
             peer,
             timeout_ms: config.timeout_ms,
-            scopes,
+            scopes: RwLock::new(scopes),
         })
     }
     fn scope(&self, scope: &SubjectScope) -> Result<()> {
-        if self.scopes.contains(scope) {
+        if self
+            .scopes
+            .read()
+            .map_err(|_| Error::Unavailable)?
+            .contains(scope)
+        {
             Ok(())
         } else {
             Err(Error::Denied)
         }
+    }
+    /// Admit a runtime subject, bounded like the init set plus the engine's own cap.
+    fn admit(&self, handle: SubjectScope) -> Result<()> {
+        let mut scopes = self.scopes.write().map_err(|_| Error::Unavailable)?;
+        if !scopes.contains(&handle) {
+            if scopes.len() >= tinysecurity_bus::MAX_APPROVAL_SCOPES2 {
+                return Err(Error::Unavailable);
+            }
+            scopes.push(handle);
+        }
+        Ok(())
+    }
+    fn release(&self, handle: &SubjectScope) -> Result<()> {
+        self.scopes
+            .write()
+            .map_err(|_| Error::Unavailable)?
+            .retain(|scope| scope != handle);
+        Ok(())
     }
     fn proxy(&self, interface: &str) -> Result<tinybus::Proxy> {
         self.connection
@@ -92,7 +119,29 @@ impl ApprovalStoreClient {
 /// Real authenticated store, delivery, human-ticket verification and audit ports.
 pub(crate) struct ApprovalClients {
     store: ApprovalStoreClient,
-    audit: Vec<(SubjectScope, Arc<AuditClient>)>,
+    audit: RwLock<Vec<(SubjectScope, Arc<AuditClient>)>>,
+    /// Runtime subjects forward audit to the host sink under this base policy.
+    runtime: RuntimeAudit,
+    /// The audit stream of each runtime subject. A live subject always keeps its
+    /// stream, and a released one keeps it for `pin_ttl` (far beyond any callback
+    /// deadline), so a call still in flight for a retired scope cannot land in
+    /// another scope's ledger when the subject registers again. Pins of subjects
+    /// released longer ago are reclaimed, so only live and recently retired subjects
+    /// count against `max_pins`.
+    streams: RwLock<std::collections::BTreeMap<StreamKey, StreamPin>>,
+    pin_ttl: std::time::Duration,
+    max_pins: usize,
+}
+type StreamKey = (String, String, String);
+struct StreamPin {
+    stream: String,
+    released: Option<std::time::Instant>,
+}
+struct RuntimeAudit {
+    connection: tinybus::Connection,
+    binding: PeerBinding,
+    base: AuditConfig2,
+    redactor: tinysecurity::Redactor,
 }
 impl std::fmt::Debug for ApprovalClients {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -109,6 +158,12 @@ impl ApprovalClients {
     ) -> tinybus::Result<Self> {
         let store = ApprovalStoreClient::new(connection.clone(), peer, config)?;
         let binding = PeerBinding::new(peer)?;
+        let runtime = RuntimeAudit {
+            connection: connection.clone(),
+            binding: binding.clone(),
+            base: audit.clone(),
+            redactor: redactor.clone(),
+        };
         let mut clients = Vec::new();
         for registration in &config.scopes {
             let scope = tinysecurity::approval::scope_handle(&registration.subject)
@@ -127,8 +182,83 @@ impl ApprovalClients {
         }
         Ok(Self {
             store,
-            audit: clients,
+            audit: RwLock::new(clients),
+            runtime,
+            streams: RwLock::new(std::collections::BTreeMap::new()),
+            pin_ttl: STREAM_PIN_TTL,
+            max_pins: MAX_PINNED_STREAMS,
         })
+    }
+    fn stream_key(scope: &ApprovalScope2) -> StreamKey {
+        (
+            scope.subject.user.clone(),
+            scope.subject.workspace.clone(),
+            scope.subject.agent.clone(),
+        )
+    }
+    /// Pin a subject's stream while it is live or recently released; refuse any
+    /// other stream for it until the pin has been released for `pin_ttl`.
+    fn pin_stream(&self, scope: &ApprovalScope2, stream_id: &str) -> Result<()> {
+        if stream_id.len() != 32 || !stream_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::Invalid);
+        }
+        let key = Self::stream_key(scope);
+        let now = std::time::Instant::now();
+        let ttl = self.pin_ttl;
+        let expired = |pin: &StreamPin| {
+            pin.released
+                .is_some_and(|at| now.saturating_duration_since(at) >= ttl)
+        };
+        let mut streams = self.streams.write().map_err(|_| Error::Unavailable)?;
+        if let Some(pin) = streams.get_mut(&key) {
+            if pin.stream == stream_id {
+                pin.released = None;
+                return Ok(());
+            }
+            if !expired(pin) {
+                return Err(Error::Conflict);
+            }
+        } else if streams.len() >= self.max_pins {
+            streams.retain(|_, pin| !expired(pin));
+            if streams.len() >= self.max_pins {
+                return Err(Error::Unavailable);
+            }
+        }
+        streams.insert(
+            key,
+            StreamPin {
+                stream: stream_id.into(),
+                released: None,
+            },
+        );
+        Ok(())
+    }
+    /// Start the retention clock of a released subject's pin.
+    fn unpin_stream(&self, scope: &ApprovalScope2) -> Result<()> {
+        if let Some(pin) = self
+            .streams
+            .write()
+            .map_err(|_| Error::Unavailable)?
+            .get_mut(&Self::stream_key(scope))
+        {
+            pin.released = Some(std::time::Instant::now());
+        }
+        Ok(())
+    }
+    /// Build the audit client of a runtime subject: its own persisted stream, always
+    /// forwarded to the host sink so no extra native journal is opened.
+    fn runtime_client(&self, scope: &ApprovalScope2, stream_id: &str) -> Result<AuditClient> {
+        let mut config = self.runtime.base.clone();
+        config.scope = scope.subject.clone();
+        config.stream_id = stream_id.into();
+        config.native_path = None;
+        AuditClient::new(
+            self.runtime.connection.clone(),
+            self.runtime.binding.clone(),
+            config,
+            self.runtime.redactor.clone(),
+        )
+        .map_err(|_| Error::Invalid)
     }
 }
 #[async_trait::async_trait]
@@ -182,6 +312,27 @@ impl Ports for ApprovalClients {
     async fn audit(&self, row: ApprovalRow2) -> Result<()> {
         self.append_row(row, false).await.map(|_| ())
     }
+    async fn admit_scope(&self, scope: &ApprovalScope2, audit_stream_id: &str) -> Result<()> {
+        let handle = tinysecurity::approval::scope_handle(&scope.subject)?;
+        self.pin_stream(scope, audit_stream_id)?;
+        let client = Arc::new(self.runtime_client(scope, audit_stream_id)?);
+        self.store.admit(handle.clone())?;
+        // The engine serializes lifecycles, so an existing client is stale (for
+        // example after a failed release) and must not keep another stream.
+        let mut audit = self.audit.write().map_err(|_| Error::Unavailable)?;
+        audit.retain(|(s, _)| s != &handle);
+        audit.push((handle, client));
+        Ok(())
+    }
+    async fn release_scope(&self, scope: &ApprovalScope2) -> Result<()> {
+        let handle = tinysecurity::approval::scope_handle(&scope.subject)?;
+        self.audit
+            .write()
+            .map_err(|_| Error::Unavailable)?
+            .retain(|(s, _)| s != &handle);
+        self.unpin_stream(scope)?;
+        self.store.release(&handle)
+    }
     async fn native_audit(&self, row: ApprovalRow2) -> Result<NativeAuditAcknowledgement> {
         let (receipt, expected_scope) = self.append_row(row.clone(), true).await?;
         NativeAuditAcknowledgement::from_verified_sink(row, expected_scope, receipt)
@@ -193,10 +344,13 @@ impl ApprovalClients {
         row: ApprovalRow2,
         required: bool,
     ) -> Result<(AuditSinkResponse2, SubjectScope)> {
-        let (_, client) = self
+        let client = self
             .audit
+            .read()
+            .map_err(|_| Error::Unavailable)?
             .iter()
             .find(|(s, _)| s == &row.binding.scope)
+            .map(|(_, client)| Arc::clone(client))
             .ok_or(Error::Denied)?;
         if required && !client.required() {
             return Err(Error::Denied);

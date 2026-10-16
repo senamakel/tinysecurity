@@ -16,6 +16,8 @@ mod judge;
 pub use judge::*;
 mod approval;
 pub use approval::*;
+mod approval_scopes;
+pub use approval_scopes::*;
 mod audit;
 mod audited;
 mod callbacks;
@@ -43,7 +45,7 @@ pub use redact::RedactorConfig;
 pub use scoped_policy::*;
 pub mod names;
 /// Current wire vocabulary version, independent of the artifact version.
-pub const CONTRACT_VERSION: (u32, u32) = (1, 16);
+pub const CONTRACT_VERSION: (u32, u32) = (1, 17);
 /// Whether a remote module's advertised version supplies this host's vocabulary.
 ///
 /// `version` is the provider version received by the host, not a host requirement

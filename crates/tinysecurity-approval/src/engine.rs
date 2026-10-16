@@ -7,11 +7,13 @@ use std::sync::{
 };
 use tinysecurity_bus::{
     ApprovalActionRequest2, ApprovalCasRequest2, ApprovalCasResponse2, ApprovalChoice2,
-    ApprovalConfig2, ApprovalDeliveryRequest2, ApprovalDeliveryResponse2, ApprovalHistoryImport2,
-    ApprovalLifecycle2, ApprovalLoadRequest2, ApprovalLoadResponse2, ApprovalRecordRequest2,
-    ApprovalRow2, ApprovalScope2, AuditCorrelation2, CallerContext, Check, DecideRequest2,
-    EvaluateApprovalRequest2, EvaluateRequest, HumanDecisionReceipt2, Origin,
-    PreauthorizeFlowRequest2, RecordExecutionRequest2, RedactMode, SubjectScope, ToolCall,
+    ApprovalConfig2, ApprovalDeliveryRequest2, ApprovalDeliveryResponse2, ApprovalGrants2,
+    ApprovalHistoryImport2, ApprovalLifecycle2, ApprovalLoadRequest2, ApprovalLoadResponse2,
+    ApprovalRecordRequest2, ApprovalRow2, ApprovalScope2, ApprovalScopeOutcome2,
+    ApprovalScopeReceipt2, AuditCorrelation2, CallerContext, Check, DecideRequest2,
+    EvaluateApprovalRequest2, EvaluateRequest, HUMAN_ONLY_TOOLS2, HumanDecisionReceipt2,
+    MAX_APPROVAL_SCOPES2, Origin, PreauthorizeFlowRequest2, RecordExecutionRequest2, RedactMode,
+    RegisterApprovalScopeRequest2, RetireApprovalScopeRequest2, SubjectScope, ToolCall,
     VerifyHumanRequest2,
 };
 use tinysecurity_redact::Redactor;
@@ -140,6 +142,19 @@ pub trait Ports: Send + Sync + std::fmt::Debug {
     async fn native_audit(&self, _row: ApprovalRow2) -> Result<NativeAuditAcknowledgement> {
         Err(Error::Denied)
     }
+    /// Admit a runtime subject to the store and audit ports before it becomes usable.
+    /// The default refuses, so a port that cannot serve a new subject fails closed.
+    /// # Errors
+    /// Rejects subjects the ports cannot serve with an authenticated, bounded stream.
+    async fn admit_scope(&self, _scope: &ApprovalScope2, _audit_stream_id: &str) -> Result<()> {
+        Err(Error::Denied)
+    }
+    /// Forget a retired subject. The default has nothing to forget.
+    /// # Errors
+    /// Fails closed when the ports cannot release the subject.
+    async fn release_scope(&self, _scope: &ApprovalScope2) -> Result<()> {
+        Ok(())
+    }
 }
 /// Epoch and monotonic clocks injected together for deterministic expiration.
 pub trait Clock: Send + Sync + std::fmt::Debug {
@@ -167,6 +182,98 @@ impl Clock for SystemClock {
         u64::try_from(self.0.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 }
+/// Live registrations by identity, with a subject index so admission stays linear.
+#[derive(Default)]
+struct ScopeTable {
+    by_id: std::collections::BTreeMap<String, Arc<ScopeEntry>>,
+    subjects: std::collections::BTreeSet<(String, String, String)>,
+}
+impl ScopeTable {
+    fn key(scope: &ApprovalScope2) -> (String, String, String) {
+        let subject = &scope.subject;
+        (
+            subject.user.clone(),
+            subject.workspace.clone(),
+            subject.agent.clone(),
+        )
+    }
+    fn holds_subject(&self, scope: &ApprovalScope2) -> bool {
+        self.subjects.contains(&Self::key(scope))
+    }
+    fn insert(&mut self, entry: ScopeEntry) -> bool {
+        let key = Self::key(&entry.scope);
+        let fresh = self.subjects.insert(key);
+        self.by_id
+            .insert(entry.scope.scope_id.clone(), Arc::new(entry));
+        fresh
+    }
+    fn remove(&mut self, id: &str) -> Option<Arc<ScopeEntry>> {
+        let removed = self.by_id.remove(id)?;
+        self.subjects.remove(&Self::key(&removed.scope));
+        Some(removed)
+    }
+}
+/// One live registration with its host-configured automatic approvals.
+struct ScopeEntry {
+    scope: ApprovalScope2,
+    tools: std::collections::BTreeSet<String>,
+    flows: std::collections::BTreeSet<(String, String)>,
+    /// Runtime scopes own an audit stream; init scopes share the base stream.
+    audit_stream_id: Option<String>,
+}
+impl ScopeEntry {
+    fn init(scope: ApprovalScope2) -> Self {
+        Self {
+            scope,
+            tools: std::collections::BTreeSet::new(),
+            flows: std::collections::BTreeSet::new(),
+            audit_stream_id: None,
+        }
+    }
+    fn runtime(request: RegisterApprovalScopeRequest2) -> Self {
+        let ApprovalGrants2 { tools, flows } = request.grants;
+        Self {
+            scope: request.scope,
+            tools: tools.into_iter().collect(),
+            flows: flows.into_iter().map(|g| (g.flow_id, g.tool)).collect(),
+            audit_stream_id: Some(request.audit_stream_id),
+        }
+    }
+    /// Host-configured grants only convert a required approval; denials and
+    /// automatic scopes were decided before, and reviewed reuse never reaches here.
+    fn grant_for(
+        &self,
+        request: &EvaluateApprovalRequest2,
+        rule: tinysecurity_auto::rules::Rule,
+    ) -> Option<&'static str> {
+        (rule == tinysecurity_auto::rules::Rule::Approval)
+            .then(|| {
+                self.grant(
+                    &request.request.call.tool,
+                    request.request.caller.flow.as_deref(),
+                )
+            })
+            .flatten()
+    }
+    /// Which host-configured grant, if any, approves this exact tool and flow.
+    /// Human-only tools never match, even if a grant names them.
+    fn grant(&self, tool: &str, flow: Option<&str>) -> Option<&'static str> {
+        if HUMAN_ONLY_TOOLS2.contains(&tool) || binding::is_native(tool) {
+            return None;
+        }
+        if self.tools.contains(tool) {
+            return Some("auto:tool-grant");
+        }
+        flow.filter(|flow| self.flows.contains(&((*flow).to_owned(), tool.to_owned())))
+            .map(|_| "auto:flow-grant")
+    }
+    /// Equal registration apart from the generation, which the engine owns.
+    fn same_posture(&self, other: &Self) -> bool {
+        let mut scope = other.scope.clone();
+        scope.generation = self.scope.generation;
+        self.scope == scope && self.tools == other.tools && self.flows == other.flows
+    }
+}
 struct NativeIntent {
     original: ApprovalRow2,
     decision: Option<ApprovalRow2>,
@@ -174,7 +281,10 @@ struct NativeIntent {
 }
 /// Immutable subject engine. Host-instance ownership prevents orphan execution.
 pub struct Engine {
-    config: ApprovalConfig2,
+    scopes: RwLock<ScopeTable>,
+    /// Held across the ports' awaits so registration and retirement of subjects
+    /// never interleave; replacement is atomic under the table lock alone.
+    lifecycle: tokio::sync::Mutex<()>,
     ports: Arc<dyn Ports>,
     clock: Arc<dyn Clock>,
     redactor: RwLock<Redactor>,
@@ -209,33 +319,25 @@ impl Engine {
         {
             return Err(Error::Invalid);
         }
-        let mut ids = std::collections::BTreeSet::new();
-        for scope in &config.scopes {
-            if scope.scope_id.len() != 32
-                || !scope.scope_id.bytes().all(|b| b.is_ascii_hexdigit())
-                || !ids.insert(&scope.scope_id)
-                || scope.policy_ref.is_empty()
-                || scope.policy_ref.len() > 1024
-                || scope.generation == 0
-                || [
-                    &scope.subject.user,
-                    &scope.subject.workspace,
-                    &scope.subject.agent,
-                ]
-                .iter()
-                .any(|s| s.is_empty() || s.len() > 1024)
-            {
-                return Err(Error::Invalid);
-            }
-        }
         let generation = config.scopes[0].generation;
         if config.scopes.iter().any(|s| s.generation != generation) {
             return Err(Error::Invalid);
         }
+        let mut entries = ScopeTable::default();
+        for scope in config.scopes {
+            Self::validate_scope(&scope)?;
+            // One identity and one subject per registration: the audit and store
+            // ports key by subject, and retiring one scope must not orphan another.
+            if entries.by_id.contains_key(&scope.scope_id) || entries.holds_subject(&scope) {
+                return Err(Error::Invalid);
+            }
+            entries.insert(ScopeEntry::init(scope));
+        }
         let wall = clock.wall_ms().ok_or(Error::Unavailable)?;
         let time = (wall, clock.monotonic_ms(), wall, false);
         Ok(Self {
-            config,
+            scopes: RwLock::new(entries),
+            lifecycle: tokio::sync::Mutex::new(()),
             ports,
             clock,
             redactor: RwLock::new(redactor),
@@ -352,7 +454,9 @@ impl Engine {
         request: EvaluateApprovalRequest2,
         deadline: Option<u64>,
     ) -> Result<ApprovalRow2> {
-        let reg = self.registration(&request.scope_id)?;
+        // One snapshot: posture, policy reference and grants never mix replacements.
+        let entry = self.entry(&request.scope_id)?;
+        let reg = self.registered(&entry);
         let (bound, args_redacted, external_effect) =
             binding::original(&reg, &request.request, &self.redactor()?)?;
         let rule = tinysecurity_auto::rules::evaluate(&reg, &bound.origin, external_effect);
@@ -383,7 +487,11 @@ impl Engine {
         let (reusable, human_only) = self
             .begin_reuse(&request, &reg, &bound, &rows, now, deadline.is_some())
             .await?;
-        let automatic = !human_only && rule == tinysecurity_auto::rules::Rule::Automatic;
+        let granted = (!human_only && reusable.is_none())
+            .then(|| entry.grant_for(&request, rule))
+            .flatten();
+        let automatic =
+            !human_only && (rule == tinysecurity_auto::rules::Rule::Automatic || granted.is_some());
         let judge = if !human_only && reusable.is_none() && !automatic {
             self.score(&request, &bound, external_effect).await?
         } else {
@@ -394,6 +502,11 @@ impl Engine {
             .is_some_and(|e| e.outcome == tinysecurity_bus::JudgeOutcome2::Qualified);
         // Validate generation and expiry again after every external await, even cache hits.
         if reg.generation != self.generation.load(Ordering::SeqCst) {
+            return Err(Error::Denied);
+        }
+        // A grant or posture replaced while the ports were awaited must not publish
+        // an automatic approval from the obsolete snapshot.
+        if automatic && !Arc::ptr_eq(&entry, &self.entry(&request.scope_id)?) {
             return Err(Error::Denied);
         }
         let now = self.now()?;
@@ -428,13 +541,7 @@ impl Engine {
                 ApprovalLifecycle2::Pending
             },
             choice: approved.then_some(ApprovalChoice2::Once),
-            attribution: if reusable.is_some() {
-                Some("exact-reviewed-grant".into())
-            } else if qualified {
-                Some("auto:jev".into())
-            } else {
-                automatic.then(|| "auto:host-policy".into())
-            },
+            attribution: Self::attribution(reusable.is_some(), qualified, granted, automatic),
             decision_ticket_sha256: None,
             outcome: None,
             reservation_id: None,
@@ -445,6 +552,24 @@ impl Engine {
         let row = self.memo_begin(row, deadline.is_some())?;
         self.finish_native_begin(&reg, row, now, deadline.is_some())
             .await
+    }
+    /// Who approved a row that needed no human: reviewed reuse, the judge, a host
+    /// grant or the scope's own automatic posture.
+    fn attribution(
+        reused: bool,
+        qualified: bool,
+        granted: Option<&'static str>,
+        automatic: bool,
+    ) -> Option<String> {
+        if reused {
+            Some("exact-reviewed-grant".into())
+        } else if qualified {
+            Some("auto:jev".into())
+        } else {
+            granted
+                .map(Into::into)
+                .or_else(|| automatic.then(|| "auto:host-policy".into()))
+        }
     }
     fn begin_tool_label(&self, tool: &str, native: bool) -> Result<String> {
         if native {
@@ -887,16 +1012,214 @@ impl Engine {
             self.registration(id)?.policy_ref.as_bytes(),
         ))
     }
+    fn entry(&self, id: &str) -> Result<Arc<ScopeEntry>> {
+        self.scopes
+            .read()
+            .map_err(|_| Error::Unavailable)?
+            .by_id
+            .get(id)
+            .cloned()
+            .ok_or(Error::Denied)
+    }
+    /// The registration of one snapshot, bound to the engine's current generation.
+    fn registered(&self, entry: &ScopeEntry) -> ApprovalScope2 {
+        let mut reg = entry.scope.clone();
+        reg.generation = self.generation.load(Ordering::SeqCst);
+        reg
+    }
     fn registration(&self, id: &str) -> Result<ApprovalScope2> {
-        let mut reg = self
-            .config
-            .scopes
+        let entry = self.entry(id)?;
+        Ok(self.registered(&entry))
+    }
+    fn validate_scope(scope: &ApprovalScope2) -> Result<()> {
+        if scope.scope_id.len() != 32
+            || !scope.scope_id.bytes().all(|b| b.is_ascii_hexdigit())
+            || scope.policy_ref.is_empty()
+            || scope.policy_ref.len() > 1024
+            || scope.generation == 0
+            || [
+                &scope.subject.user,
+                &scope.subject.workspace,
+                &scope.subject.agent,
+            ]
             .iter()
-            .find(|s| s.scope_id == id)
+            .any(|s| s.is_empty() || s.len() > 1024)
+        {
+            return Err(Error::Invalid);
+        }
+        Ok(())
+    }
+    /// Validate a runtime request: scope shape, current generation, grants and stream.
+    fn validate_runtime(&self, request: &RegisterApprovalScopeRequest2) -> Result<()> {
+        Self::validate_scope(&request.scope)?;
+        if !request.grants.is_valid() || !binding::hex(&request.audit_stream_id, 32) {
+            return Err(Error::Invalid);
+        }
+        self.current_generation(&request.scope)
+    }
+    /// Deny a registration made against a generation that is no longer current.
+    fn current_generation(&self, scope: &ApprovalScope2) -> Result<()> {
+        if scope.generation == self.generation.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err(Error::Denied)
+        }
+    }
+    fn receipt(
+        scopes: &ScopeTable,
+        scope_id: &str,
+        generation: u64,
+        outcome: ApprovalScopeOutcome2,
+    ) -> Result<ApprovalScopeReceipt2> {
+        Ok(ApprovalScopeReceipt2 {
+            scope_id: scope_id.into(),
+            generation,
+            outcome,
+            live_scopes: u32::try_from(scopes.by_id.len()).map_err(|_| Error::Invalid)?,
+        })
+    }
+    /// Add a runtime subject after init. An identical repeat is idempotent; any other
+    /// reuse of the identity or of the subject conflicts. The ports admit the subject
+    /// (store and audit stream) before it becomes usable.
+    /// # Errors
+    /// Rejects invalid, stale-generation, conflicting or over-capacity registrations
+    /// and subjects the ports cannot admit.
+    pub async fn register_scope(
+        &self,
+        request: RegisterApprovalScopeRequest2,
+    ) -> Result<ApprovalScopeReceipt2> {
+        self.validate_runtime(&request)?;
+        let candidate = ScopeEntry::runtime(request);
+        // Registration and retirement are serialized, so every check below still
+        // holds when the entry is inserted and a failed admission is ours to undo.
+        let _lifecycle = self.lifecycle.lock().await;
+        // The generation may have advanced while waiting for the lifecycle.
+        self.current_generation(&candidate.scope)?;
+        {
+            let scopes = self.scopes.read().map_err(|_| Error::Unavailable)?;
+            if let Some(existing) = scopes.by_id.get(&candidate.scope.scope_id) {
+                return if existing.same_posture(&candidate)
+                    && existing.audit_stream_id == candidate.audit_stream_id
+                {
+                    Self::receipt(
+                        &scopes,
+                        &candidate.scope.scope_id,
+                        candidate.scope.generation,
+                        ApprovalScopeOutcome2::Unchanged,
+                    )
+                } else {
+                    Err(Error::Conflict)
+                };
+            }
+            if scopes.by_id.len() >= MAX_APPROVAL_SCOPES2 {
+                return Err(Error::Unavailable);
+            }
+            if scopes.holds_subject(&candidate.scope) {
+                return Err(Error::Conflict);
+            }
+        }
+        let stream = candidate.audit_stream_id.clone().unwrap_or_default();
+        if let Err(error) = self.ports.admit_scope(&candidate.scope, &stream).await {
+            // No live scope holds this subject (checked above), so undoing is safe.
+            let _ = self.ports.release_scope(&candidate.scope).await;
+            return Err(error);
+        }
+        // Checked under the table lock that `advance_generation` also takes, so a
+        // stale scope never goes live after the ports admitted its subject.
+        let admitted = candidate.scope.clone();
+        let created = {
+            let mut scopes = self.scopes.write().map_err(|_| Error::Unavailable)?;
+            self.current_generation(&candidate.scope).map(|()| {
+                let (id, generation) =
+                    (candidate.scope.scope_id.clone(), candidate.scope.generation);
+                scopes.insert(candidate);
+                Self::receipt(&scopes, &id, generation, ApprovalScopeOutcome2::Created)
+            })
+        };
+        match created {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                let _ = self.ports.release_scope(&admitted).await;
+                Err(error)
+            }
+        }
+    }
+    /// Atomically replace the posture, grants or policy reference of a live scope.
+    /// The subject and, for runtime scopes, the audit stream cannot change. Pending
+    /// rows bound to a different `policy_ref` stop being decidable, which is the
+    /// intended invalidation.
+    /// # Errors
+    /// Rejects unknown scopes, a changed subject or stream, and invalid input.
+    pub fn replace_scope(
+        &self,
+        request: RegisterApprovalScopeRequest2,
+    ) -> Result<ApprovalScopeReceipt2> {
+        self.validate_runtime(&request)?;
+        let candidate = ScopeEntry::runtime(request);
+        let mut scopes = self.scopes.write().map_err(|_| Error::Unavailable)?;
+        // `advance_generation` takes this lock too, so the check is the linearization
+        // point: a replacement is installed before an advance or denied after it.
+        self.current_generation(&candidate.scope)?;
+        let existing = scopes
+            .by_id
+            .get(&candidate.scope.scope_id)
             .cloned()
             .ok_or(Error::Denied)?;
-        reg.generation = self.generation.load(Ordering::SeqCst);
-        Ok(reg)
+        if existing.scope.subject != candidate.scope.subject
+            || existing
+                .audit_stream_id
+                .as_ref()
+                .is_some_and(|stream| Some(stream) != candidate.audit_stream_id.as_ref())
+        {
+            return Err(Error::Denied);
+        }
+        let (id, generation) = (candidate.scope.scope_id.clone(), candidate.scope.generation);
+        let same = existing.same_posture(&candidate);
+        if !same {
+            // Keep the original stream owner: init scopes stay on the base stream.
+            let mut next = candidate;
+            next.audit_stream_id.clone_from(&existing.audit_stream_id);
+            scopes.insert(next);
+        }
+        Self::receipt(
+            &scopes,
+            &id,
+            generation,
+            if same {
+                ApprovalScopeOutcome2::Unchanged
+            } else {
+                ApprovalScopeOutcome2::Replaced
+            },
+        )
+    }
+    /// Remove a runtime scope. Calls already holding it finish; every later call
+    /// denies. Initialized scopes can be replaced but not retired.
+    /// # Errors
+    /// Rejects unknown or initialized scopes and ports that cannot release the subject.
+    pub async fn retire_scope(
+        &self,
+        request: RetireApprovalScopeRequest2,
+    ) -> Result<ApprovalScopeReceipt2> {
+        let _lifecycle = self.lifecycle.lock().await;
+        // Initialized scopes (the base audit stream, possibly a native journal) are
+        // replaced, never retired, so their subjects cannot come back on another backend.
+        if self.entry(&request.scope_id)?.audit_stream_id.is_none() {
+            return Err(Error::Denied);
+        }
+        let removed = self
+            .scopes
+            .write()
+            .map_err(|_| Error::Unavailable)?
+            .remove(&request.scope_id)
+            .ok_or(Error::Denied)?;
+        self.ports.release_scope(&removed.scope).await?;
+        let scopes = self.scopes.read().map_err(|_| Error::Unavailable)?;
+        Self::receipt(
+            &scopes,
+            &request.scope_id,
+            0,
+            ApprovalScopeOutcome2::Retired,
+        )
     }
     fn correlation(audit: &AuditCorrelation2, generation: u64) -> Result<()> {
         if !binding::hex(&audit.event_id, 32) || audit.generation != generation {
@@ -1153,6 +1476,38 @@ impl Engine {
             acknowledgement,
         })
     }
+    /// A row approved without a human is only consumable while the scope still
+    /// approves it: a grant that covers the call, or the posture that made it
+    /// automatic. Replacing the scope revokes unconsumed approvals.
+    fn grant_still_holds(
+        &self,
+        request: &ApprovalActionRequest2,
+        row: &ApprovalRow2,
+    ) -> Result<()> {
+        let posture = match row.attribution.as_deref() {
+            Some("auto:tool-grant" | "auto:flow-grant") => false,
+            Some("auto:host-policy") => true,
+            _ => return Ok(()),
+        };
+        let entry = self.entry(&request.scope_id)?;
+        let granted = entry
+            .grant(
+                &request.request.call.tool,
+                request.request.caller.flow.as_deref(),
+            )
+            .is_some();
+        let automatic = posture
+            && tinysecurity_auto::rules::evaluate(
+                &entry.scope,
+                &row.binding.origin,
+                row.external_effect,
+            ) == tinysecurity_auto::rules::Rule::Automatic;
+        if granted || automatic {
+            Ok(())
+        } else {
+            Err(Error::Denied)
+        }
+    }
     async fn consume_inner(
         &self,
         request: ApprovalActionRequest2,
@@ -1177,13 +1532,21 @@ impl Engine {
         if row.state != ApprovalLifecycle2::Approved || row.host_instance != self.instance {
             return Err(Error::Denied);
         }
-        Self::correlation(&request.audit, reg.generation)?;
+        self.grant_still_holds(&request, &row)?;
+        // The loads and audit above awaited; judge the live scope, not the snapshot.
+        let live = self.registration(&request.scope_id)?;
+        Self::current(&live, &row)?;
+        Self::correlation(&request.audit, live.generation)?;
         let previous = row.version;
         row.version = previous.checked_add(1).ok_or(Error::Invalid)?;
         row.state = ApprovalLifecycle2::Reserved;
         row.reservation_id = Some(binding::opaque()?);
-        row.audit = request.audit;
+        row.audit = request.audit.clone();
         self.persist(Some(previous), &row).await?;
+        // A replacement racing the CAS burns the reservation instead of authorizing it,
+        // whether it changed the policy reference, a grant or the automatic posture.
+        Self::current(&self.registration(&request.scope_id)?, &row)?;
+        self.grant_still_holds(&request, &row)?;
         self.live(&row)?;
         if native {
             self.native_ack(&row, true)?;
@@ -1267,6 +1630,8 @@ impl Engine {
         }
         let mut creations = self.creations.lock().map_err(|_| Error::Unavailable)?;
         let mut intents = self.native_intents.lock().map_err(|_| Error::Unavailable)?;
+        // Registrations and replacements validate their generation under this lock.
+        let _table = self.scopes.write().map_err(|_| Error::Unavailable)?;
         self.generation
             .compare_exchange(previous, next, Ordering::SeqCst, Ordering::SeqCst)
             .map_err(|_| Error::Conflict)?;

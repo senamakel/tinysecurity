@@ -37,3 +37,216 @@ fn direct_credential_transfers_deny_original_content() -> Result<()> {
     }
     Ok(())
 }
+
+fn host_call(tool: &str, checks: Vec<Check>) -> EvaluateRequest {
+    EvaluateRequest {
+        caller: CallerContext {
+            agent: "agent".into(),
+            call_id: "call".into(),
+            ..Default::default()
+        },
+        call: ToolCall {
+            tool: tool.into(),
+            arguments_json: r#"{"to":"someone"}"#.into(),
+            checks,
+        },
+    }
+}
+fn verdict(policy: &Policy, request: &EvaluateRequest) -> Result<Verdict> {
+    Ok(policy.evaluate(request)?.verdict)
+}
+
+#[test]
+fn host_tool_needs_approval_instead_of_being_unsupported() -> Result<()> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    let needs_approval = Verdict::Deny {
+        reason: DenialReason::ApprovalUnavailable,
+    };
+    assert_eq!(
+        verdict(&policy, &host_call("gmail_send", vec![Check::HostTool {}]))?,
+        needs_approval
+    );
+    // The marker beside a real check keeps that check authoritative: the default
+    // policy refuses the command before approval is ever considered.
+    assert_eq!(
+        verdict(
+            &policy,
+            &host_call(
+                "shell",
+                vec![
+                    Check::Command {
+                        command: "git status".into()
+                    },
+                    Check::HostTool {}
+                ]
+            )
+        )?,
+        Verdict::Deny {
+            reason: DenialReason::Command
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn host_tool_never_relaxes_other_checks_and_rejects_reserved_or_unmarked_calls() -> Result<()> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    let unsupported = Verdict::Deny {
+        reason: DenialReason::UnsupportedEffect,
+    };
+    // An unknown tool without the marker, or with the marker plus an unknown effect.
+    assert_eq!(
+        verdict(
+            &policy,
+            &host_call("gmail_send", vec![Check::LocalDiagnostic {}])
+        )?,
+        unsupported
+    );
+    assert_eq!(
+        verdict(
+            &policy,
+            &host_call(
+                "gmail_send",
+                vec![
+                    Check::HostTool {},
+                    Check::Unknown {
+                        description: "x".into()
+                    }
+                ]
+            )
+        )?,
+        unsupported
+    );
+    assert_eq!(
+        verdict(
+            &policy,
+            &host_call(
+                "gmail_send",
+                vec![
+                    Check::HostTool {},
+                    Check::PolicyChange { digest: "d".into() }
+                ]
+            )
+        )?,
+        unsupported
+    );
+    assert_eq!(
+        verdict(&policy, &host_call("gmail_send", vec![]))?,
+        unsupported
+    );
+    // Reserved identities cannot be claimed by a host tool.
+    for tool in [
+        "local_diagnostic",
+        "path_check",
+        "command_check",
+        "policy_change",
+        "device_crypto",
+        "sandbox_host_network",
+        "native_secret_grant",
+        "",
+    ] {
+        assert_eq!(
+            verdict(&policy, &host_call(tool, vec![Check::HostTool {}]))?,
+            unsupported,
+            "{tool}"
+        );
+    }
+    // A path inside the always-forbidden floor stays a hard denial beside the marker.
+    let hard = verdict(
+        &policy,
+        &host_call(
+            "file_read",
+            vec![
+                Check::Path {
+                    path: "/root/.ssh/id_rsa".into(),
+                    write: false,
+                },
+                Check::HostTool {},
+            ],
+        ),
+    )?;
+    assert_ne!(
+        hard,
+        Verdict::Deny {
+            reason: DenialReason::ApprovalUnavailable
+        }
+    );
+    assert!(matches!(hard, Verdict::Deny { .. }));
+    // Batch checks report the marker as needing approval, in order.
+    let response = policy.check(&CheckRequest {
+        caller: CallerContext {
+            agent: "agent".into(),
+            call_id: "call".into(),
+            ..Default::default()
+        },
+        checks: vec![Check::HostTool {}],
+    })?;
+    assert_eq!(
+        response.decisions[0].verdict,
+        Verdict::Deny {
+            reason: DenialReason::ApprovalUnavailable
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn host_tool_marker_never_masks_a_later_hard_denial() -> Result<()> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    let hard = |checks| verdict(&policy, &host_call("file_read", checks));
+    let floor = Check::Path {
+        path: "/root/.ssh/id_rsa".into(),
+        write: false,
+    };
+    let marker_first = hard(vec![Check::HostTool {}, floor.clone()])?;
+    let marker_last = hard(vec![floor, Check::HostTool {}])?;
+    assert_eq!(marker_first, marker_last);
+    assert!(matches!(marker_first, Verdict::Deny { .. }));
+    assert_ne!(
+        marker_first,
+        Verdict::Deny {
+            reason: DenialReason::ApprovalUnavailable
+        }
+    );
+    // Without a concrete denial the marker still asks for approval, wherever it is.
+    assert_eq!(
+        hard(vec![Check::HostTool {}, Check::LocalDiagnostic {}])?,
+        Verdict::Deny {
+            reason: DenialReason::ApprovalUnavailable
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn an_earlier_approval_requirement_never_masks_a_later_hard_denial() -> Result<()> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    // Absolute on every OS, outside every protected root.
+    let scratch = std::env::temp_dir().join("scratch-output");
+    let write = Check::Path {
+        path: scratch.to_string_lossy().into_owned(),
+        write: true,
+    };
+    let floor = Check::Path {
+        path: "/root/.ssh/id_rsa".into(),
+        write: false,
+    };
+    let call = |checks| {
+        let mut request = host_call("path_check", checks);
+        request.caller.origin = Origin::Cron;
+        request.caller.tier = AccessTier::Write;
+        verdict(&policy, &request)
+    };
+    // Control: a Cron write alone needs approval.
+    let needs_approval = Verdict::Deny {
+        reason: DenialReason::ApprovalUnavailable,
+    };
+    assert_eq!(call(vec![write.clone()])?, needs_approval);
+    // Either order, the hard denial wins.
+    let first = call(vec![write.clone(), floor.clone()])?;
+    let second = call(vec![floor, write])?;
+    assert_eq!(first, second);
+    assert!(matches!(first, Verdict::Deny { .. }));
+    assert_ne!(first, needs_approval);
+    Ok(())
+}

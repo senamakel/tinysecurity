@@ -364,6 +364,54 @@ verdict is the executor's risk. `PinnedDirect` stays the only pinned transport, 
 a local capability never accepts a preflight transport. Both fields are omitted from
 the wire when unset, so existing policies serialize unchanged.
 
+## Runtime approval scopes and host tools (contract 1.17)
+
+Additive: a 1.16 host keeps working against a 1.17 module, and a 1.17 host refuses
+a 1.16 module (it requires the three scope members and `Check::HostTool`).
+
+`ApprovalConfig2` fixes at most 128 operator scopes at init. A host that serves
+many subjects (SaaS tenants, derived embedded agents) registers each one later:
+
+| Member | Effect |
+| --- | --- |
+| `RegisterApprovalScope2` | Adds a scope. An identical repeat is `unchanged`; the same identity or the same subject with anything else is a conflict. A stale generation, bad grants or a malformed stream deny. |
+| `ReplaceApprovalScope2` | Atomically changes posture, grants or `policy_ref` of a live scope (init scopes included). The subject and, for runtime scopes, the audit stream cannot change. Rows bound to another `policy_ref` stop being decidable. |
+| `RetireApprovalScope2` | Removes a scope; every later call under it denies and the ports release the subject. |
+
+All three are private host-only members served to the authenticated init peer,
+like the other registrations. The table holds at most 65,536 live scopes. The
+ports must admit a subject (its store scope and audit stream) before it becomes
+usable: runtime scopes carry a host-persisted `audit_stream_id` and always forward
+audit to the host `AuditSink2`; they never open a native journal. The engine owns
+the generation, so repeating a registration after a policy advance is `unchanged`
+rather than a new scope. A live subject keeps its audit stream, and a retired one
+keeps it for an hour (far past any callback deadline): registering it again with
+another stream in that window is refused, so a call still in flight for a retired
+scope can never reach another scope's ledger. Pins older than that are reclaimed, so
+only live and recently retired subjects count against a bound of about one million.
+Initialized scopes can be replaced but not retired, so their (possibly native)
+audit backend never changes.
+
+`ApprovalGrants2` rides on a registration: exact tool names, and exact tool names
+inside one named flow. A grant only converts a required approval into an
+automatic one (`auto:tool-grant`, `auto:flow-grant`), persisted and audited like
+every other row. It applies to SaaS origins (the scope is the tenant's own), but
+never overrides a denial, a Cron external effect, reviewed reuse or a human-only
+tool (`HUMAN_ONLY_TOOLS2`, `native_*`), which registration also refuses to name.
+Names are never wildcards. Name-wide permanence is therefore host configuration
+re-registered with `ReplaceApprovalScope2`, not a persisted human row: durable
+`Tool`/`Flow` choices stay exact-content grants.
+
+`Check::HostTool {}` lets the host request approval for a tool whose effect the
+module cannot inspect (`gmail_send`, a Composio action). The module never
+authorizes it by itself (alone it is `approval_unavailable`, which the approval
+path treats as "needs a human"), and it never relaxes a `Path` or `Command`
+check carried beside it. It is valid only for tool names outside the module's own
+effect classes (`local_diagnostic`, `path_check`, `command_check`), the human-only
+tools and `native_*`, and never beside `Unknown` or `PolicyChange`. Audit
+correlations stay host-allocated (`AuditCorrelation2.event_id` and the tail it
+tracks per stream); the module does not mint them.
+
 ## Per-call exact credentials: `RedactWith` (contract 1.16)
 
 Additive: a 1.15 host keeps working against a 1.16 module, and a 1.16 host

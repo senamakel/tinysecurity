@@ -5,6 +5,10 @@
 `ConsumeApproval2`, `RecordExecution2`, `ListApprovals2`, `CancelApproval2`,
 `ExpireApproval2`, `PreauthorizeFlow2`, and `ImportApprovalHistory2`.
 `ParseReply` recognizes intent and never supplies human authority.
+Contract 1.17 adds `RegisterApprovalScope2`, `ReplaceApprovalScope2` and
+`RetireApprovalScope2` for subjects registered after init, tool and flow grants
+(`auto:tool-grant`, `auto:flow-grant`) and `Check::HostTool`; see
+[MODULE.md](../../MODULE.md#runtime-approval-scopes-and-host-tools-contract-117).
 
 ## Initialization and callbacks
 
