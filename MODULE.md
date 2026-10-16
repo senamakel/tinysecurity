@@ -384,9 +384,13 @@ ports must admit a subject (its store scope and audit stream) before it becomes
 usable: runtime scopes carry a host-persisted `audit_stream_id` and always forward
 audit to the host `AuditSink2`; they never open a native journal. The engine owns
 the generation, so repeating a registration after a policy advance is `unchanged`
-rather than a new scope. A subject keeps its audit stream for the module's lifetime:
-registering it again with another stream is refused, so a call still in flight for a
-retired scope can never reach another scope's ledger.
+rather than a new scope. A live subject keeps its audit stream, and a retired one
+keeps it for an hour (far past any callback deadline): registering it again with
+another stream in that window is refused, so a call still in flight for a retired
+scope can never reach another scope's ledger. Pins older than that are reclaimed, so
+only live and recently retired subjects count against a bound of about one million.
+Initialized scopes can be replaced but not retired, so their (possibly native)
+audit backend never changes.
 
 `ApprovalGrants2` rides on a registration: exact tool names, and exact tool names
 inside one named flow. A grant only converts a required approval into an

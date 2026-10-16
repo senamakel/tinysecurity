@@ -902,7 +902,7 @@ async fn clients_admit_a_runtime_subject_with_its_own_stream_and_release_it()
 }
 
 #[tokio::test]
-async fn initialized_subjects_keep_their_base_stream_for_the_modules_lifetime()
+async fn released_subjects_keep_their_stream_only_for_the_retention_window_and_pins_are_bounded()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let bus = MemoryBus::new();
     let broker = Broker::new().spawn(bus.clone());
@@ -912,18 +912,30 @@ async fn initialized_subjects_keep_their_base_stream_for_the_modules_lifetime()
     let base = config();
     let redactor =
         tinysecurity::Redactor::new(&tinysecurity_bus::RedactorConfig { secrets: vec![] })?;
-    let clients = ApprovalClients::new(
+    let mut clients = ApprovalClients::new(
         &module,
         Some(peer.as_str()),
         &base,
         &native_audit_config(base.scopes[0].subject.clone(), false),
         &redactor,
     )?;
-    // The init subject came back as a runtime scope: only on its original stream.
-    let mut again = runtime_scope(3);
-    again.subject = base.scopes[0].subject.clone();
-    assert!(clients.admit_scope(&again, &"b".repeat(32)).await.is_err());
-    clients.admit_scope(&again, &"a".repeat(32)).await?;
+    clients.max_pins = 2;
+    let (first, second, third) = (runtime_scope(11), runtime_scope(12), runtime_scope(13));
+    clients.admit_scope(&first, &"d".repeat(32)).await?;
+    clients.admit_scope(&second, &"d".repeat(32)).await?;
+    // Live pins fill the table: nothing is reclaimable.
+    assert!(clients.admit_scope(&third, &"d".repeat(32)).await.is_err());
+    clients.release_scope(&first).await?;
+    // Released but inside the window: still pinned, still counted.
+    assert!(clients.admit_scope(&first, &"e".repeat(32)).await.is_err());
+    assert!(clients.admit_scope(&third, &"d".repeat(32)).await.is_err());
+    // Past the window the pin is reclaimed and the subject may use another stream.
+    clients.pin_ttl = std::time::Duration::ZERO;
+    clients.admit_scope(&third, &"d".repeat(32)).await?;
+    // The table is full of live pins again, so a reclaimed subject must wait.
+    assert!(clients.admit_scope(&first, &"e".repeat(32)).await.is_err());
+    clients.release_scope(&third).await?;
+    clients.admit_scope(&first, &"e".repeat(32)).await?;
     broker.abort();
     Ok(())
 }

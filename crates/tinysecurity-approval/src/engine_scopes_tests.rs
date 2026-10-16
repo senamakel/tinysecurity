@@ -903,3 +903,30 @@ async fn grant_revoked_while_the_reservation_is_written_burns_it() -> Result<()>
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn initialized_scopes_cannot_be_retired() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    assert_eq!(
+        owner
+            .retire_scope(RetireApprovalScopeRequest2 {
+                scope_id: "a".repeat(32)
+            })
+            .await
+            .err(),
+        Some(Error::Denied)
+    );
+    assert!(
+        fixture
+            .released
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .is_empty()
+    );
+    // It keeps serving.
+    assert_eq!(
+        owner.begin(request()).await?.state,
+        ApprovalLifecycle2::Pending
+    );
+    Ok(())
+}

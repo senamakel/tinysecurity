@@ -56,8 +56,9 @@ configuration re-registered on change), and does not treat a name as a wildcard.
 - The engine owns the generation; a repeated registration after an advance is
   `unchanged`.
 - Initialization rejects duplicate identities and duplicate subjects.
-- A subject keeps one audit stream for the module's lifetime; a different stream for a
-  re-registered subject is refused.
+- A live subject keeps its audit stream and a retired one keeps it for an hour; a
+  different stream for a re-registered subject is refused in that window. Initialized
+  scopes can be replaced but not retired.
 - Automatic approvals (grant or posture) are revalidated against the live scope before
   they are published, before and after the reservation write; replacing a scope revokes
   unconsumed approvals it no longer supports.

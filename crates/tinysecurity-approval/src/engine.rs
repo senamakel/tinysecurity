@@ -1192,14 +1192,20 @@ impl Engine {
             },
         )
     }
-    /// Remove a scope. Calls already holding it finish; every later call denies.
+    /// Remove a runtime scope. Calls already holding it finish; every later call
+    /// denies. Initialized scopes can be replaced but not retired.
     /// # Errors
-    /// Rejects unknown scopes and ports that cannot release the subject.
+    /// Rejects unknown or initialized scopes and ports that cannot release the subject.
     pub async fn retire_scope(
         &self,
         request: RetireApprovalScopeRequest2,
     ) -> Result<ApprovalScopeReceipt2> {
         let _lifecycle = self.lifecycle.lock().await;
+        // Initialized scopes (the base audit stream, possibly a native journal) are
+        // replaced, never retired, so their subjects cannot come back on another backend.
+        if self.entry(&request.scope_id)?.audit_stream_id.is_none() {
+            return Err(Error::Denied);
+        }
         let removed = self
             .scopes
             .write()
