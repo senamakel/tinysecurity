@@ -316,7 +316,22 @@ async fn retire_denies_later_calls_releases_the_subject_and_reports_once() -> Re
             .err(),
         Some(Error::Unavailable)
     );
-    // A failed release still leaves the scope unusable.
+    // A failed release keeps ownership: the subject cannot register again, and the
+    // retirement can be retried until the ports complete it.
+    let mut again = register(7);
+    again.scope.scope_id = id(8);
+    assert_eq!(
+        owner.register_scope(again).await.err(),
+        Some(Error::Conflict)
+    );
+    fixture.release_fails.store(0, Ordering::SeqCst);
+    assert_eq!(
+        owner
+            .retire_scope(RetireApprovalScopeRequest2 { scope_id: id(7) })
+            .await?
+            .outcome,
+        ApprovalScopeOutcome2::Retired
+    );
     assert!(
         owner
             .begin(begin_for(7, "local_diagnostic", None, Origin::Operator))
@@ -927,6 +942,46 @@ async fn initialized_scopes_cannot_be_retired() -> Result<()> {
     assert_eq!(
         owner.begin(request()).await?.state,
         ApprovalLifecycle2::Pending
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn grant_revoked_while_the_approval_is_published_is_not_returned() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    let owner = Arc::new(owner);
+    let mut req = register(7);
+    req.grants = grants(&["shell"], &[]);
+    owner.register_scope(req).await?;
+    let before = fixture.cas_calls.load(Ordering::SeqCst);
+    fixture
+        .barrier
+        .lock()
+        .map_err(|_| Error::Unavailable)?
+        .replace(Arc::new(tokio::sync::Barrier::new(2)));
+    let racing = tokio::spawn({
+        let owner = owner.clone();
+        async move {
+            owner
+                .begin(begin_for(7, "shell", None, Origin::Operator))
+                .await
+        }
+    });
+    // The new row's write is parked: the grant is revoked after the early checks.
+    while fixture.cas_calls.load(Ordering::SeqCst) == before {
+        tokio::task::yield_now().await;
+    }
+    owner.replace_scope(register(7))?;
+    let barrier = fixture
+        .barrier
+        .lock()
+        .map_err(|_| Error::Unavailable)?
+        .clone()
+        .ok_or(Error::Unavailable)?;
+    barrier.wait().await;
+    assert_eq!(
+        racing.await.map_err(|_| Error::Unavailable)?.err(),
+        Some(Error::Denied)
     );
     Ok(())
 }

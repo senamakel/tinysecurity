@@ -104,7 +104,7 @@ pub struct RegisterApprovalScopeRequest2 {
     pub audit_stream_id: String,
 }
 
-/// Retire one runtime or init scope.
+/// Retire one runtime scope. Initialized scopes can be replaced but never retired.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RetireApprovalScopeRequest2 {

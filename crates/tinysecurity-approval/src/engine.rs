@@ -207,6 +207,11 @@ impl ScopeTable {
             .insert(entry.scope.scope_id.clone(), Arc::new(entry));
         fresh
     }
+    /// Put back an entry removed by a retirement the ports could not complete.
+    fn reinstate(&mut self, entry: Arc<ScopeEntry>) {
+        self.subjects.insert(Self::key(&entry.scope));
+        self.by_id.insert(entry.scope.scope_id.clone(), entry);
+    }
     fn remove(&mut self, id: &str) -> Option<Arc<ScopeEntry>> {
         let removed = self.by_id.remove(id)?;
         self.subjects.remove(&Self::key(&removed.scope));
@@ -504,11 +509,7 @@ impl Engine {
         if reg.generation != self.generation.load(Ordering::SeqCst) {
             return Err(Error::Denied);
         }
-        // A grant or posture replaced while the ports were awaited must not publish
-        // an automatic approval from the obsolete snapshot.
-        if automatic && !Arc::ptr_eq(&entry, &self.entry(&request.scope_id)?) {
-            return Err(Error::Denied);
-        }
+        self.automatic_stands(&entry, &request.scope_id, automatic)?;
         let now = self.now()?;
         if reusable
             .as_ref()
@@ -550,8 +551,23 @@ impl Engine {
             audit: request.audit,
         };
         let row = self.memo_begin(row, deadline.is_some())?;
-        self.finish_native_begin(&reg, row, now, deadline.is_some())
-            .await
+        let row = self
+            .finish_native_begin(&reg, row, now, deadline.is_some())
+            .await?;
+        // The publication awaited too: never hand back an approval whose automatic
+        // authority was replaced meanwhile (consumption would refuse it anyway).
+        if row.state == ApprovalLifecycle2::Approved {
+            self.automatic_stands(&entry, &request.scope_id, automatic)?;
+        }
+        Ok(row)
+    }
+    /// An automatic approval stands only while the scope entry it was derived from is
+    /// still the live one: a grant or posture replaced during an await revokes it.
+    fn automatic_stands(&self, entry: &Arc<ScopeEntry>, id: &str, automatic: bool) -> Result<()> {
+        if automatic && !Arc::ptr_eq(entry, &self.entry(id)?) {
+            return Err(Error::Denied);
+        }
+        Ok(())
     }
     /// Who approved a row that needed no human: reviewed reuse, the judge, a host
     /// grant or the scope's own automatic posture.
@@ -1212,7 +1228,15 @@ impl Engine {
             .map_err(|_| Error::Unavailable)?
             .remove(&request.scope_id)
             .ok_or(Error::Denied)?;
-        self.ports.release_scope(&removed.scope).await?;
+        if let Err(error) = self.ports.release_scope(&removed.scope).await {
+            // Keep ownership so the retirement can be retried; the ports fail closed
+            // for whatever they already released.
+            self.scopes
+                .write()
+                .map_err(|_| Error::Unavailable)?
+                .reinstate(removed);
+            return Err(error);
+        }
         let scopes = self.scopes.read().map_err(|_| Error::Unavailable)?;
         Self::receipt(
             &scopes,
