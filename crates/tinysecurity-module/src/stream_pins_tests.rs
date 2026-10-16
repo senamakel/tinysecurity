@@ -37,8 +37,10 @@ fn a_subject_keeps_one_stream_while_live_and_through_the_retention_window() {
 
 #[test]
 fn a_released_pin_is_reclaimed_after_the_window_and_the_table_is_bounded() {
-    let mut pins = StreamPins::default();
-    pins.max = 1;
+    let mut pins = StreamPins {
+        max: 1,
+        ..StreamPins::default()
+    };
     let (first, second) = (subject("a"), subject("b"));
     assert!(pins.pin(&first, FIRST).is_ok());
     assert!(matches!(pins.pin(&second, FIRST), Err(Error::Unavailable)));
