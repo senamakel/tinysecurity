@@ -750,3 +750,81 @@ async fn grant_revoked_while_the_ports_await_never_publishes_an_approval() -> Re
     assert_eq!(again.state, ApprovalLifecycle2::Pending);
     Ok(())
 }
+
+fn automatic_scope(n: u64) -> RegisterApprovalScopeRequest2 {
+    let mut req = register(n);
+    req.scope.auto_approve_all = true;
+    req
+}
+
+#[tokio::test]
+async fn tightening_posture_blocks_consumption_of_an_unconsumed_automatic_approval() -> Result<()> {
+    let (_, owner) = owner()?;
+    owner.register_scope(automatic_scope(7)).await?;
+    let call = begin_for(7, "shell", None, Origin::Operator);
+    let row = owner.begin(call.clone()).await?;
+    assert_eq!(row.attribution.as_deref(), Some("auto:host-policy"));
+    owner.replace_scope(register(7))?;
+    let mut act = action(&row, 3);
+    act.scope_id = id(7);
+    act.request = call.request;
+    assert_eq!(owner.consume(act).await.err(), Some(Error::Denied));
+    Ok(())
+}
+
+#[tokio::test]
+async fn posture_tightened_while_the_ports_await_never_publishes_an_automatic_row() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    let owner = Arc::new(owner);
+    owner.register_scope(automatic_scope(7)).await?;
+    fixture.pause_load.store(1, Ordering::SeqCst);
+    let racing = tokio::spawn({
+        let owner = owner.clone();
+        async move {
+            owner
+                .begin(begin_for(7, "shell", None, Origin::Operator))
+                .await
+        }
+    });
+    fixture.loaded.notified().await;
+    owner.replace_scope(register(7))?;
+    fixture.release_load.notify_one();
+    assert_eq!(
+        racing.await.map_err(|_| Error::Unavailable)?.err(),
+        Some(Error::Denied)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn replacement_and_generation_advance_serialize_on_the_scope_table() -> Result<()> {
+    let (_, owner) = owner()?;
+    let owner = Arc::new(owner);
+    owner.register_scope(register(7)).await?;
+    let held = owner.scopes.write().map_err(|_| Error::Unavailable)?;
+    let advancing = std::thread::spawn({
+        let owner = owner.clone();
+        move || owner.advance_generation(2)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(!advancing.is_finished(), "advance waits for the table lock");
+    drop(held);
+    advancing.join().map_err(|_| Error::Unavailable)??;
+    // A replacement validated against the old generation is denied after the advance,
+    // and the live scope is untouched.
+    let mut stale = register(7);
+    stale.scope.auto_approve_all = true;
+    assert_eq!(
+        owner.replace_scope(stale.clone()).err(),
+        Some(Error::Denied)
+    );
+    let mut call = begin_for(7, "shell", None, Origin::Operator);
+    call.audit.generation = 2;
+    assert_eq!(owner.begin(call).await?.state, ApprovalLifecycle2::Pending);
+    stale.scope.generation = 2;
+    assert_eq!(
+        owner.replace_scope(stale)?.outcome,
+        ApprovalScopeOutcome2::Replaced
+    );
+    Ok(())
+}

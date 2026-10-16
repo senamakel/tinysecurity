@@ -504,8 +504,9 @@ impl Engine {
         if reg.generation != self.generation.load(Ordering::SeqCst) {
             return Err(Error::Denied);
         }
-        // A grant revoked while the ports were awaited must not publish an approval.
-        if granted.is_some() && !Arc::ptr_eq(&entry, &self.entry(&request.scope_id)?) {
+        // A grant or posture replaced while the ports were awaited must not publish
+        // an automatic approval from the obsolete snapshot.
+        if automatic && !Arc::ptr_eq(&entry, &self.entry(&request.scope_id)?) {
             return Err(Error::Denied);
         }
         let now = self.now()?;
@@ -1123,15 +1124,25 @@ impl Engine {
             let _ = self.ports.release_scope(&candidate.scope).await;
             return Err(error);
         }
-        // ...or while the ports admitted the subject; a stale scope never goes live.
-        if let Err(error) = self.current_generation(&candidate.scope) {
-            let _ = self.ports.release_scope(&candidate.scope).await;
-            return Err(error);
+        // Checked under the table lock that `advance_generation` also takes, so a
+        // stale scope never goes live after the ports admitted its subject.
+        let admitted = candidate.scope.clone();
+        let created = {
+            let mut scopes = self.scopes.write().map_err(|_| Error::Unavailable)?;
+            self.current_generation(&candidate.scope).map(|()| {
+                let (id, generation) =
+                    (candidate.scope.scope_id.clone(), candidate.scope.generation);
+                scopes.insert(candidate);
+                Self::receipt(&scopes, &id, generation, ApprovalScopeOutcome2::Created)
+            })
+        };
+        match created {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                let _ = self.ports.release_scope(&admitted).await;
+                Err(error)
+            }
         }
-        let mut scopes = self.scopes.write().map_err(|_| Error::Unavailable)?;
-        let (id, generation) = (candidate.scope.scope_id.clone(), candidate.scope.generation);
-        scopes.insert(candidate);
-        Self::receipt(&scopes, &id, generation, ApprovalScopeOutcome2::Created)
     }
     /// Atomically replace the posture, grants or policy reference of a live scope.
     /// The subject and, for runtime scopes, the audit stream cannot change. Pending
@@ -1146,6 +1157,9 @@ impl Engine {
         self.validate_runtime(&request)?;
         let candidate = ScopeEntry::runtime(request);
         let mut scopes = self.scopes.write().map_err(|_| Error::Unavailable)?;
+        // `advance_generation` takes this lock too, so the check is the linearization
+        // point: a replacement is installed before an advance or denied after it.
+        self.current_generation(&candidate.scope)?;
         let existing = scopes
             .by_id
             .get(&candidate.scope.scope_id)
@@ -1456,27 +1470,37 @@ impl Engine {
             acknowledgement,
         })
     }
-    /// A row approved by a host grant is only consumable while a grant still covers
-    /// the call; replacing the scope without it revokes unconsumed approvals.
+    /// A row approved without a human is only consumable while the scope still
+    /// approves it: a grant that covers the call, or the posture that made it
+    /// automatic. Replacing the scope revokes unconsumed approvals.
     fn grant_still_holds(
         &self,
         request: &ApprovalActionRequest2,
         row: &ApprovalRow2,
     ) -> Result<()> {
-        if !matches!(
-            row.attribution.as_deref(),
-            Some("auto:tool-grant" | "auto:flow-grant")
-        ) {
-            return Ok(());
-        }
+        let posture = match row.attribution.as_deref() {
+            Some("auto:tool-grant" | "auto:flow-grant") => false,
+            Some("auto:host-policy") => true,
+            _ => return Ok(()),
+        };
         let entry = self.entry(&request.scope_id)?;
-        entry
+        let granted = entry
             .grant(
                 &request.request.call.tool,
                 request.request.caller.flow.as_deref(),
             )
-            .map(|_| ())
-            .ok_or(Error::Denied)
+            .is_some();
+        let automatic = posture
+            && tinysecurity_auto::rules::evaluate(
+                &entry.scope,
+                &row.binding.origin,
+                row.external_effect,
+            ) == tinysecurity_auto::rules::Rule::Automatic;
+        if granted || automatic {
+            Ok(())
+        } else {
+            Err(Error::Denied)
+        }
     }
     async fn consume_inner(
         &self,
@@ -1593,6 +1617,8 @@ impl Engine {
         }
         let mut creations = self.creations.lock().map_err(|_| Error::Unavailable)?;
         let mut intents = self.native_intents.lock().map_err(|_| Error::Unavailable)?;
+        // Registrations and replacements validate their generation under this lock.
+        let _table = self.scopes.write().map_err(|_| Error::Unavailable)?;
         self.generation
             .compare_exchange(previous, next, Ordering::SeqCst, Ordering::SeqCst)
             .map_err(|_| Error::Conflict)?;
