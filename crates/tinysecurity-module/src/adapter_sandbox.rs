@@ -196,10 +196,39 @@ impl PolicyService {
         artifact.approval_reservation_id = row.reservation_id;
         Some(artifact)
     }
+    /// The audit client that records a scope's plans: its own stream for a runtime
+    /// scope, the base client for an initialized one, and none for any other
+    /// identity. A retired or unknown runtime identity never falls back to the base
+    /// stream, so its events cannot land in another ledger. Callers resolve it once,
+    /// before planning, so a plan in flight keeps the stream it started on even if
+    /// its scope is retired meanwhile.
+    fn sandbox_audit_client(
+        &self,
+        engine: &tinysecurity::sandbox::Engine,
+        scope_id: &str,
+    ) -> BusResult<Option<Arc<crate::callbacks::AuditClient>>> {
+        if let Some(runtime) = &self.sandbox_runtime
+            && let Some(client) = runtime.client(scope_id)?
+        {
+            return Ok(Some(client));
+        }
+        let initialized = engine
+            .has_scope(scope_id)
+            .and_then(|known| Ok(known && !engine.is_runtime_scope(scope_id)?))
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
+        Ok(if initialized {
+            self.audit.clone()
+        } else {
+            None
+        })
+    }
     async fn audit_sandbox(
         &self,
+        owner: (
+            Option<Arc<crate::callbacks::AuditClient>>,
+            &tinysecurity_bus::SubjectScope,
+        ),
         original: serde_json::Value,
-        subject: &tinysecurity_bus::SubjectScope,
         correlation: &tinysecurity_bus::AuditCorrelation2,
         generation: u64,
         redactor: tinysecurity::Redactor,
@@ -214,7 +243,8 @@ impl PolicyService {
                 receipt: None,
             })
         };
-        let Some(client) = &self.audit else {
+        let (client, subject) = owner;
+        let Some(client) = client else {
             return Ok(refused());
         };
         if client.scope() != subject || correlation.generation != generation {
@@ -250,6 +280,12 @@ impl PolicyService {
         let Some(engine) = self.sandbox.clone() else {
             return Ok(refused(generation));
         };
+        let audit_client = self.sandbox_audit_client(&engine, &request.scope_id)?;
+        // The registration this plan is for. If the scope is retired meanwhile, even
+        // if the same identity registers again, the candidate is refused at staging.
+        let incarnation = engine
+            .incarnation(&request.scope_id)
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
         let original = request.clone();
         let worker = Arc::clone(&engine);
         let now = self.wall_ms()?;
@@ -269,7 +305,9 @@ impl PolicyService {
             response.artifact = Some(artifact);
         }
         let staged = if let Some(artifact) = response.artifact.take() {
-            if let Ok(artifact) = engine.stage(artifact, self.wall_ms()?) {
+            if let Some(incarnation) = incarnation
+                && let Ok(artifact) = engine.stage_for(incarnation, artifact, self.wall_ms()?)
+            {
                 response.artifact = Some(artifact.clone());
                 Some(artifact)
             } else {
@@ -285,8 +323,8 @@ impl PolicyService {
         };
         let evidence = self
             .audit_sandbox(
+                (audit_client, &request.subject),
                 serde_json::json!([request, response]),
-                &request.subject,
                 &request.audit,
                 generation,
                 redactor,
@@ -332,6 +370,7 @@ impl PolicyService {
         let Some(engine) = &self.sandbox else {
             return Ok(response);
         };
+        let audit_client = self.sandbox_audit_client(engine, &request.request.scope_id)?;
         if engine
             .check_issued(
                 &request.artifact,
@@ -355,8 +394,8 @@ impl PolicyService {
         }
         response.audit = self
             .audit_sandbox(
+                (audit_client, &request.subject),
                 serde_json::json!([request,{"eligible":true}]),
-                &request.subject,
                 &request.audit,
                 generation,
                 redactor,

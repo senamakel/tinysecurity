@@ -1,6 +1,6 @@
 # Host-tool admission
 
-Status: implemented. Owner: TinySecurity. Contract vocabulary: 1.20 (extends 1.18).
+Status: implemented. Owner: TinySecurity. Contract vocabulary: 1.20 (extends 1.19 runtime sandbox scopes and 1.18).
 Tracker: [OpenHuman #7328](https://github.com/tinyhumansai/openhuman/issues/7328), phase 6.
 
 The operator-facing description lives in [`MODULE.md`](../../MODULE.md#host-tool-admission-contract-120).

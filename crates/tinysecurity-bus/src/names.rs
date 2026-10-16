@@ -113,6 +113,10 @@ pub mod methods {
     pub const PLAN: &str = "Plan";
     /// Immutable-scoped declarative sandbox planning.
     pub const PLAN2: &str = "Plan2";
+    /// Register a runtime sandbox scope for one subject (contract 1.19).
+    pub const REGISTER_SANDBOX_SCOPE2: &str = "RegisterSandboxScope2";
+    /// Retire a runtime sandbox scope so later calls under it deny (contract 1.19).
+    pub const RETIRE_SANDBOX_SCOPE2: &str = "RetireSandboxScope2";
     /// Exact human approval creation for immutable-ceiling sandbox host networking.
     pub const EVALUATE_SANDBOX_APPROVAL2: &str = "EvaluateSandboxApproval2";
     /// Exact audited once-only execution admission for an issued declarative artifact.
@@ -178,6 +182,8 @@ pub const METHODS: &[&str] = &[
     methods::REGISTER_APPROVAL_SCOPE2,
     methods::REPLACE_APPROVAL_SCOPE2,
     methods::RETIRE_APPROVAL_SCOPE2,
+    methods::REGISTER_SANDBOX_SCOPE2,
+    methods::RETIRE_SANDBOX_SCOPE2,
     methods::IMPORT_APPROVAL_HISTORY2,
     methods::PARSE_REPLY,
     methods::POLICY_INFO,

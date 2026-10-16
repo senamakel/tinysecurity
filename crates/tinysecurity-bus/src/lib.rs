@@ -12,6 +12,8 @@ mod device;
 pub use device::*;
 mod sandbox;
 pub use sandbox::*;
+mod sandbox_scopes;
+pub use sandbox_scopes::*;
 mod judge;
 pub use judge::*;
 mod approval;

@@ -400,5 +400,12 @@ fn redact_with_request_carries_literals_without_echoing_them()
     );
     assert_eq!(names::methods::REDACT_WITH, "RedactWith");
     assert!(names::METHODS.contains(&names::methods::REDACT_WITH));
+    assert_eq!(
+        names::methods::REGISTER_SANDBOX_SCOPE2,
+        "RegisterSandboxScope2"
+    );
+    assert_eq!(names::methods::RETIRE_SANDBOX_SCOPE2, "RetireSandboxScope2");
+    assert!(names::METHODS.contains(&names::methods::REGISTER_SANDBOX_SCOPE2));
+    assert!(names::METHODS.contains(&names::methods::RETIRE_SANDBOX_SCOPE2));
     Ok(())
 }
