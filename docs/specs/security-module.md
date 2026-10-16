@@ -271,8 +271,8 @@ Exact sanitized Sandbox audit commits before an opaque artifact becomes active.
 Pending artifacts are discarded on every failed or cancelled publication path.
 The initialized scopes share a 1024-row pool with an equal quota each; scopes
 registered at runtime ([runtime sandbox scopes](runtime-sandbox-scopes.md)) hold at
-most 8 rows each from a separate pool, so neither starves the other. Consuming an
-artifact removes its row, and missing identities always deny replay.
+most 8 rows per subject (across all of its scope identities) from a separate pool,
+so neither starves the other. Consuming an artifact removes its row, and missing identities always deny replay.
 A fingerprint is correlation only. Consume validates the full registered
 artifact and owner, audits the exact phase, then rechecks expiry and generation
 before atomically reserving it once. Registry capacity and pending expiry are
