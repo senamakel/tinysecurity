@@ -1083,12 +1083,13 @@ impl Engine {
     }
     fn receipt(
         scopes: &ScopeTable,
-        scope_id: &str,
+        scope: &ApprovalScope2,
         generation: u64,
         outcome: ApprovalScopeOutcome2,
     ) -> Result<ApprovalScopeReceipt2> {
         Ok(ApprovalScopeReceipt2 {
-            scope_id: scope_id.into(),
+            scope_id: scope.scope_id.clone(),
+            scope_handle: binding::scope_handle(&scope.subject)?,
             generation,
             outcome,
             live_scopes: u32::try_from(scopes.by_id.len()).map_err(|_| Error::Invalid)?,
@@ -1119,7 +1120,7 @@ impl Engine {
                 {
                     Self::receipt(
                         &scopes,
-                        &candidate.scope.scope_id,
+                        &candidate.scope,
                         candidate.scope.generation,
                         ApprovalScopeOutcome2::Unchanged,
                     )
@@ -1146,10 +1147,9 @@ impl Engine {
         let created = {
             let mut scopes = self.scopes.write().map_err(|_| Error::Unavailable)?;
             self.current_generation(&candidate.scope).map(|()| {
-                let (id, generation) =
-                    (candidate.scope.scope_id.clone(), candidate.scope.generation);
+                let (scope, generation) = (candidate.scope.clone(), candidate.scope.generation);
                 scopes.insert(candidate);
-                Self::receipt(&scopes, &id, generation, ApprovalScopeOutcome2::Created)
+                Self::receipt(&scopes, &scope, generation, ApprovalScopeOutcome2::Created)
             })
         };
         match created {
@@ -1189,7 +1189,7 @@ impl Engine {
         {
             return Err(Error::Denied);
         }
-        let (id, generation) = (candidate.scope.scope_id.clone(), candidate.scope.generation);
+        let (scope, generation) = (candidate.scope.clone(), candidate.scope.generation);
         let same = existing.same_posture(&candidate);
         if !same {
             // Keep the original stream owner: init scopes stay on the base stream.
@@ -1199,7 +1199,7 @@ impl Engine {
         }
         Self::receipt(
             &scopes,
-            &id,
+            &scope,
             generation,
             if same {
                 ApprovalScopeOutcome2::Unchanged
@@ -1238,12 +1238,7 @@ impl Engine {
             return Err(error);
         }
         let scopes = self.scopes.read().map_err(|_| Error::Unavailable)?;
-        Self::receipt(
-            &scopes,
-            &request.scope_id,
-            0,
-            ApprovalScopeOutcome2::Retired,
-        )
+        Self::receipt(&scopes, &removed.scope, 0, ApprovalScopeOutcome2::Retired)
     }
     fn correlation(audit: &AuditCorrelation2, generation: u64) -> Result<()> {
         if !binding::hex(&audit.event_id, 32) || audit.generation != generation {

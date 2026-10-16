@@ -132,6 +132,11 @@ pub enum ApprovalScopeOutcome2 {
 pub struct ApprovalScopeReceipt2 {
     /// Affected registration.
     pub scope_id: String,
+    /// The sanitized subject handle the module uses for this registration in every
+    /// host callback (`ApprovalStore2`, `AuditSink2`, `ApprovalPrompt2`). A host that
+    /// serves many subjects keys its stores by it, so it learns the handle from the
+    /// receipt instead of reproducing the module's derivation (contract 1.18).
+    pub scope_handle: crate::SubjectScope,
     /// Generation the scope is bound to (0 once retired).
     pub generation: u64,
     /// What happened.

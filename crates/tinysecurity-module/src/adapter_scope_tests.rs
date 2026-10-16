@@ -164,6 +164,10 @@ async fn runtime_scope_registers_grants_replaces_and_retires_through_the_authent
         .await?;
     assert_eq!(created.outcome, ApprovalScopeOutcome2::Created);
     assert_eq!(created.live_scopes, 2);
+    // The receipt names the handle the host callbacks will carry for this subject,
+    // so a host never has to reproduce the derivation.
+    let handle = tinysecurity::approval::scope_handle(&tenant_subject())?;
+    assert_eq!(created.scope_handle, handle);
 
     // A granted tool is approved without a prompt, persisted and audited as the grant.
     let granted: EvaluateApprovalResponse2 = proxy
@@ -220,6 +224,10 @@ async fn replace_then_retire(proxy: &tinybus::Proxy) -> TestResult {
         )
         .await?;
     assert_eq!(replaced.outcome, ApprovalScopeOutcome2::Replaced);
+    assert_eq!(
+        replaced.scope_handle,
+        tinysecurity::approval::scope_handle(&tenant_subject())?
+    );
     let after: EvaluateApprovalResponse2 = proxy
         .call(
             names::methods::EVALUATE_APPROVAL2,
@@ -241,6 +249,10 @@ async fn replace_then_retire(proxy: &tinybus::Proxy) -> TestResult {
         )
         .await?;
     assert_eq!(retired.outcome, ApprovalScopeOutcome2::Retired);
+    assert_eq!(
+        retired.scope_handle,
+        tinysecurity::approval::scope_handle(&tenant_subject())?
+    );
     assert!(
         proxy
             .call::<EvaluateApprovalResponse2>(
@@ -290,5 +302,93 @@ async fn approval_scope_members_fail_closed_without_an_approval_engine() -> Test
             .await
             .is_err()
     );
+    Ok(())
+}
+
+/// Configuring approvals must not take the filesystem and command members away: they
+/// are separate permissions that never ask a human, so only a required audit (which
+/// needs a durable event per permission) refuses them.
+#[tokio::test]
+async fn configured_approvals_keep_path_and_command_members_available() -> TestResult {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = Connection::connect(bus.connect().await?).await?;
+    let module = Connection::connect(bus.connect().await?).await?;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("ledger");
+    std::fs::write(&path, [])?;
+    let store = Arc::new(Mutex::new(store::DiskStore::open(&path)?));
+    serve(&host, &module, &store, &Arc::new(AtomicBool::new(false))).await?;
+    let module_peer = module.unique_name().ok_or("module peer")?;
+    let proxy = host.proxy(module_peer.as_str(), names::OBJECT_PATH, names::INTERFACE)?;
+
+    let root = tempfile::tempdir()?;
+    std::fs::write(root.path().join("file"), "x")?;
+    let id: PathPolicyId = proxy
+        .call(
+            names::methods::REGISTER_PATH_POLICY,
+            (super::super::fixture_policy(root.path()),),
+        )
+        .await?;
+    let read: PathValidationResult = proxy
+        .call(
+            names::methods::VALIDATE_PATH,
+            (PathValidationRequest {
+                policy_id: id.clone(),
+                path: "file".into(),
+            },),
+        )
+        .await?;
+    assert!(matches!(read, PathValidationResult::Allowed { .. }));
+    let outside: PathValidationResult = proxy
+        .call(
+            names::methods::VALIDATE_PATH,
+            (PathValidationRequest {
+                policy_id: id.clone(),
+                path: "../outside".into(),
+            },),
+        )
+        .await?;
+    assert!(matches!(outside, PathValidationResult::Denied { .. }));
+    let parent: PathValidationResult = proxy
+        .call(
+            names::methods::VALIDATE_PARENT,
+            (PathValidationRequest {
+                policy_id: id.clone(),
+                path: "new-file".into(),
+            },),
+        )
+        .await?;
+    assert!(matches!(parent, PathValidationResult::Allowed { .. }));
+    let checked: bool = proxy
+        .call(
+            names::methods::CHECK_PATH,
+            (PathCheckRequest {
+                policy_id: id,
+                path: root.path().join("file"),
+                kind: PathCheckKind::Protected,
+            },),
+        )
+        .await?;
+    assert!(!checked);
+
+    let command: CommandPolicyId = proxy
+        .call(
+            names::methods::REGISTER_COMMAND_POLICY,
+            (super::super::command_fixture()?,),
+        )
+        .await?;
+    let decision: CommandDecision = proxy
+        .call(
+            names::methods::CHECK_COMMAND,
+            (CommandRequest {
+                policy_id: command,
+                command: "pwd".into(),
+                declared_class: None,
+            },),
+        )
+        .await?;
+    assert_eq!(decision.gate, CommandGate::Allow);
+    broker.abort();
     Ok(())
 }

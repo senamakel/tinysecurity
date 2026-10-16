@@ -53,8 +53,18 @@ impl PolicyService {
     fn requires_bound_audit(&self) -> bool {
         self.approvals.is_some() || self.audit.as_ref().is_some_and(|client| client.required())
     }
+    /// Whether the configured audit makes every permission carry its own durable event.
+    fn audit_required(&self) -> bool {
+        self.audit.as_ref().is_some_and(|client| client.required())
+    }
+    /// Refuse a permission member that has no audit correlation when audit is required.
+    ///
+    /// Configured approvals alone do not refuse these members: the durable approval
+    /// lifecycle governs `EvaluateApproval2`, while filesystem, command and egress
+    /// questions are separate permissions that never request a human decision. A host
+    /// that configures approvals must keep validating paths and commands.
     fn require_unbound_permission(&self) -> BusResult<()> {
-        if self.requires_bound_audit() {
+        if self.audit_required() {
             return Err(tinybus::Error::failed(
                 "required audit needs bound permission",
             ));

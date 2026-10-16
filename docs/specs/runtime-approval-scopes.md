@@ -62,6 +62,11 @@ configuration re-registered on change), and does not treat a name as a wildcard.
 - Automatic approvals (grant or posture) are revalidated against the live scope before
   they are published, before and after the reservation write; replacing a scope revokes
   unconsumed approvals it no longer supports.
+- The receipt of a registration, replacement or retirement carries `scope_handle`, the
+  sanitized subject the module sends in host callbacks (contract 1.18), so a multi-subject
+  host keys its stores without reproducing the derivation.
+- Configuring approvals does not refuse the path, command and egress members; only a
+  required audit does (contract 1.18).
 - Contract 1.17 is additive: older hosts keep working, a 1.17 host refuses a 1.16
   module.
 

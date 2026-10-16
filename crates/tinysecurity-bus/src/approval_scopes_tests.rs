@@ -147,12 +147,18 @@ fn retire_and_receipt_wire_round_trip() -> TestResult {
     );
     let receipt = ApprovalScopeReceipt2 {
         scope_id: "a".repeat(32),
+        scope_handle: SubjectScope {
+            user: "b".repeat(64),
+            workspace: "c".repeat(64),
+            agent: "d".repeat(64),
+        },
         generation: 3,
         outcome: ApprovalScopeOutcome2::Replaced,
         live_scopes: 2,
     };
     let value = serde_json::to_value(&receipt)?;
     assert_eq!(value["outcome"], "replaced");
+    assert_eq!(value["scope_handle"]["agent"], "d".repeat(64));
     assert_eq!(
         serde_json::from_value::<ApprovalScopeReceipt2>(value)?,
         receipt
