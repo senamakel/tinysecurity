@@ -834,7 +834,7 @@ impl PolicyService {
     async fn policy_info(&self) -> BusResult<PolicyInfo> {
         let mut info = { self.read()?.info() };
         info.callbacks.audit = self.audit.is_some();
-        info.callbacks.audit_required = self.requires_bound_audit();
+        info.callbacks.audit_required = self.audit_required();
         info.callbacks.approvals = self.approvals.is_some();
         info.callbacks.sandbox = self.sandbox.is_some();
         info.callbacks.secret = self.secret.is_some();
