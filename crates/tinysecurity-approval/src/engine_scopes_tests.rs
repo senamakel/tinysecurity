@@ -860,3 +860,46 @@ async fn policy_replaced_while_consume_awaits_never_reserves_the_old_approval() 
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn grant_revoked_while_the_reservation_is_written_burns_it() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    let owner = Arc::new(owner);
+    let mut req = register(7);
+    req.grants = grants(&["shell"], &[]);
+    owner.register_scope(req).await?;
+    let call = begin_for(7, "shell", None, Origin::Operator);
+    let row = owner.begin(call.clone()).await?;
+    assert_eq!(row.state, ApprovalLifecycle2::Approved);
+    // The grant disappears after the checks but before the write commits.
+    let before = fixture.cas_calls.load(Ordering::SeqCst);
+    fixture
+        .barrier
+        .lock()
+        .map_err(|_| Error::Unavailable)?
+        .replace(Arc::new(tokio::sync::Barrier::new(2)));
+    let mut act = action(&row, 3);
+    act.scope_id = id(7);
+    act.request = call.request;
+    let racing = tokio::spawn({
+        let owner = owner.clone();
+        async move { owner.consume(act).await }
+    });
+    // The CAS is parked on the barrier; replace the scope, then let the write finish.
+    while fixture.cas_calls.load(Ordering::SeqCst) == before {
+        tokio::task::yield_now().await;
+    }
+    owner.replace_scope(register(7))?;
+    let barrier = fixture
+        .barrier
+        .lock()
+        .map_err(|_| Error::Unavailable)?
+        .clone()
+        .ok_or(Error::Unavailable)?;
+    barrier.wait().await;
+    assert_eq!(
+        racing.await.map_err(|_| Error::Unavailable)?.err(),
+        Some(Error::Denied)
+    );
+    Ok(())
+}

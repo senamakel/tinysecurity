@@ -875,8 +875,9 @@ async fn clients_admit_a_runtime_subject_with_its_own_stream_and_release_it()
     assert!(clients.admit_scope(&scope, "short").await.is_err());
     assert!(clients.store.scope(&handle).is_err());
     clients.admit_scope(&scope, &"d".repeat(32)).await?;
-    // A stale client (say after a failed release) never keeps the old stream.
-    clients.admit_scope(&scope, &"e".repeat(32)).await?;
+    // A subject keeps its stream: no other one is accepted, released or not, so an
+    // in-flight call of a retired scope cannot reach another ledger.
+    assert!(clients.admit_scope(&scope, &"e".repeat(32)).await.is_err());
     clients.admit_scope(&scope, &"d".repeat(32)).await?;
     assert!(clients.store.scope(&handle).is_ok());
     {
@@ -886,6 +887,7 @@ async fn clients_admit_a_runtime_subject_with_its_own_stream_and_release_it()
         assert_eq!(client.stream_id(), "d".repeat(32));
     }
     clients.release_scope(&scope).await?;
+    assert!(clients.admit_scope(&scope, &"e".repeat(32)).await.is_err());
     assert!(clients.store.scope(&handle).is_err());
     assert!(
         clients

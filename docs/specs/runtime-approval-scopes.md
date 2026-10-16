@@ -56,6 +56,11 @@ configuration re-registered on change), and does not treat a name as a wildcard.
 - The engine owns the generation; a repeated registration after an advance is
   `unchanged`.
 - Initialization rejects duplicate identities and duplicate subjects.
+- A subject keeps one audit stream for the module's lifetime; a different stream for a
+  re-registered subject is refused.
+- Automatic approvals (grant or posture) are revalidated against the live scope before
+  they are published, before and after the reservation write; replacing a scope revokes
+  unconsumed approvals it no longer supports.
 - Contract 1.17 is additive: older hosts keep working, a 1.17 host refuses a 1.16
   module.
 

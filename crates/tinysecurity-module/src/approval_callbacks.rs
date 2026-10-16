@@ -8,6 +8,8 @@ use tinysecurity_bus::{
     ApprovalRow2, ApprovalScope2, AuditConfig2, AuditEvent2, AuditKind2, AuditSinkRequest2,
     AuditSinkResponse2, HumanDecisionReceipt2, SubjectScope, VerifyHumanRequest2, callback_names2,
 };
+/// Most distinct runtime subjects whose stream the clients remember.
+const MAX_PINNED_STREAMS: usize = 1 << 20;
 /// Captured registered callback identity; no model-provided destination or scope.
 pub(crate) struct ApprovalStoreClient {
     connection: tinybus::Connection,
@@ -118,6 +120,10 @@ pub(crate) struct ApprovalClients {
     audit: RwLock<Vec<(SubjectScope, Arc<AuditClient>)>>,
     /// Runtime subjects forward audit to the host sink under this base policy.
     runtime: RuntimeAudit,
+    /// The one audit stream each runtime subject ever used. A subject keeps its
+    /// stream for the module's lifetime, so a call still in flight for a retired
+    /// scope cannot land in another scope's ledger after the subject registers again.
+    streams: RwLock<std::collections::BTreeMap<(String, String, String), String>>,
 }
 struct RuntimeAudit {
     connection: tinybus::Connection,
@@ -166,7 +172,29 @@ impl ApprovalClients {
             store,
             audit: RwLock::new(clients),
             runtime,
+            streams: RwLock::new(std::collections::BTreeMap::new()),
         })
+    }
+    /// Remember a subject's stream on first use and refuse any other one afterwards.
+    fn pin_stream(&self, scope: &ApprovalScope2, stream_id: &str) -> Result<()> {
+        if stream_id.len() != 32 || !stream_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::Invalid);
+        }
+        let key = (
+            scope.subject.user.clone(),
+            scope.subject.workspace.clone(),
+            scope.subject.agent.clone(),
+        );
+        let mut streams = self.streams.write().map_err(|_| Error::Unavailable)?;
+        match streams.get(&key) {
+            Some(pinned) if pinned != stream_id => Err(Error::Conflict),
+            Some(_) => Ok(()),
+            None if streams.len() >= MAX_PINNED_STREAMS => Err(Error::Unavailable),
+            None => {
+                streams.insert(key, stream_id.into());
+                Ok(())
+            }
+        }
     }
     /// Build the audit client of a runtime subject: its own persisted stream, always
     /// forwarded to the host sink so no extra native journal is opened.
@@ -237,6 +265,7 @@ impl Ports for ApprovalClients {
     }
     async fn admit_scope(&self, scope: &ApprovalScope2, audit_stream_id: &str) -> Result<()> {
         let handle = tinysecurity::approval::scope_handle(&scope.subject)?;
+        self.pin_stream(scope, audit_stream_id)?;
         let client = Arc::new(self.runtime_client(scope, audit_stream_id)?);
         self.store.admit(handle.clone())?;
         // The engine serializes lifecycles, so an existing client is stale (for
