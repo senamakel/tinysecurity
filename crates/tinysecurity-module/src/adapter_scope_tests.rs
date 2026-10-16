@@ -26,6 +26,7 @@ fn registration(grants: ApprovalGrants2) -> RegisterApprovalScopeRequest2 {
         },
         grants,
         audit_stream_id: STREAM.into(),
+        report_handle: true,
     }
 }
 fn tenant_begin(instance: u64, sequence: u64, tool: &str) -> EvaluateApprovalRequest2 {
@@ -167,7 +168,7 @@ async fn runtime_scope_registers_grants_replaces_and_retires_through_the_authent
     // The receipt names the handle the host callbacks will carry for this subject,
     // so a host never has to reproduce the derivation.
     let handle = tinysecurity::approval::scope_handle(&tenant_subject())?;
-    assert_eq!(created.scope_handle, handle);
+    assert_eq!(created.scope_handle, Some(handle));
 
     // A granted tool is approved without a prompt, persisted and audited as the grant.
     let granted: EvaluateApprovalResponse2 = proxy
@@ -226,8 +227,16 @@ async fn replace_then_retire(proxy: &tinybus::Proxy) -> TestResult {
     assert_eq!(replaced.outcome, ApprovalScopeOutcome2::Replaced);
     assert_eq!(
         replaced.scope_handle,
-        tinysecurity::approval::scope_handle(&tenant_subject())?
+        Some(tinysecurity::approval::scope_handle(&tenant_subject())?)
     );
+    // A registration that does not ask (an older host) gets the 1.17 receipt.
+    let mut quiet = registration(ApprovalGrants2::default());
+    quiet.report_handle = false;
+    let unchanged: ApprovalScopeReceipt2 = proxy
+        .call(names::methods::REPLACE_APPROVAL_SCOPE2, (quiet,))
+        .await?;
+    assert_eq!(unchanged.outcome, ApprovalScopeOutcome2::Unchanged);
+    assert!(unchanged.scope_handle.is_none());
     let after: EvaluateApprovalResponse2 = proxy
         .call(
             names::methods::EVALUATE_APPROVAL2,
@@ -249,9 +258,9 @@ async fn replace_then_retire(proxy: &tinybus::Proxy) -> TestResult {
         )
         .await?;
     assert_eq!(retired.outcome, ApprovalScopeOutcome2::Retired);
-    assert_eq!(
-        retired.scope_handle,
-        tinysecurity::approval::scope_handle(&tenant_subject())?
+    assert!(
+        retired.scope_handle.is_none(),
+        "a retirement reports no handle"
     );
     assert!(
         proxy

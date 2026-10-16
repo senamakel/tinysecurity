@@ -102,6 +102,10 @@ pub struct RegisterApprovalScopeRequest2 {
     /// Host-persisted random 32-hex audit stream of this subject. Runtime scopes
     /// always forward to the host `AuditSink2`; they never open a native file.
     pub audit_stream_id: String,
+    /// Ask for the subject handle in the receipt (contract 1.18). A host built
+    /// against an older contract never sets it, so its receipts keep their shape.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub report_handle: bool,
 }
 
 /// Retire one runtime scope. Initialized scopes can be replaced but never retired.
@@ -136,7 +140,11 @@ pub struct ApprovalScopeReceipt2 {
     /// host callback (`ApprovalStore2`, `AuditSink2`, `ApprovalPrompt2`). A host that
     /// serves many subjects keys its stores by it, so it learns the handle from the
     /// receipt instead of reproducing the module's derivation (contract 1.18).
-    pub scope_handle: crate::SubjectScope,
+    /// Present only when the registration asked for it
+    /// ([`RegisterApprovalScopeRequest2::report_handle`]) and never on a retirement,
+    /// so a receipt for an older host keeps its 1.17 shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_handle: Option<crate::SubjectScope>,
     /// Generation the scope is bound to (0 once retired).
     pub generation: u64,
     /// What happened.

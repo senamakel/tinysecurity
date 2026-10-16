@@ -46,6 +46,7 @@ fn registration(grants: ApprovalGrants2) -> RegisterApprovalScopeRequest2 {
         },
         grants,
         audit_stream_id: STREAM.into(),
+        report_handle: false,
     }
 }
 fn audit(sequence: u64) -> AuditCorrelation2 {
