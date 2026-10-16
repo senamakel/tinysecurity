@@ -1,5 +1,5 @@
 //! Policy invocation and SDK configuration types.
-use crate::PolicyId;
+use crate::{CommandClass, CommandPolicyId, PolicyId};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 /// Verified host context; never populated directly from model arguments.
@@ -92,11 +92,94 @@ pub enum Check {
     /// never relaxes a path or command check carried beside it, and it is valid only
     /// for tool names outside the reserved effect classes.
     HostTool {},
+    /// A host tool judged by its declared permission level (contract 1.20), valid only
+    /// for tool names outside the reserved effect classes. Unlike [`Check::HostTool`] it
+    /// does not always need approval: the verdict follows the caller's tier, the cron
+    /// origin, the registered command scope's autonomy and hourly budget, and the tool's
+    /// declared external effect. Admission only: the module authorizes the call, the
+    /// host executes it.
+    HostAction {
+        /// The tool's permission level for these arguments.
+        permission: ToolPermission,
+        /// Whether the tool declares an external effect for these arguments; a human
+        /// must approve it.
+        external_effect: bool,
+        /// Reserve one action from the scope's hourly budget when the tool acts and no
+        /// other check refuses the call. `false` only reads the budget.
+        spend: bool,
+        /// Registered command scope carrying the autonomy tier and the hourly budget.
+        /// Absent, only the tier, origin and external-effect rules apply.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command_policy: Option<CommandPolicyId>,
+    },
+    /// A shell command gated under a registered command scope (contract 1.20), valid
+    /// only for tool names outside the reserved effect classes. The scope's class gate
+    /// decides: allowed, needs a human, or refused with a typed reason. Caller-provided
+    /// classification can only raise the class.
+    HostShell {
+        /// Entire command text.
+        command: String,
+        /// Escalate-only class hint; it cannot lower the deterministic class.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        declared_class: Option<CommandClass>,
+        /// Reserve one action from the scope's hourly budget when the command is
+        /// allowed (an execution). `false` classifies without spending.
+        spend: bool,
+        /// Registered command scope. Absent, the bootstrap command rules apply.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command_policy: Option<CommandPolicyId>,
+    },
     /// An effect not supported by this engine.
     Unknown {
         /// Content-free descriptor.
         description: String,
     },
+}
+/// Declared permission level of a host tool (contract 1.20), mirroring the host's
+/// ordered levels. Everything above [`ToolPermission::ReadOnly`] acts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolPermission {
+    /// Metadata-only; needs no permission.
+    None,
+    /// Reads only.
+    ReadOnly,
+    /// Writes.
+    Write,
+    /// Executes commands or scripts.
+    Execute,
+    /// Destructive or system-level.
+    Dangerous,
+}
+impl ToolPermission {
+    /// Whether a tool at this level acts rather than observes.
+    #[must_use]
+    pub fn acts(self) -> bool {
+        self > Self::ReadOnly
+    }
+    /// The lowest caller tier that may use a tool at this level.
+    #[must_use]
+    pub fn minimum_tier(self) -> AccessTier {
+        match self {
+            Self::None | Self::ReadOnly => AccessTier::Read,
+            Self::Write => AccessTier::Write,
+            Self::Execute | Self::Dangerous => AccessTier::Full,
+        }
+    }
+}
+impl AccessTier {
+    /// Whether this tier reaches `required`: `Read < Write < Full`.
+    #[must_use]
+    pub fn reaches(&self, required: &Self) -> bool {
+        self.rank() >= required.rank()
+    }
+    fn rank(&self) -> u8 {
+        match self {
+            Self::Read => 0,
+            Self::Write => 1,
+            Self::Full => 2,
+        }
+    }
 }
 /// Evaluation request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,6 +257,17 @@ pub enum DenialReason {
     InvalidContext,
     /// Original content was blocked by the semantic scanner.
     Content,
+    /// The registered autonomy tier is read-only and the call would act (contract 1.20).
+    ReadOnlyMode,
+    /// The scope's hourly action budget is exhausted (contract 1.20).
+    RateLimited {
+        /// The configured actions per hour, for the model-facing message.
+        max_per_hour: u32,
+    },
+    /// A scheduled (cron) turn may use read-only tools only (contract 1.20).
+    ScheduledReadOnly,
+    /// The command class is prohibited by the scope's high-risk setting (contract 1.20).
+    HighRisk,
 }
 /// Effective policy settings. Bootstrap intentionally exposes no unimplemented budgets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -439,3 +533,7 @@ pub struct PolicyChanged {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_generation: Option<u64>,
 }
+
+#[cfg(test)]
+#[path = "policy_tests.rs"]
+mod tests;

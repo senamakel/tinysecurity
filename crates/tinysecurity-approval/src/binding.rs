@@ -139,7 +139,11 @@ pub(crate) fn original(
     let external = request.call.checks.iter().any(|check| match check {
         Check::LocalDiagnostic {} => false,
         Check::Path { write, .. } => *write,
+        Check::HostAction {
+            external_effect, ..
+        } => *external_effect,
         Check::Command { .. }
+        | Check::HostShell { .. }
         | Check::PolicyChange { .. }
         | Check::HostTool {}
         | Check::Unknown { .. } => true,

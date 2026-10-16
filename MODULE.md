@@ -471,6 +471,13 @@ another ledger. Several scope identities may share a subject; its stream is rele
 only when the last of them retires. Changing a live scope's facts is a retirement
 followed by a new registration, which also invalidates its outstanding artifacts.
 
+## Host-tool admission (contract 1.20)
+
+Additive ([specification](docs/specs/host-tool-admission.md)). `Check::HostAction` and `Check::HostShell` judge a host
+tool or shell command by its permission level, the caller's tier and origin and a registered command scope's autonomy
+and hourly budget, with typed refusals (`read_only_mode`, `rate_limited`, `scheduled_read_only`, `high_risk`). An allowed
+`spend: true` call reserves one action from the scope's ledger, shared with `CheckCommand`, and gives it back if a later gate refuses it.
+
 ## Per-call exact credentials: `RedactWith` (contract 1.16)
 
 Additive: a 1.15 host keeps working against a 1.16 module, and a 1.16 host

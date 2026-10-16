@@ -1,8 +1,9 @@
 //! Atomic policy activation and ordered evaluation.
 use crate::{
-    AccessTier, CONTRACT_VERSION, CallerContext, Check, CheckRequest, CheckResponse, Decision,
-    DenialReason, Error, EvaluateRequest, ModuleConfig, Origin, POLICY_CHANGE_TOOL, PolicyConfig,
-    PolicyInfo, Result, Verdict, command, names, path,
+    AccessTier, CONTRACT_VERSION, CallerContext, Check, CheckRequest, CheckResponse, CommandClass,
+    Decision, DenialReason, Error, EvaluateRequest, ModuleConfig, Origin, POLICY_CHANGE_TOOL,
+    PolicyConfig, PolicyInfo, RegisteredCommandPolicy, Result, Spent, Verdict, command, host_tool,
+    names, path,
 };
 
 /// Registered command-scope check used instead of the bootstrap allowlist.
@@ -14,6 +15,9 @@ pub(crate) type PathHook<'a> = dyn Fn(&str, bool) -> std::result::Result<(), Den
 pub(crate) struct Hooks<'a> {
     pub(crate) command: &'a CommandHook<'a>,
     pub(crate) path: &'a PathHook<'a>,
+    /// Command classes the subject may run without a fresh review; empty means the
+    /// command scope alone decides. Applies to `Command` and `HostShell` checks alike.
+    pub(crate) classes: &'a [CommandClass],
 }
 /// Active validated policy instance. Failed reconfiguration never changes it.
 #[derive(Clone, Debug)]
@@ -82,7 +86,21 @@ impl Policy {
     /// # Errors
     /// Reserved for module failures; ordinary denial is a successful result.
     pub fn evaluate(&self, request: &EvaluateRequest) -> Result<Decision> {
-        self.evaluate_with(&self.config.policy, None, request)
+        self.evaluate_with(&self.config.policy, None, None, request)
+    }
+    /// Authorize a host tool call under a registered command scope (contract 1.20):
+    /// the scope supplies the autonomy tier and the hourly budget that
+    /// `HostAction` and `HostShell` checks read. Reading never spends; the caller
+    /// reserves an allowed spending call's action with [`Self::settle_spend`] after any
+    /// later gate.
+    /// # Errors
+    /// Reserved for module failures; ordinary denial is a successful result.
+    pub fn evaluate_hosted(
+        &self,
+        scope: Option<&RegisteredCommandPolicy>,
+        request: &EvaluateRequest,
+    ) -> Result<Decision> {
+        self.evaluate_with(&self.config.policy, None, scope, request)
     }
     /// Evaluate under per-subject settings and an optional registered command scope.
     /// # Errors
@@ -91,6 +109,7 @@ impl Policy {
         &self,
         settings: &PolicyConfig,
         hooks: Option<&Hooks<'_>>,
+        scope: Option<&RegisteredCommandPolicy>,
         request: &EvaluateRequest,
     ) -> Result<Decision> {
         let matching = !request.call.checks.is_empty()
@@ -116,14 +135,24 @@ impl Policy {
                     .iter()
                     .all(|c| matches!(c, Check::PolicyChange { .. })),
                 tool if tinysecurity_bus::is_host_tool_name2(tool) => {
-                    request
+                    request.call.checks.iter().any(|c| {
+                        matches!(
+                            c,
+                            Check::HostTool {} | Check::HostAction { .. } | Check::HostShell { .. }
+                        )
+                    }) && request
                         .call
                         .checks
                         .iter()
-                        .any(|c| matches!(c, Check::HostTool {}))
-                        && request.call.checks.iter().all(|c| {
-                            !matches!(c, Check::Unknown { .. } | Check::PolicyChange { .. })
-                        })
+                        .all(|c| !matches!(c, Check::Unknown { .. } | Check::PolicyChange { .. }))
+                        // A `Command` check reserves its own action, so a call that also asks
+                        // a host check to spend would reserve twice.
+                        && !(request.call.checks.iter().any(host_tool::spends)
+                            && request
+                                .call
+                                .checks
+                                .iter()
+                                .any(|c| matches!(c, Check::Command { .. })))
                 }
                 _ => false,
             };
@@ -144,7 +173,7 @@ impl Policy {
         // requirement or by the host-tool marker.
         let mut approvable = None;
         for check in &request.call.checks {
-            let decision = self.one(settings, hooks, &request.caller, check);
+            let decision = self.one(settings, hooks, scope, &request.caller, check);
             match decision.verdict {
                 Verdict::Allow => {}
                 Verdict::Deny {
@@ -157,17 +186,69 @@ impl Policy {
         }
         Ok(approvable.unwrap_or_else(|| self.allowed()))
     }
+    /// Reserve the one action a spending call asked for, once the whole call is allowed
+    /// (contract 1.20): after every check, and after any later gate that can still refuse it.
+    /// The returned [`Spent`] gives the action back if it is dropped, so a gate that refuses
+    /// the call, or an error, after this point costs nothing; commit it when the call is
+    /// going to run. `decision` is returned unchanged, with no reservation, unless it is an
+    /// `Allow` that spends; a spent ledger turns it into `rate_limited`.
+    #[must_use]
+    pub fn settle_spend(
+        &self,
+        scope: Option<&std::sync::Arc<RegisteredCommandPolicy>>,
+        checks: &[Check],
+        mut decision: Decision,
+    ) -> (Decision, Option<Spent>) {
+        let Some(scope) = scope else {
+            return (decision, None);
+        };
+        if decision.verdict != Verdict::Allow || !checks.iter().any(host_tool::spends) {
+            return (decision, None);
+        }
+        let spent = scope.reserve_guarded();
+        if spent.is_none() {
+            decision.verdict = Verdict::Deny {
+                reason: DenialReason::RateLimited {
+                    max_per_hour: scope.max_actions_per_hour(),
+                },
+            };
+        }
+        (decision, spent)
+    }
     /// Evaluate an ordered batch against a single active generation.
     /// # Errors
     /// Reserved for module failures; individual denials remain ordered results.
     pub fn check(&self, request: &CheckRequest) -> Result<CheckResponse> {
-        Ok(self.check_with(&self.config.policy, None, &request.caller, &request.checks))
+        Ok(self.check_with(
+            &self.config.policy,
+            None,
+            None,
+            &request.caller,
+            &request.checks,
+        ))
+    }
+    /// An ordered batch whose host-tool checks read a registered command scope (contract
+    /// 1.20). Never reserves.
+    #[must_use]
+    pub fn check_hosted(
+        &self,
+        scope: Option<&RegisteredCommandPolicy>,
+        request: &CheckRequest,
+    ) -> CheckResponse {
+        self.check_with(
+            &self.config.policy,
+            None,
+            scope,
+            &request.caller,
+            &request.checks,
+        )
     }
     /// Ordered batch under per-subject settings and an optional command scope.
     pub(crate) fn check_with(
         &self,
         settings: &PolicyConfig,
         hooks: Option<&Hooks<'_>>,
+        scope: Option<&RegisteredCommandPolicy>,
         caller: &CallerContext,
         checks: &[Check],
     ) -> CheckResponse {
@@ -175,7 +256,7 @@ impl Policy {
             generation: self.generation,
             decisions: checks
                 .iter()
-                .map(|check| self.one(settings, hooks, caller, check))
+                .map(|check| self.one(settings, hooks, scope, caller, check))
                 .collect(),
         }
     }
@@ -190,6 +271,7 @@ impl Policy {
         &self,
         settings: &PolicyConfig,
         hooks: Option<&Hooks<'_>>,
+        scope: Option<&RegisteredCommandPolicy>,
         caller: &CallerContext,
         check: &Check,
     ) -> Decision {
@@ -202,6 +284,25 @@ impl Policy {
             Check::HostTool {} | Check::PolicyChange { .. } => {
                 Err(DenialReason::ApprovalUnavailable)
             }
+            Check::HostAction {
+                permission,
+                external_effect,
+                ..
+            } => host_tool::action(caller, scope, *permission, *external_effect),
+            Check::HostShell {
+                command,
+                declared_class,
+                ..
+            } => self.scan_command(command).and_then(|()| {
+                host_tool::shell(
+                    caller,
+                    settings,
+                    scope,
+                    hooks.map_or(&[], |hooks| hooks.classes),
+                    command,
+                    *declared_class,
+                )
+            }),
             Check::Path { path, write } => path::check(settings, path, *write)
                 .and_then(|()| hooks.map_or(Ok(()), |h| (h.path)(path, *write)))
                 .and_then(|()| {
@@ -213,24 +314,25 @@ impl Policy {
                         Ok(())
                     }
                 }),
-            Check::Command { command } => self
-                .redactor
-                .scan_prompt(&crate::ScanPromptRequest {
-                    text: command.clone(),
-                })
-                .map_err(|_| DenialReason::Content)
-                .and_then(|scan| match scan_denial(&scan.verdict) {
-                    Some(reason) => Err(reason),
-                    None => match hooks {
-                        Some(hooks) => (hooks.command)(command),
-                        None => command::check(settings, command),
-                    },
-                }),
+            Check::Command { command } => self.scan_command(command).and_then(|()| match hooks {
+                Some(hooks) => (hooks.command)(command),
+                None => command::check(settings, command),
+            }),
         };
         match result {
             Ok(()) => self.allowed(),
             Err(reason) => self.denied(reason),
         }
+    }
+    /// The semantic scan every shell command text passes before its class is judged.
+    fn scan_command(&self, command: &str) -> std::result::Result<(), DenialReason> {
+        let scan = self
+            .redactor
+            .scan_prompt(&crate::ScanPromptRequest {
+                text: command.to_owned(),
+            })
+            .map_err(|_| DenialReason::Content)?;
+        scan_denial(&scan.verdict).map_or(Ok(()), Err)
     }
     fn allowed(&self) -> Decision {
         Decision {

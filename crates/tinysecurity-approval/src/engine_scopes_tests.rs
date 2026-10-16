@@ -502,6 +502,49 @@ async fn host_tool_marker_is_an_external_effect_that_cron_cannot_reach() -> Resu
     Ok(())
 }
 
+#[tokio::test]
+async fn host_action_and_shell_checks_bind_with_their_own_external_effect() -> Result<()> {
+    let (_, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    let bind = |tool: &'static str, call: &str, check: Check| {
+        let mut begin = begin_for(7, tool, None, Origin::Operator);
+        begin.request.caller.call_id = call.into();
+        begin.request.call.checks = vec![check];
+        begin
+    };
+    let action = |external_effect| Check::HostAction {
+        permission: tinysecurity_bus::ToolPermission::Write,
+        external_effect,
+        spend: false,
+        command_policy: None,
+    };
+    let shell = Check::HostShell {
+        command: "touch f".into(),
+        declared_class: None,
+        spend: false,
+        command_policy: None,
+    };
+    assert!(
+        owner
+            .begin(bind("gmail_send", "a", action(true)))
+            .await?
+            .external_effect
+    );
+    assert!(
+        !owner
+            .begin(bind("write_file", "b", action(false)))
+            .await?
+            .external_effect
+    );
+    assert!(
+        owner
+            .begin(bind("shell", "c", shell))
+            .await?
+            .external_effect
+    );
+    Ok(())
+}
+
 #[test]
 fn init_rejects_duplicate_identities_and_duplicate_subjects() {
     let build = |cfg: ApprovalConfig2| {

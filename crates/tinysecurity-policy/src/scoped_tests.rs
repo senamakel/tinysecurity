@@ -972,3 +972,6 @@ fn scope_replacement_and_base_root_changes_are_widenings() -> TestResult {
 
 #[path = "scoped_followup_tests.rs"]
 mod followups;
+
+#[path = "scoped_host_tool_tests.rs"]
+mod host_tool_tests;

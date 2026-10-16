@@ -1,8 +1,9 @@
 //! Immutable per-subject policies bound to a path scope, a command scope and a verified caller.
 use crate::engine::{Hooks, validate_settings};
+use crate::host_tool;
 use crate::scoped_forbidden::effective_forbidden;
 use crate::{
-    CommandPolicyRegistry, PathPolicyRegistry, PathScope, Policy, RegisteredCommandPolicy,
+    CommandPolicyRegistry, PathPolicyRegistry, PathScope, Policy, RegisteredCommandPolicy, Spent,
     scoped_widening,
 };
 use sha2::{Digest, Sha256};
@@ -105,6 +106,27 @@ fn check_fields(h: &mut Sha256, check: &Check) {
         }
         Check::LocalDiagnostic {} => field(h, "local_diagnostic"),
         Check::HostTool {} => field(h, "host_tool"),
+        Check::HostAction {
+            permission,
+            external_effect,
+            spend,
+            command_policy,
+        } => {
+            field(h, "host_action");
+            field(h, &format!("{permission:?}/{external_effect}/{spend}"));
+            field(h, command_policy.as_ref().map_or("\0none", |id| &id.0));
+        }
+        Check::HostShell {
+            command,
+            declared_class,
+            spend,
+            command_policy,
+        } => {
+            field(h, "host_shell");
+            field(h, command);
+            field(h, &format!("{declared_class:?}/{spend}"));
+            field(h, command_policy.as_ref().map_or("\0none", |id| &id.0));
+        }
         Check::PolicyChange { digest } => {
             field(h, "policy_change");
             field(h, digest);
@@ -240,6 +262,15 @@ impl ScopedPolicy {
         &self.paths
     }
 
+    /// Whether the host-tool checks name a command scope other than this policy's own, or
+    /// leave it out beside checks that name one: the policy's own scope answers them all,
+    /// so a request that disagrees about it is mismatched.
+    fn scope_mismatch(&self, checks: &[Check]) -> bool {
+        host_tool::request_scope(checks).map_or(true, |named| {
+            named.is_some_and(|id| id != &self.registered.command_policy_id)
+        })
+    }
+
     fn caller_denial(&self, caller: &CallerContext) -> Option<DenialReason> {
         (self.is_superseded() || caller.agent != self.registered.subject_scope.agent)
             .then_some(DenialReason::InvalidContext)
@@ -328,14 +359,21 @@ impl ScopedPolicy {
             decision.decision.cacheable = true;
             return Ok(decision);
         }
+        // The policy's own command scope answers host-tool checks; naming another
+        // scope is a mismatched request.
+        if self.scope_mismatch(&request.call.checks) {
+            return Ok(denied(DenialReason::InvalidContext));
+        }
         let (command, path) = (self.hook(), self.path_hook());
         let hooks = Hooks {
             command: &command,
             path: &path,
+            classes: &self.registered.settings.command_classes,
         };
         let mut decision = policy.evaluate_with(
             &self.effective,
             Some(&hooks),
+            Some(&self.commands),
             &EvaluateRequest {
                 caller: request.caller.clone(),
                 call: request.call.clone(),
@@ -347,6 +385,20 @@ impl ScopedPolicy {
             policy_generation: self.generation,
             fingerprint,
         })
+    }
+
+    /// Reserve the one action a spending host-tool call asked for, after every later gate
+    /// allowed it (contract 1.20); see [`Policy::settle_spend`].
+    #[must_use]
+    pub fn settle_spend(
+        &self,
+        policy: &Policy,
+        checks: &[Check],
+        mut decided: ScopedDecision,
+    ) -> (ScopedDecision, Option<Spent>) {
+        let (decision, spent) = policy.settle_spend(Some(&self.commands), checks, decided.decision);
+        decided.decision = decision;
+        (decided, spent)
     }
 
     /// Check an ordered batch; bound to this policy, the caller and the checks.
@@ -367,15 +419,27 @@ impl ScopedPolicy {
                     .map(|_| policy.deny_with(reason.clone()))
                     .collect::<Vec<Decision>>(),
             }
+        } else if self.scope_mismatch(&request.checks) {
+            // Naming another command scope is a mismatched request, as for `evaluate`.
+            CheckResponse {
+                generation: policy.generation(),
+                decisions: request
+                    .checks
+                    .iter()
+                    .map(|_| policy.deny_with(DenialReason::InvalidContext))
+                    .collect::<Vec<Decision>>(),
+            }
         } else {
             let (command, path) = (self.hook(), self.path_hook());
             let hooks = Hooks {
                 command: &command,
                 path: &path,
+                classes: &self.registered.settings.command_classes,
             };
             let mut response = policy.check_with(
                 &self.effective,
                 Some(&hooks),
+                Some(&self.commands),
                 &request.caller,
                 &request.checks,
             );

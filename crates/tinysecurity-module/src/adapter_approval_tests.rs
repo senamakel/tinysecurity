@@ -117,6 +117,289 @@ async fn authenticated_module_routes_persistent_decisions_reservation_history_an
     Ok(())
 }
 #[tokio::test]
+async fn admission_questions_are_not_downgraded_by_configured_approvals()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = Connection::connect(bus.connect().await?).await?;
+    let module = Connection::connect(bus.connect().await?).await?;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("ledger");
+    std::fs::write(&path, [])?;
+    let store = Arc::new(Mutex::new(store::DiskStore::open(&path)?));
+    let clock = Arc::new(TestClock(AtomicU64::new(1000)));
+    let failure = Arc::new(AtomicBool::new(false));
+    // Approvals configured, audit forwarded but not required: path, command and
+    // admission members stay available, as the host configures production.
+    let (config, mut audit_config) = settings();
+    audit_config.required = false;
+    serve_approvals_with(
+        &host,
+        &module,
+        &clock,
+        &store,
+        &failure,
+        None,
+        (config, audit_config),
+    )
+    .await?;
+    let module_peer = module.unique_name().ok_or("module peer")?;
+    let proxy = host.proxy(module_peer.as_str(), names::OBJECT_PATH, names::INTERFACE)?;
+    let caller = CallerContext {
+        agent: "agent".into(),
+        call_id: "call".into(),
+        tier: AccessTier::Full,
+        ..Default::default()
+    };
+    let call = |tool: &str, checks: Vec<Check>| EvaluateRequest {
+        caller: caller.clone(),
+        call: ToolCall {
+            tool: tool.into(),
+            arguments_json: "{}".into(),
+            checks,
+        },
+    };
+    let admission: Decision = proxy
+        .call(
+            names::methods::EVALUATE,
+            (call(
+                "read_file",
+                vec![Check::HostAction {
+                    permission: ToolPermission::ReadOnly,
+                    external_effect: false,
+                    spend: false,
+                    command_policy: None,
+                }],
+            ),),
+        )
+        .await?;
+    assert_eq!(admission.verdict, Verdict::Allow);
+    // A mixed request is not an admission question: it is downgraded after the
+    // evaluation, and the downgrade happens before any action is reserved.
+    let scope: CommandPolicyId = proxy
+        .call(
+            names::methods::REGISTER_COMMAND_POLICY,
+            (host_scope_policy(CommandAutonomy::Full, 1),),
+        )
+        .await?;
+    let spending = |extra: Vec<Check>| {
+        let mut checks = vec![Check::HostAction {
+            permission: ToolPermission::Write,
+            external_effect: false,
+            spend: true,
+            command_policy: Some(scope.clone()),
+        }];
+        checks.extend(extra);
+        call("write_file", checks)
+    };
+    for _ in 0..3 {
+        let mixed: Decision = proxy
+            .call(
+                names::methods::EVALUATE,
+                (spending(vec![Check::LocalDiagnostic {}]),),
+            )
+            .await?;
+        assert_ne!(mixed.verdict, Verdict::Allow);
+    }
+    let pure: Decision = proxy
+        .call(names::methods::EVALUATE, (spending(vec![]),))
+        .await?;
+    assert_eq!(
+        pure.verdict,
+        Verdict::Allow,
+        "the refused calls spent nothing"
+    );
+    // Any other permission still needs a bound audit event, so it is not allowed.
+    let effect: Decision = proxy
+        .call(
+            names::methods::EVALUATE,
+            (call("local_diagnostic", vec![Check::LocalDiagnostic {}]),),
+        )
+        .await?;
+    assert_ne!(effect.verdict, Verdict::Allow);
+    broker.abort();
+    Ok(())
+}
+fn host_scope_policy(autonomy: CommandAutonomy, budget: u32) -> CommandPolicy {
+    CommandPolicy {
+        enabled: true,
+        execution_mode: CommandExecutionMode::HarnessGated,
+        shell_dialect: tinysecurity_bus::ShellDialect::Posix,
+        autonomy,
+        allowed_commands: vec![],
+        max_actions_per_hour: budget,
+        require_approval_for_medium_risk: true,
+        block_high_risk_commands: true,
+        action_dir: std::env::current_dir().unwrap_or_default(),
+        home_dir: None,
+    }
+}
+
+fn external_action(instance: u64, scope: &CommandPolicyId) -> EvaluateApprovalRequest2 {
+    let mut request = begin(instance, instance);
+    request.request.call.tool = "gmail_send".into();
+    request.request.call.checks = vec![Check::HostAction {
+        permission: ToolPermission::Write,
+        external_effect: true,
+        spend: true,
+        command_policy: Some(scope.clone()),
+    }];
+    request
+}
+
+/// A module with approvals served the way production serves them, and a proxy to it.
+struct ApprovalFixture {
+    _dir: tempfile::TempDir,
+    _host: Connection,
+    _module: Connection,
+    broker: tokio::task::JoinHandle<tinybus::Result<()>>,
+    proxy: tinybus::Proxy,
+}
+
+async fn approval_fixture() -> std::result::Result<ApprovalFixture, Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = Connection::connect(bus.connect().await?).await?;
+    let module = Connection::connect(bus.connect().await?).await?;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("ledger");
+    std::fs::write(&path, [])?;
+    let store = Arc::new(Mutex::new(store::DiskStore::open(&path)?));
+    let clock = Arc::new(TestClock(AtomicU64::new(1000)));
+    let failure = Arc::new(AtomicBool::new(false));
+    serve_approvals(&host, &module, &clock, &store, &failure, None).await?;
+    let module_peer = module.unique_name().ok_or("module peer")?;
+    let proxy = host.proxy(module_peer.as_str(), names::OBJECT_PATH, names::INTERFACE)?;
+    Ok(ApprovalFixture {
+        _dir: dir,
+        _host: host,
+        _module: module,
+        broker,
+        proxy,
+    })
+}
+
+async fn register_scope(
+    proxy: &tinybus::Proxy,
+    autonomy: CommandAutonomy,
+    budget: u32,
+) -> std::result::Result<CommandPolicyId, Box<dyn std::error::Error>> {
+    Ok(proxy
+        .call(
+            names::methods::REGISTER_COMMAND_POLICY,
+            (host_scope_policy(autonomy, budget),),
+        )
+        .await?)
+}
+
+#[tokio::test]
+async fn approval_cannot_override_a_command_scope_and_an_approved_action_spends_its_budget()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let fixture = approval_fixture().await?;
+    let proxy = &fixture.proxy;
+    // Read-only autonomy is a hard denial: a human cannot approve it away.
+    let read_only = register_scope(proxy, CommandAutonomy::ReadOnly, 5).await?;
+    assert!(
+        proxy
+            .call::<EvaluateApprovalResponse2>(
+                names::methods::EVALUATE_APPROVAL2,
+                (external_action(1, &read_only),)
+            )
+            .await
+            .is_err()
+    );
+    // A one-action budget: the approved call spends it when it is consumed, and the
+    // next call is refused before a human is asked.
+    let scope = register_scope(proxy, CommandAutonomy::Full, 1).await?;
+    let approved: EvaluateApprovalResponse2 = proxy
+        .call(
+            names::methods::EVALUATE_APPROVAL2,
+            (external_action(2, &scope),),
+        )
+        .await?;
+    assert_eq!(approved.decision.verdict, Verdict::Allow);
+    let mut consume = action(&approved.record, 2, 3);
+    consume.request = external_action(2, &scope).request;
+    let reserved: ApprovalRow2 = proxy
+        .call(names::methods::CONSUME_APPROVAL2, (consume,))
+        .await?;
+    assert_eq!(reserved.state, ApprovalLifecycle2::Reserved);
+    assert!(
+        proxy
+            .call::<EvaluateApprovalResponse2>(
+                names::methods::EVALUATE_APPROVAL2,
+                (external_action(3, &scope),)
+            )
+            .await
+            .is_err(),
+        "a spent budget cannot be approved"
+    );
+    fixture.broker.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_run_refused_for_a_spent_budget_does_not_burn_its_once_only_approval()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let fixture = approval_fixture().await?;
+    let proxy = &fixture.proxy;
+    let scope = register_scope(proxy, CommandAutonomy::Full, 1).await?;
+    let waiting: EvaluateApprovalResponse2 = proxy
+        .call(
+            names::methods::EVALUATE_APPROVAL2,
+            (external_action(4, &scope),),
+        )
+        .await?;
+    assert_eq!(waiting.decision.verdict, Verdict::Allow);
+    // Another call spends the last action before the approved one runs.
+    let spend = EvaluateRequest {
+        caller: begin(0, 1).request.caller,
+        call: ToolCall {
+            tool: "write_file".into(),
+            arguments_json: "{}".into(),
+            checks: vec![Check::HostAction {
+                permission: ToolPermission::Write,
+                external_effect: false,
+                spend: true,
+                command_policy: Some(scope.clone()),
+            }],
+        },
+    };
+    let other_call: Decision = proxy.call(names::methods::EVALUATE, (spend,)).await?;
+    assert_eq!(other_call.verdict, Verdict::Allow);
+    let mut late = action(&waiting.record, 4, 8);
+    late.request = external_action(4, &scope).request;
+    assert!(
+        proxy
+            .call::<ApprovalRow2>(names::methods::CONSUME_APPROVAL2, (late,))
+            .await
+            .is_err(),
+        "the spent budget refuses the run"
+    );
+    let rows: Vec<ApprovalRow2> = proxy
+        .call(
+            names::methods::LIST_APPROVALS2,
+            (ApprovalRecordRequest2 {
+                scope_id: "a".repeat(32),
+                request_id: String::new(),
+                audit: audit(9),
+            },),
+        )
+        .await?;
+    let row = rows
+        .iter()
+        .find(|row| row.request_id == waiting.record.request_id)
+        .ok_or("approval row listed")?;
+    assert_eq!(
+        row.state,
+        ApprovalLifecycle2::Approved,
+        "a refused run leaves the approval unburned"
+    );
+    fixture.broker.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn approval_initialization_requires_verified_audit_and_retains_immutable_registration()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let bus = MemoryBus::new();
