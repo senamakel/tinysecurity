@@ -24,14 +24,17 @@ fn acting(spend: bool, scope: Option<&CommandPolicyId>) -> Check {
     }
 }
 
+/// The verdict a host gets: the dry evaluation, then the reservation a spending
+/// call makes once nothing else refuses it.
 fn decide(
     f: &Fixture,
     id: &PolicyId,
     request: &ScopedEvaluateRequest,
 ) -> std::result::Result<Verdict, Box<dyn std::error::Error>> {
-    Ok(f.scoped
-        .get_owned(id)?
-        .evaluate(&f.engine, request)?
+    let scope = f.scoped.get_owned(id)?;
+    let decided = scope.evaluate(&f.engine, request)?;
+    Ok(scope
+        .settle_spend(&f.engine, &request.call.checks, decided)
         .decision
         .verdict)
 }

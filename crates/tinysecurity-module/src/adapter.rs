@@ -190,13 +190,13 @@ impl PolicyService {
             .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))
     }
 
-    /// The one registered command scope an Evaluate request's host-tool checks name,
+    /// The one registered command scope a request's host-tool checks name,
     /// if any. Two different scopes in one request, or an unknown one, refuse it.
     fn host_scope(
         &self,
-        request: &EvaluateRequest,
+        checks: &[tinysecurity_bus::Check],
     ) -> BusResult<Option<Arc<tinysecurity::RegisteredCommandPolicy>>> {
-        let mut ids = tinysecurity::host_tool_scope_ids(&request.call.checks);
+        let mut ids = tinysecurity::host_tool_scope_ids(checks);
         let Some(first) = ids.next() else {
             return Ok(None);
         };
@@ -324,30 +324,33 @@ impl PolicyService {
         self.sandbox_plan(request).await
     }
     async fn evaluate(&self, request: EvaluateRequest) -> BusResult<Decision> {
-        let admission = admission_only(&request);
+        let admission = admission_only(&request.call.checks);
         if admission {
             self.require_unbound_permission()?;
         }
         let policy = self.read()?.clone();
-        let scope = self.host_scope(&request)?;
-        let mut decision = tokio::task::spawn_blocking(move || {
-            policy
+        let scope = self.host_scope(&request.call.checks)?;
+        let bound = self.requires_bound_audit() && !admission;
+        tokio::task::spawn_blocking(move || {
+            let mut decision = policy
                 .evaluate_hosted(scope.as_deref(), &request)
-                .map_err(|error| failure(&error))
+                .map_err(|error| failure(&error))?;
+            // An admission question permits no effect the module audits: the host runs
+            // the tool under its own accounting, so only refusals are bound to audit.
+            if bound {
+                deny_allow(&mut decision);
+            }
+            // The action is reserved last, so nothing that refuses the call spends it.
+            Ok(policy.settle_spend(scope.as_deref(), &request.call.checks, decision))
         })
         .await
-        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
-        // An admission question permits no effect the module audits: the host runs
-        // the tool under its own accounting, so only refusals are bound to audit.
-        if self.requires_bound_audit() && !admission {
-            deny_allow(&mut decision);
-        }
-        Ok(decision)
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
     }
     async fn check(&self, request: CheckRequest) -> BusResult<CheckResponse> {
         let policy = self.read()?.clone();
+        let scope = self.host_scope(&request.checks)?;
         let mut response = tokio::task::spawn_blocking(move || {
-            policy.check(&request).map_err(|error| failure(&error))
+            Ok::<_, tinybus::Error>(policy.check_hosted(scope.as_deref(), &request))
         })
         .await
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
@@ -363,11 +366,15 @@ impl PolicyService {
         let policy = self.read()?.clone();
         let registry = policy.redactor();
         let original = request.request.clone();
-        let scope = self.host_scope(&original)?;
-        let mut decision = tokio::task::spawn_blocking(move || {
-            policy
-                .evaluate_hosted(scope.as_deref(), &original)
-                .map_err(|error| failure(&error))
+        let scope = self.host_scope(&original.call.checks)?;
+        let settler = policy.clone();
+        let mut decision = tokio::task::spawn_blocking({
+            let (scope, original) = (scope.clone(), original.clone());
+            move || {
+                policy
+                    .evaluate_hosted(scope.as_deref(), &original)
+                    .map_err(|error| failure(&error))
+            }
         })
         .await
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
@@ -383,6 +390,8 @@ impl PolicyService {
         if !audit.permitted || self.approvals.is_some() {
             deny_allow(&mut decision);
         }
+        // Reserved only after the audit and the approval gate let it through.
+        let decision = settler.settle_spend(scope.as_deref(), &original.call.checks, decision);
         Ok(tinysecurity_bus::AuditedResponse2 { decision, audit })
     }
     async fn check_audited2(
@@ -392,8 +401,9 @@ impl PolicyService {
         let policy = self.read()?.clone();
         let registry = policy.redactor();
         let original = request.request.clone();
+        let scope = self.host_scope(&original.checks)?;
         let mut decision = tokio::task::spawn_blocking(move || {
-            policy.check(&original).map_err(|error| failure(&error))
+            Ok::<_, tinybus::Error>(policy.check_hosted(scope.as_deref(), &original))
         })
         .await
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
@@ -684,10 +694,16 @@ impl PolicyService {
             .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?;
         let policy = self.read()?.clone();
         let actual = request.request.clone();
-        let decision = tokio::task::spawn_blocking(move || policy.evaluate(&actual))
-            .await
-            .map_err(|_| tinybus::Error::failed("approval unavailable"))?
-            .map_err(|_| tinybus::Error::failed("approval denied"))?;
+        // A named command scope's read-only tier and spent budget are hard denials a
+        // human cannot approve away; they are read here and reserved at consumption.
+        let scope = self.host_scope(&actual.call.checks)?;
+        let decision = tokio::task::spawn_blocking({
+            let scope = scope.clone();
+            move || policy.evaluate_hosted(scope.as_deref(), &actual)
+        })
+        .await
+        .map_err(|_| tinybus::Error::failed("approval unavailable"))?
+        .map_err(|_| tinybus::Error::failed("approval denied"))?;
         // Human approval cannot override floors, unknown effects or policy denial.
         if matches!(decision.verdict,tinysecurity_bus::Verdict::Deny{ref reason} if *reason!=tinysecurity_bus::DenialReason::ApprovalUnavailable)
         {
@@ -697,7 +713,7 @@ impl PolicyService {
         let row = engine.begin(request).await.map_err(approval_failure)?;
         let fresh = self
             .read()?
-            .evaluate(&request_for_recheck)
+            .evaluate_hosted(scope.as_deref(), &request_for_recheck)
             .map_err(|_| tinybus::Error::failed("approval denied"))?;
         if fresh.generation != row.binding.generation
             || matches!(fresh.verdict,tinysecurity_bus::Verdict::Deny{ref reason} if *reason != tinysecurity_bus::DenialReason::ApprovalUnavailable)
@@ -740,19 +756,38 @@ impl PolicyService {
         request: tinysecurity_bus::ApprovalActionRequest2,
     ) -> BusResult<tinysecurity_bus::ApprovalRow2> {
         let policy = self.read()?.clone();
+        let scope = self.host_scope(&request.request.call.checks)?;
         let decision = policy
-            .evaluate(&request.request)
+            .evaluate_hosted(scope.as_deref(), &request.request)
             .map_err(|_| tinybus::Error::failed("approval denied"))?;
         if matches!(decision.verdict,tinysecurity_bus::Verdict::Deny{ref reason} if *reason != tinysecurity_bus::DenialReason::ApprovalUnavailable)
         {
             return Err(tinybus::Error::failed("approval denied"));
         }
-        self.approvals
+        let checks = request.request.call.checks.clone();
+        let row = self
+            .approvals
             .as_ref()
             .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?
             .consume(request)
             .await
-            .map_err(approval_failure)
+            .map_err(approval_failure)?;
+        // The approved call is about to run: it spends the action it asked for. A ledger
+        // that was spent in the meantime refuses the run.
+        let allowed = Decision {
+            generation: decision.generation,
+            verdict: tinysecurity_bus::Verdict::Allow,
+            cacheable: false,
+        };
+        if matches!(
+            policy
+                .settle_spend(scope.as_deref(), &checks, allowed)
+                .verdict,
+            tinysecurity_bus::Verdict::Deny { .. }
+        ) {
+            return Err(tinybus::Error::failed("approval denied"));
+        }
+        Ok(row)
     }
     async fn record_execution2(
         &self,
@@ -1026,19 +1061,24 @@ impl PolicyService {
             .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
             .get_owned(&request.policy_id)
             .map_err(|error| failure(&error))?;
+        let admission = admission_only(&request.call.checks);
+        if admission {
+            self.require_unbound_permission()?;
+        }
         let policy = self.read()?.clone();
-        let bound = self.requires_bound_audit();
-        let mut decision = tokio::task::spawn_blocking(move || {
-            scope
+        let bound = self.requires_bound_audit() && !admission;
+        tokio::task::spawn_blocking(move || {
+            let mut decision = scope
                 .evaluate(&policy, &request)
-                .map_err(|error| failure(&error))
+                .map_err(|error| failure(&error))?;
+            if bound {
+                deny_allow(&mut decision.decision);
+            }
+            // The action is reserved last, so nothing that refuses the call spends it.
+            Ok(scope.settle_spend(&policy, &request.call.checks, decision))
         })
         .await
-        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
-        if bound {
-            deny_allow(&mut decision.decision);
-        }
-        Ok(decision)
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
     }
     async fn check_scoped(
         &self,
@@ -1090,6 +1130,8 @@ impl PolicyService {
         let policy = self.read()?.clone();
         let registry = policy.redactor();
         let original = request.request.clone();
+        let settler = policy.clone();
+        let policy_scope = Arc::clone(&scope);
         let mut decision = tokio::task::spawn_blocking(move || {
             scope
                 .evaluate(&policy, &original)
@@ -1114,6 +1156,9 @@ impl PolicyService {
         if !audit.permitted || self.approvals.is_some() {
             deny_allow(&mut decision.decision);
         }
+        // Reserved only after the audit and the approval gate let it through.
+        let mut decision =
+            policy_scope.settle_spend(&settler, &request.request.call.checks, decision);
         // Each use of an audited permission needs its own durable event.
         decision.decision.cacheable = false;
         Ok(tinysecurity_bus::AuditedResponse2 { decision, audit })
@@ -1182,12 +1227,10 @@ fn approval_failure(error: tinysecurity::approval::Error) -> tinybus::Error {
     tinybus::Error::failed(error.to_string())
 }
 /// Whether every check is a host-tool or shell admission question (contract 1.20).
-fn admission_only(request: &EvaluateRequest) -> bool {
+fn admission_only(checks: &[tinysecurity_bus::Check]) -> bool {
     use tinysecurity_bus::Check;
-    !request.call.checks.is_empty()
-        && request
-            .call
-            .checks
+    !checks.is_empty()
+        && checks
             .iter()
             .all(|check| matches!(check, Check::HostAction { .. } | Check::HostShell { .. }))
 }

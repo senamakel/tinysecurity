@@ -2,7 +2,7 @@ use super::*;
 use crate::{CommandPolicyRegistry, Policy};
 use std::sync::Arc;
 use tinysecurity_bus::{
-    AccessTier, CommandExecutionMode, CommandPolicy, CommandPolicyId, EvaluateRequest,
+    AccessTier, CommandExecutionMode, CommandPolicy, CommandPolicyId, Decision, EvaluateRequest,
     ModuleConfig, ShellDialect, ToolCall, Verdict,
 };
 
@@ -82,6 +82,8 @@ fn request(tool: &str, caller: CallerContext, checks: Vec<Check>) -> EvaluateReq
     }
 }
 
+/// The verdict a host gets: the dry evaluation, then the reservation a spending
+/// call makes once nothing else refuses it.
 fn hosted(
     registry: &CommandPolicyRegistry,
     id: &CommandPolicyId,
@@ -89,7 +91,10 @@ fn hosted(
 ) -> std::result::Result<Verdict, Box<dyn std::error::Error>> {
     let policy = Policy::new(ModuleConfig::default())?;
     let scope = registry.get_owned(id)?;
-    Ok(policy.evaluate_hosted(Some(&scope), request)?.verdict)
+    let decision = policy.evaluate_hosted(Some(&scope), request)?;
+    Ok(policy
+        .settle_spend(Some(&scope), &request.call.checks, decision)
+        .verdict)
 }
 
 fn deny(reason: DenialReason) -> Verdict {
@@ -342,6 +347,99 @@ fn a_declared_class_can_only_raise_the_shell_gate() -> TestResult {
         ),
         Err(DenialReason::ApprovalUnavailable)
     );
+    Ok(())
+}
+
+#[test]
+fn a_spent_budget_refuses_shell_before_a_human_is_asked() -> TestResult {
+    let (registry, id) = registered(true, CommandAutonomy::Supervised, 1)?;
+    let scope = registry.get_owned(&id)?;
+    let ask = |command: &str| {
+        shell(
+            &operator(),
+            &PolicyConfig::default(),
+            Some(&scope),
+            command,
+            None,
+        )
+    };
+    assert_eq!(ask("ls"), Ok(()));
+    assert_eq!(ask("touch f"), Err(DenialReason::ApprovalUnavailable));
+    assert!(scope.reserve());
+    for command in ["ls", "touch f"] {
+        assert_eq!(
+            ask(command),
+            Err(DenialReason::RateLimited { max_per_hour: 1 }),
+            "{command}"
+        );
+    }
+    // A command the tier blocks outright keeps its own reason, spent budget or not.
+    assert_eq!(ask("cat ~/.ssh/id_rsa"), Err(DenialReason::Floor));
+    Ok(())
+}
+
+#[test]
+fn checking_the_dry_decision_never_reserves_and_settling_reserves_once() -> TestResult {
+    let (registry, id) = registered(true, CommandAutonomy::Full, 1)?;
+    let scope = registry.get_owned(&id)?;
+    let policy = Policy::new(ModuleConfig::default())?;
+    let call = request(
+        "write_file",
+        operator(),
+        vec![action_check(ToolPermission::Write, false, true, Some(&id))],
+    );
+    for _ in 0..3 {
+        let dry = policy.evaluate_hosted(Some(&scope), &call)?;
+        assert_eq!(dry.verdict, Verdict::Allow);
+    }
+    assert!(!scope.exhausted());
+    let dry = policy.evaluate_hosted(Some(&scope), &call)?;
+    let settled = policy.settle_spend(Some(&scope), &call.call.checks, dry.clone());
+    assert_eq!(settled.verdict, Verdict::Allow);
+    assert!(scope.exhausted());
+    // A refusal is returned unchanged and never touches the ledger; so is a
+    // call with no scope.
+    let refused = Decision {
+        verdict: deny(DenialReason::Access),
+        ..dry.clone()
+    };
+    assert_eq!(
+        policy.settle_spend(Some(&scope), &call.call.checks, refused.clone()),
+        refused
+    );
+    assert_eq!(
+        policy.settle_spend(None, &call.call.checks, dry.clone()),
+        dry
+    );
+    Ok(())
+}
+
+#[test]
+fn batch_checks_read_the_named_scope() -> TestResult {
+    let (registry, id) = registered(true, CommandAutonomy::ReadOnly, 5)?;
+    let scope = registry.get_owned(&id)?;
+    let policy = Policy::new(ModuleConfig::default())?;
+    let batch = |scope: Option<&crate::RegisteredCommandPolicy>| {
+        policy.check_hosted(
+            scope,
+            &tinysecurity_bus::CheckRequest {
+                caller: operator(),
+                checks: vec![
+                    action_check(ToolPermission::Write, false, true, Some(&id)),
+                    shell_check("touch f", false, Some(&id)),
+                ],
+            },
+        )
+    };
+    let scoped = batch(Some(&scope));
+    assert!(
+        scoped
+            .decisions
+            .iter()
+            .all(|decision| decision.verdict == deny(DenialReason::ReadOnlyMode))
+    );
+    // Without the scope the same batch is only tier, origin and bootstrap rules.
+    assert_eq!(batch(None).decisions[0].verdict, Verdict::Allow);
     Ok(())
 }
 

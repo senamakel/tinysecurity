@@ -220,14 +220,14 @@ async fn evaluate_without_a_scope_applies_tier_and_effect_rules_only() -> TestRe
 #[tokio::test]
 async fn a_mixed_request_is_not_an_admission_and_stays_audit_bound() -> TestResult {
     let mut call = request("write_file", vec![Check::LocalDiagnostic {}]);
-    assert!(!admission_only(&call));
+    assert!(!admission_only(&call.call.checks));
     call.call.checks = vec![];
-    assert!(!admission_only(&call));
+    assert!(!admission_only(&call.call.checks));
     let scope = CommandPolicyId("s".into());
     call.call.checks = vec![acting(false, &scope), Check::LocalDiagnostic {}];
-    assert!(!admission_only(&call));
+    assert!(!admission_only(&call.call.checks));
     call.call.checks = vec![acting(false, &scope)];
-    assert!(admission_only(&call));
+    assert!(admission_only(&call.call.checks));
     Ok(())
 }
 
@@ -271,5 +271,64 @@ async fn required_audit_refuses_an_unbound_admission_question() -> TestResult {
         "required audit must not let an unbound admission answer permit a call"
     );
     task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn check_batches_read_the_named_scope_and_refuse_an_unknown_one() -> TestResult {
+    let service = service()?;
+    let scope = register(&service, scope_policy(5, CommandAutonomy::ReadOnly)?).await?;
+    let check = |checks: Vec<Check>| CheckRequest {
+        caller: request("t", vec![]).caller,
+        checks,
+    };
+    let member = names::methods::CHECK.parse()?;
+    let call = |request: CheckRequest| {
+        let (service, member) = (&service, &member);
+        async move {
+            service
+                .call(member, serde_json::to_value((request,))?)
+                .await
+                .map_err(Box::<dyn std::error::Error>::from)
+        }
+    };
+    let response: CheckResponse =
+        serde_json::from_value(call(check(vec![acting(false, &scope)])).await?)?;
+    assert_eq!(
+        response.decisions[0].verdict,
+        Verdict::Deny {
+            reason: DenialReason::ReadOnlyMode
+        }
+    );
+    let unknown = CommandPolicyId("not-registered".into());
+    assert!(call(check(vec![acting(false, &unknown)])).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_spending_admission_reserves_only_when_it_is_allowed() -> TestResult {
+    let service = service()?;
+    let scope = register(&service, scope_policy(1, CommandAutonomy::Full)?).await?;
+    let mut denied = request("write_file", vec![acting(true, &scope)]);
+    denied.caller.tier = AccessTier::Read;
+    for _ in 0..3 {
+        assert_eq!(
+            evaluate(&service, denied.clone()).await?.verdict,
+            Verdict::Deny {
+                reason: DenialReason::Access
+            }
+        );
+    }
+    let spend = request("write_file", vec![acting(true, &scope)]);
+    assert_eq!(
+        evaluate(&service, spend.clone()).await?.verdict,
+        Verdict::Allow
+    );
+    assert_eq!(
+        evaluate(&service, spend).await?.verdict,
+        Verdict::Deny {
+            reason: DenialReason::RateLimited { max_per_hour: 1 }
+        }
+    );
     Ok(())
 }

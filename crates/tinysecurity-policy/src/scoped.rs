@@ -379,6 +379,19 @@ impl ScopedPolicy {
         })
     }
 
+    /// Reserve the one action a spending host-tool call asked for, after every later
+    /// gate allowed it (contract 1.20); see [`Policy::settle_spend`].
+    #[must_use]
+    pub fn settle_spend(
+        &self,
+        policy: &Policy,
+        checks: &[Check],
+        mut decided: ScopedDecision,
+    ) -> ScopedDecision {
+        decided.decision = policy.settle_spend(Some(&self.commands), checks, decided.decision);
+        decided
+    }
+
     /// Check an ordered batch; bound to this policy, the caller and the checks.
     /// # Errors
     /// Reserved for module failures; denial is a successful result.

@@ -174,6 +174,41 @@ async fn admission_questions_are_not_downgraded_by_configured_approvals()
         )
         .await?;
     assert_eq!(admission.verdict, Verdict::Allow);
+    // A mixed request is not an admission question: it is downgraded after the
+    // evaluation, and the downgrade happens before any action is reserved.
+    let scope: CommandPolicyId = proxy
+        .call(
+            names::methods::REGISTER_COMMAND_POLICY,
+            (host_scope_policy(CommandAutonomy::Full, 1),),
+        )
+        .await?;
+    let spending = |extra: Vec<Check>| {
+        let mut checks = vec![Check::HostAction {
+            permission: ToolPermission::Write,
+            external_effect: false,
+            spend: true,
+            command_policy: Some(scope.clone()),
+        }];
+        checks.extend(extra);
+        call("write_file", checks)
+    };
+    for _ in 0..3 {
+        let mixed: Decision = proxy
+            .call(
+                names::methods::EVALUATE,
+                (spending(vec![Check::LocalDiagnostic {}]),),
+            )
+            .await?;
+        assert_ne!(mixed.verdict, Verdict::Allow);
+    }
+    let pure: Decision = proxy
+        .call(names::methods::EVALUATE, (spending(vec![]),))
+        .await?;
+    assert_eq!(
+        pure.verdict,
+        Verdict::Allow,
+        "the refused calls spent nothing"
+    );
     // Any other permission still needs a bound audit event, so it is not allowed.
     let effect: Decision = proxy
         .call(
@@ -185,6 +220,102 @@ async fn admission_questions_are_not_downgraded_by_configured_approvals()
     broker.abort();
     Ok(())
 }
+fn host_scope_policy(autonomy: CommandAutonomy, budget: u32) -> CommandPolicy {
+    CommandPolicy {
+        enabled: true,
+        execution_mode: CommandExecutionMode::HarnessGated,
+        shell_dialect: tinysecurity_bus::ShellDialect::Posix,
+        autonomy,
+        allowed_commands: vec![],
+        max_actions_per_hour: budget,
+        require_approval_for_medium_risk: true,
+        block_high_risk_commands: true,
+        action_dir: std::env::current_dir().unwrap_or_default(),
+        home_dir: None,
+    }
+}
+
+fn external_action(instance: u64, scope: &CommandPolicyId) -> EvaluateApprovalRequest2 {
+    let mut request = begin(instance, instance);
+    request.request.call.tool = "gmail_send".into();
+    request.request.call.checks = vec![Check::HostAction {
+        permission: ToolPermission::Write,
+        external_effect: true,
+        spend: true,
+        command_policy: Some(scope.clone()),
+    }];
+    request
+}
+
+#[tokio::test]
+async fn approval_cannot_override_a_command_scope_and_an_approved_action_spends_its_budget()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = Connection::connect(bus.connect().await?).await?;
+    let module = Connection::connect(bus.connect().await?).await?;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("ledger");
+    std::fs::write(&path, [])?;
+    let store = Arc::new(Mutex::new(store::DiskStore::open(&path)?));
+    let clock = Arc::new(TestClock(AtomicU64::new(1000)));
+    let failure = Arc::new(AtomicBool::new(false));
+    serve_approvals(&host, &module, &clock, &store, &failure, None).await?;
+    let module_peer = module.unique_name().ok_or("module peer")?;
+    let proxy = host.proxy(module_peer.as_str(), names::OBJECT_PATH, names::INTERFACE)?;
+
+    // Read-only autonomy is a hard denial: a human cannot approve it away.
+    let read_only: CommandPolicyId = proxy
+        .call(
+            names::methods::REGISTER_COMMAND_POLICY,
+            (host_scope_policy(CommandAutonomy::ReadOnly, 5),),
+        )
+        .await?;
+    assert!(
+        proxy
+            .call::<EvaluateApprovalResponse2>(
+                names::methods::EVALUATE_APPROVAL2,
+                (external_action(1, &read_only),)
+            )
+            .await
+            .is_err()
+    );
+
+    // A one-action budget: the approved call spends it when it is consumed, and the
+    // next call is refused before a human is asked.
+    let scope: CommandPolicyId = proxy
+        .call(
+            names::methods::REGISTER_COMMAND_POLICY,
+            (host_scope_policy(CommandAutonomy::Full, 1),),
+        )
+        .await?;
+    let approved: EvaluateApprovalResponse2 = proxy
+        .call(
+            names::methods::EVALUATE_APPROVAL2,
+            (external_action(2, &scope),),
+        )
+        .await?;
+    assert_eq!(approved.decision.verdict, Verdict::Allow);
+    let mut consume = action(&approved.record, 2, 3);
+    consume.request = external_action(2, &scope).request;
+    let reserved: ApprovalRow2 = proxy
+        .call(names::methods::CONSUME_APPROVAL2, (consume,))
+        .await?;
+    assert_eq!(reserved.state, ApprovalLifecycle2::Reserved);
+    assert!(
+        proxy
+            .call::<EvaluateApprovalResponse2>(
+                names::methods::EVALUATE_APPROVAL2,
+                (external_action(3, &scope),)
+            )
+            .await
+            .is_err(),
+        "a spent budget cannot be approved"
+    );
+    broker.abort();
+    Ok(())
+}
+
 #[tokio::test]
 async fn approval_initialization_requires_verified_audit_and_retains_immutable_registration()
 -> std::result::Result<(), Box<dyn std::error::Error>> {

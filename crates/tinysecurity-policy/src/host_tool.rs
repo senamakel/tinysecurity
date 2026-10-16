@@ -57,7 +57,7 @@ pub(crate) fn action(
 }
 
 /// A shell command under the registered scope's class gate, or the bootstrap rules
-/// without one. Never reserves: the engine reserves once, after every check passed.
+/// without one. Never reserves: the caller reserves once, after every gate allowed the call.
 pub(crate) fn shell(
     caller: &CallerContext,
     settings: &PolicyConfig,
@@ -83,11 +83,19 @@ pub(crate) fn shell(
             },
         });
     }
+    if decision.gate == CommandGate::Block {
+        // A block always carries a denial; one without is a category the tier refuses.
+        return Err(DenialReason::Access);
+    }
+    // A spent budget refuses the run that would follow, so a human is not asked first.
+    if scope.exhausted() {
+        return Err(DenialReason::RateLimited {
+            max_per_hour: scope.max_actions_per_hour(),
+        });
+    }
     match decision.gate {
         CommandGate::Allow => Ok(()),
-        CommandGate::Prompt => Err(DenialReason::ApprovalUnavailable),
-        // A block always carries a denial; one without is a category the tier refuses.
-        CommandGate::Block => Err(DenialReason::Access),
+        _ => Err(DenialReason::ApprovalUnavailable),
     }
 }
 

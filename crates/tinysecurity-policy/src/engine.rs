@@ -86,8 +86,9 @@ impl Policy {
     }
     /// Authorize a host tool call under a registered command scope (contract 1.20):
     /// the scope supplies the autonomy tier and the hourly budget that
-    /// `HostAction` and `HostShell` checks read, and that an allowed spending call
-    /// reserves one action from.
+    /// `HostAction` and `HostShell` checks read. Reading never spends; the caller
+    /// reserves an allowed spending call's action with [`Self::settle_spend`] after any
+    /// later gate.
     /// # Errors
     /// Reserved for module failures; ordinary denial is a successful result.
     pub fn evaluate_hosted(
@@ -171,20 +172,31 @@ impl Policy {
                 _ => return Ok(decision),
             }
         }
-        if let Some(decision) = approvable {
-            return Ok(decision);
-        }
-        // One reservation per allowed call that asked to spend, after every check
-        // passed, so a refused call never costs an action.
+        Ok(approvable.unwrap_or_else(|| self.allowed()))
+    }
+    /// Reserve the one action a spending call asked for, once the whole call is allowed
+    /// (contract 1.20): after every check, and after any later gate that can still refuse
+    /// it, so a refused call or an approval request costs nothing. `decision` is returned
+    /// unchanged unless it is an `Allow` that spends and the scope's ledger is spent.
+    #[must_use]
+    pub fn settle_spend(
+        &self,
+        scope: Option<&RegisteredCommandPolicy>,
+        checks: &[Check],
+        mut decision: Decision,
+    ) -> Decision {
         if let Some(scope) = scope
-            && request.call.checks.iter().any(host_tool::spends)
+            && decision.verdict == Verdict::Allow
+            && checks.iter().any(host_tool::spends)
             && !scope.reserve()
         {
-            return Ok(self.denied(DenialReason::RateLimited {
-                max_per_hour: scope.max_actions_per_hour(),
-            }));
+            decision.verdict = Verdict::Deny {
+                reason: DenialReason::RateLimited {
+                    max_per_hour: scope.max_actions_per_hour(),
+                },
+            };
         }
-        Ok(self.allowed())
+        decision
     }
     /// Evaluate an ordered batch against a single active generation.
     /// # Errors
@@ -197,6 +209,22 @@ impl Policy {
             &request.caller,
             &request.checks,
         ))
+    }
+    /// An ordered batch whose host-tool checks read a registered command scope (contract
+    /// 1.20). Never reserves.
+    #[must_use]
+    pub fn check_hosted(
+        &self,
+        scope: Option<&RegisteredCommandPolicy>,
+        request: &CheckRequest,
+    ) -> CheckResponse {
+        self.check_with(
+            &self.config.policy,
+            None,
+            scope,
+            &request.caller,
+            &request.checks,
+        )
     }
     /// Ordered batch under per-subject settings and an optional command scope.
     pub(crate) fn check_with(

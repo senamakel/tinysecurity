@@ -434,54 +434,18 @@ must go through the durable lifecycle.
 
 ## Host-tool admission (contract 1.20)
 
-Additive: a 1.18 host keeps working against a 1.20 module (its wire shapes do not
-change), and a 1.20 host refuses a 1.18 module. A 1.19 module may lack the
-sandbox-scope vocabulary a 1.20 host does not need; release both changes together.
+Specification: [`docs/specs/host-tool-admission.md`](docs/specs/host-tool-admission.md).
+Additive: a 1.18 host keeps working against a 1.20 module, and a 1.20 host refuses a
+1.18 module.
 
-The module answers "may this host tool call run, and does a human have to approve
-it?" for every host tool, not only the external-effect ones, so a host can drop its
-own copy of the decision. Two checks carry the question, valid only for tool names
-outside the module's effect classes (the `Check::HostTool` rule):
-
-- `Check::HostAction { permission, external_effect, spend, command_policy }` judges a
-  tool by its declared `ToolPermission` (`none`, `read_only`, `write`, `execute`,
-  `dangerous`; everything above `read_only` acts). In order, each stage only
-  narrowing: a cron origin refuses an acting or external-effect tool
-  (`scheduled_read_only`); the caller's tier must reach the permission (`write`
-  needs `Write`, `execute` and `dangerous` need `Full`, else `access`); under the
-  named command scope, read-only autonomy refuses an acting tool (`read_only_mode`)
-  and a spent hourly budget refuses it (`rate_limited { max_per_hour }`); finally an
-  external effect is `approval_unavailable`, "a human must approve", exactly as for
-  `HostTool`. A reading tool is allowed in every tier and origin.
-- `Check::HostShell { command, declared_class, spend, command_policy }` gates a shell
-  command under the scope's class gate (the same classifier and hidden-execution
-  defence as `CheckCommand`) without reserving an action: allowed, needs a human
-  (`approval_unavailable`), or refused with a typed reason (`floor`, `read_only_mode`,
-  `command`, `high_risk`). A cron origin refuses every shell command. Without a scope
-  the bootstrap command rules apply.
-
-`command_policy` names a registered command scope (`RegisterCommandPolicy`), the one
-that carries the subject's autonomy tier and hourly budget. `Evaluate` resolves it
-(an unknown scope, or two different scopes in one request, refuses the request);
-`EvaluateScoped` always uses the policy's own scope and refuses a mismatching name
-(`invalid_context`). While enforcement is disabled on the scope, autonomy and budget
-are inert. Absent a scope, only the tier, origin and external-effect rules apply.
-
-Budgets: reading never spends. `spend: true` reserves one action from the scope's
-ledger, once per call, only when the whole call is otherwise allowed (a refusal and
-an approval request cost nothing, like `CheckCommand`), so the budget a shell run
-spends through `CheckCommand` and the budget acting host tools spend through
-`HostAction` are one ledger. `Check` batches read the budget but never reserve.
-
-New `DenialReason` values: `read_only_mode`, `rate_limited { max_per_hour }`,
-`scheduled_read_only`, `high_risk`. They carry no payload beyond the configured
-limit, so the host renders its own model-facing text.
-
-An admission question permits no effect the module audits, because the host runs the
-tool itself. `Evaluate` therefore answers `Allow` to a request made only of
-`HostAction`/`HostShell` checks even when approvals are configured (every other
-`Evaluate` still cannot, see 1.18); like the path and command members, a required
-audit refuses it.
+`Check::HostAction` judges a host tool by its declared `ToolPermission`, the caller's
+tier and origin, and a registered command scope's autonomy tier and hourly budget;
+`Check::HostShell` gates a shell command under the scope's class gate. Refusals are
+typed (`read_only_mode`, `rate_limited { max_per_hour }`, `scheduled_read_only`,
+`high_risk`, plus the existing reasons). Reading the budget never spends it; an
+allowed `spend: true` call reserves one action from the scope's ledger, shared with
+`CheckCommand`, after every later gate allowed it. A request made only of these
+checks is an admission question and can answer `Allow` while approvals are configured.
 
 ## Per-call exact credentials: `RedactWith` (contract 1.16)
 
