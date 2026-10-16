@@ -242,3 +242,51 @@ fn the_fingerprint_binds_the_host_checks_it_covers() {
         }
     }
 }
+
+#[test]
+fn a_scoped_class_allowlist_narrows_host_shell_like_command_checks() -> TestResult {
+    let mut f = Fixture::new()?;
+    let mut registered = f.registered("a", true, CommandAutonomy::Full)?;
+    registered.settings.command_classes = vec![CommandClass::Read];
+    let id = f.register(registered)?;
+    let shell_check = |command: &str| Check::HostShell {
+        command: command.into(),
+        declared_class: None,
+        spend: false,
+        command_policy: None,
+    };
+    let run = |check: Check| -> std::result::Result<Verdict, Box<dyn std::error::Error>> {
+        let request = host_eval(&id, "a", "shell", AccessTier::Full, vec![check]);
+        decide(&f, &id, &request)
+    };
+    assert_eq!(run(shell_check("ls"))?, Verdict::Allow);
+    // Full autonomy allows a write, but the subject's own allowlist excludes the class.
+    assert_eq!(
+        run(shell_check("touch f"))?,
+        Verdict::Deny {
+            reason: DenialReason::Command
+        }
+    );
+    // The same restriction holds in a batch, and a hard denial keeps its own reason.
+    let batch = f.scoped.get_owned(&id)?.check(
+        &f.engine,
+        &ScopedCheckRequest {
+            policy_id: id.clone(),
+            caller: caller("a", "1"),
+            checks: vec![shell_check("touch f"), shell_check("cat ~/.ssh/id_rsa")],
+        },
+    )?;
+    assert_eq!(
+        batch.decisions[0].verdict,
+        Verdict::Deny {
+            reason: DenialReason::Command
+        }
+    );
+    assert_eq!(
+        batch.decisions[1].verdict,
+        Verdict::Deny {
+            reason: DenialReason::Floor
+        }
+    );
+    Ok(())
+}

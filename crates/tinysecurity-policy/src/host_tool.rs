@@ -62,6 +62,7 @@ pub(crate) fn shell(
     caller: &CallerContext,
     settings: &PolicyConfig,
     scope: Option<&RegisteredCommandPolicy>,
+    allowed_classes: &[CommandClass],
     command_text: &str,
     declared_class: Option<CommandClass>,
 ) -> Admission {
@@ -82,6 +83,10 @@ pub(crate) fn shell(
                 max_per_hour: scope.max_actions_per_hour(),
             },
         });
+    }
+    // The subject's own class allowlist narrows the scope's gate, as for `Command` checks.
+    if !allowed_classes.is_empty() && !allowed_classes.contains(&decision.class) {
+        return Err(DenialReason::Command);
     }
     if decision.gate == CommandGate::Block {
         // A block always carries a denial; one without is a category the tier refuses.

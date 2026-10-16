@@ -361,6 +361,7 @@ impl ScopedPolicy {
         let hooks = Hooks {
             command: &command,
             path: &path,
+            classes: &self.registered.settings.command_classes,
         };
         let mut decision = policy.evaluate_with(
             &self.effective,
@@ -428,6 +429,7 @@ impl ScopedPolicy {
             let hooks = Hooks {
                 command: &command,
                 path: &path,
+                classes: &self.registered.settings.command_classes,
             };
             let mut response = policy.check_with(
                 &self.effective,

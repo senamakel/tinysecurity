@@ -99,6 +99,17 @@ fn hosted(
     Ok(decision.verdict)
 }
 
+/// `shell` with no subject class allowlist, which is every unscoped caller.
+fn shell_gate(
+    caller: &CallerContext,
+    settings: &PolicyConfig,
+    scope: Option<&RegisteredCommandPolicy>,
+    command: &str,
+    declared: Option<CommandClass>,
+) -> Admission {
+    shell(caller, settings, scope, &[], command, declared)
+}
+
 fn deny(reason: DenialReason) -> Verdict {
     Verdict::Deny { reason }
 }
@@ -169,7 +180,7 @@ fn a_scheduled_turn_may_only_use_reading_tools() {
         Err(DenialReason::ScheduledReadOnly)
     );
     assert_eq!(
-        shell(&cron, &PolicyConfig::default(), None, "pwd", None),
+        shell_gate(&cron, &PolicyConfig::default(), None, "pwd", None),
         Err(DenialReason::ScheduledReadOnly)
     );
 }
@@ -259,9 +270,12 @@ fn reading_the_budget_never_spends_it() -> TestResult {
 #[test]
 fn shell_without_a_scope_follows_the_bootstrap_rules() {
     let settings = PolicyConfig::default();
-    assert_eq!(shell(&operator(), &settings, None, "pwd", None), Ok(()));
     assert_eq!(
-        shell(&operator(), &settings, None, "rm -rf work", None),
+        shell_gate(&operator(), &settings, None, "pwd", None),
+        Ok(())
+    );
+    assert_eq!(
+        shell_gate(&operator(), &settings, None, "rm -rf work", None),
         Err(DenialReason::Command)
     );
 }
@@ -272,7 +286,7 @@ fn shell_under_a_scope_maps_every_gate_and_denial() -> TestResult {
         |enabled, autonomy, command: &str| -> std::result::Result<_, Box<dyn std::error::Error>> {
             let (registry, id) = registered(enabled, autonomy, 5)?;
             let scope = registry.get_owned(&id)?;
-            Ok(shell(
+            Ok(shell_gate(
                 &operator(),
                 &PolicyConfig::default(),
                 Some(&scope),
@@ -312,7 +326,7 @@ fn shell_refuses_the_high_risk_and_oversized_commands() -> TestResult {
     })?;
     let scope = registry.get_owned(&id)?;
     assert_eq!(
-        shell(
+        shell_gate(
             &operator(),
             &PolicyConfig::default(),
             Some(&scope),
@@ -323,7 +337,7 @@ fn shell_refuses_the_high_risk_and_oversized_commands() -> TestResult {
     );
     let huge = "x".repeat(1_048_577);
     assert_eq!(
-        shell(
+        shell_gate(
             &operator(),
             &PolicyConfig::default(),
             Some(&scope),
@@ -340,7 +354,7 @@ fn a_declared_class_can_only_raise_the_shell_gate() -> TestResult {
     let (registry, id) = registered(true, CommandAutonomy::Supervised, 5)?;
     let scope = registry.get_owned(&id)?;
     assert_eq!(
-        shell(
+        shell_gate(
             &operator(),
             &PolicyConfig::default(),
             Some(&scope),
@@ -425,7 +439,7 @@ fn a_spent_budget_refuses_shell_before_a_human_is_asked() -> TestResult {
     let (registry, id) = registered(true, CommandAutonomy::Supervised, 1)?;
     let scope = registry.get_owned(&id)?;
     let ask = |command: &str| {
-        shell(
+        shell_gate(
             &operator(),
             &PolicyConfig::default(),
             Some(&scope),

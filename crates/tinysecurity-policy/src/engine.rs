@@ -1,8 +1,9 @@
 //! Atomic policy activation and ordered evaluation.
 use crate::{
-    AccessTier, CONTRACT_VERSION, CallerContext, Check, CheckRequest, CheckResponse, Decision,
-    DenialReason, Error, EvaluateRequest, ModuleConfig, Origin, POLICY_CHANGE_TOOL, PolicyConfig,
-    PolicyInfo, RegisteredCommandPolicy, Result, Spent, Verdict, command, host_tool, names, path,
+    AccessTier, CONTRACT_VERSION, CallerContext, Check, CheckRequest, CheckResponse, CommandClass,
+    Decision, DenialReason, Error, EvaluateRequest, ModuleConfig, Origin, POLICY_CHANGE_TOOL,
+    PolicyConfig, PolicyInfo, RegisteredCommandPolicy, Result, Spent, Verdict, command, host_tool,
+    names, path,
 };
 
 /// Registered command-scope check used instead of the bootstrap allowlist.
@@ -14,6 +15,9 @@ pub(crate) type PathHook<'a> = dyn Fn(&str, bool) -> std::result::Result<(), Den
 pub(crate) struct Hooks<'a> {
     pub(crate) command: &'a CommandHook<'a>,
     pub(crate) path: &'a PathHook<'a>,
+    /// Command classes the subject may run without a fresh review; empty means the
+    /// command scope alone decides. Applies to `Command` and `HostShell` checks alike.
+    pub(crate) classes: &'a [CommandClass],
 }
 /// Active validated policy instance. Failed reconfiguration never changes it.
 #[derive(Clone, Debug)]
@@ -281,7 +285,14 @@ impl Policy {
                 command,
                 declared_class,
                 ..
-            } => host_tool::shell(caller, settings, scope, command, *declared_class),
+            } => host_tool::shell(
+                caller,
+                settings,
+                scope,
+                hooks.map_or(&[], |hooks| hooks.classes),
+                command,
+                *declared_class,
+            ),
             Check::Path { path, write } => path::check(settings, path, *write)
                 .and_then(|()| hooks.map_or(Ok(()), |h| (h.path)(path, *write)))
                 .and_then(|()| {

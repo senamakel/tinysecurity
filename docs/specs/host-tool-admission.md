@@ -46,7 +46,9 @@ configuration itself; the host registers it as a command scope.
   A reading tool is allowed in every tier and origin.
 - `Check::HostShell { command, declared_class, spend, command_policy }` runs the scope's
   class gate (classifier, hidden-execution defence, protected-path floor) without
-  reserving, then reads the budget. Cron refuses every shell command. Typed reasons:
+  reserving, then reads the budget. Under a registered policy the subject's own
+  `command_classes` allowlist narrows the gate exactly as for `Check::Command`. Cron refuses
+  every shell command. Typed reasons:
   `floor`, `read_only_mode`, `command`, `high_risk`, `rate_limited`.
 - `command_policy` names a registered command scope. `Evaluate`, `Check` and the approval
   members resolve it. A request names one scope or none: an unknown scope, two different
