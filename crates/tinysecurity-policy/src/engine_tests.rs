@@ -221,8 +221,10 @@ fn host_tool_marker_never_masks_a_later_hard_denial() -> Result<()> {
 #[test]
 fn an_earlier_approval_requirement_never_masks_a_later_hard_denial() -> Result<()> {
     let policy = Policy::new(ModuleConfig::default())?;
+    // Absolute on every OS, outside every protected root.
+    let scratch = std::env::temp_dir().join("scratch-output");
     let write = Check::Path {
-        path: "/tmp/scratch-output".into(),
+        path: scratch.to_string_lossy().into_owned(),
         write: true,
     };
     let floor = Check::Path {
