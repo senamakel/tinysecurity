@@ -460,7 +460,7 @@ Bounds and eviction never widen policy. The table holds at most 65,536 live scop
 full table refuses a new registration (`capacity`) and never evicts a live scope, so a
 subject's ceilings are never silently dropped or replaced. Retirement is the only way a
 scope leaves, and the registry slot, artifacts and audit client go with it. A runtime
-scope holds at most 8 staged or active artifacts, runtime scopes share a pool of 15,360 and
+subject holds at most 8 staged or active artifacts across all of its scope identities, runtime scopes share a pool of 15,360 and
 initialized scopes keep their own 1024, so one subject cannot exhaust another's capacity and
 busy runtime scopes cannot starve the initialized ones. A plan in flight keeps the audit
 stream it started on if its scope is retired meanwhile, and a retired or unknown runtime

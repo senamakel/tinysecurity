@@ -51,7 +51,7 @@ retirement and a new registration), and does not mint audit correlations.
 - At most 65,536 live scopes. A full table refuses a registration; a live scope is never
   evicted to make room, so ceilings are never silently dropped or replaced.
 - Artifact capacity is two pools: initialized scopes share 1,024 rows and keep their equal
-  per-scope quota; runtime scopes share 15,360 with at most 8 per scope. Neither pool can
+  per-scope quota; runtime scopes share 15,360 with at most 8 per subject (counted across every scope identity the subject registered). Neither pool can
   starve the other, and a runtime subject cannot starve another.
 - Retirement purges artifacts under the same table lock `stage` holds, so no artifact of a
   retired scope can be staged afterwards, and every registration is its own incarnation: a

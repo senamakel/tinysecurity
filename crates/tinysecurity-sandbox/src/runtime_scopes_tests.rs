@@ -280,3 +280,32 @@ fn a_candidate_is_bound_to_the_scope_incarnation_it_was_planned_under() -> TestR
     assert_eq!(engine.incarnation("missing")?, None);
     Ok(())
 }
+
+#[test]
+fn a_subject_split_across_scope_identities_keeps_one_runtime_quota() -> TestResult {
+    let (_dir, init, base) = fixture()?;
+    let engine = engine_with(vec![init.clone()])?;
+    let first = runtime_variant(&init, "first");
+    let mut second = first.clone();
+    second.scope_id = "second".into();
+    engine.register_scope(first.clone())?;
+    engine.register_scope(second.clone())?;
+    let candidate = |scope: &SandboxScope2| -> std::result::Result<SandboxArtifact2, Box<dyn std::error::Error>> {
+        Ok(engine
+            .plan(&request_for(&base, scope), 1, 100)?
+            .artifact
+            .ok_or("plan denied")?)
+    };
+    for _ in 0..4 {
+        engine.stage(candidate(&first)?, 100)?;
+        engine.stage(candidate(&second)?, 100)?;
+    }
+    // Eight rows across two identities of one subject: neither identity gets more.
+    assert!(engine.stage(candidate(&first)?, 100).is_err());
+    assert!(engine.stage(candidate(&second)?, 100).is_err());
+    // Another subject still has its own share.
+    let other = runtime_variant(&init, "other");
+    engine.register_scope(other.clone())?;
+    assert!(engine.stage(candidate(&other)?, 100).is_ok());
+    Ok(())
+}

@@ -27,7 +27,7 @@ const MAX_INITIALIZED_ISSUED: usize = 1024;
 /// Most staged or active artifacts across every runtime scope. A pool of its own, so
 /// busy runtime scopes can never starve the initialized ones (and the reverse).
 pub(crate) const MAX_RUNTIME_ISSUED: usize = 15_360;
-/// Artifacts one runtime scope may hold, the share of the busiest initialized layout.
+/// Artifacts one runtime subject may hold, the share of the busiest initialized layout.
 const RUNTIME_SCOPE_LIMIT: usize = 8;
 impl State {
     fn advance(&mut self, now_ms: u64) -> Result<()> {
@@ -81,8 +81,16 @@ impl Registry {
         issued.retain(|row| row.artifact.expires_at_ms > now_ms);
         let (mut pool, mut own) = (0usize, 0usize);
         for row in issued.iter() {
-            pool += usize::from(runtime.contains(&row.artifact.scope_id) == runtime_scope);
-            own += usize::from(row.artifact.scope_id == artifact.scope_id);
+            let row_runtime = runtime.contains(&row.artifact.scope_id);
+            pool += usize::from(row_runtime == runtime_scope);
+            // An initialized scope has its own quota. A runtime quota belongs to the
+            // subject, however many scope identities it registered, so splitting one
+            // subject across identities never multiplies its share.
+            own += usize::from(if runtime_scope {
+                row_runtime && row.artifact.subject == artifact.subject
+            } else {
+                row.artifact.scope_id == artifact.scope_id
+            });
         }
         if pool >= pool_limit || own >= per_scope_limit {
             return Err(Error::InvalidOperation);
