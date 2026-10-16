@@ -376,7 +376,7 @@ many subjects (SaaS tenants, derived embedded agents) registers each one later:
 | --- | --- |
 | `RegisterApprovalScope2` | Adds a scope. An identical repeat is `unchanged`; the same identity or the same subject with anything else is a conflict. A stale generation, bad grants or a malformed stream deny. |
 | `ReplaceApprovalScope2` | Atomically changes posture, grants or `policy_ref` of a live scope (init scopes included). The subject and, for runtime scopes, the audit stream cannot change. Rows bound to another `policy_ref` stop being decidable. |
-| `RetireApprovalScope2` | Removes a scope; every later call under it denies and the ports release the subject. |
+| `RetireApprovalScope2` | Removes a runtime scope (initialized scopes are replaced, never retired); every later call under it denies and the ports release the subject. A failed release keeps the scope registered so the retirement can be retried. |
 
 All three are private host-only members served to the authenticated init peer,
 like the other registrations. The table holds at most 65,536 live scopes. The
