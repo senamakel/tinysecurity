@@ -635,3 +635,6 @@ async fn cancellation_during_plan_audit_reclaims_pending_artifact_capacity()
     assert!(engine.stage(candidate, 1000).is_err());
     Ok(())
 }
+
+#[path = "adapter_sandbox_scopes_tests.rs"]
+mod scopes;

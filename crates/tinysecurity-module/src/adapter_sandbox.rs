@@ -196,10 +196,23 @@ impl PolicyService {
         artifact.approval_reservation_id = row.reservation_id;
         Some(artifact)
     }
+    /// The audit client that records a scope's plans: its own stream for a runtime
+    /// scope, the base client for an initialized one.
+    fn sandbox_audit_client(
+        &self,
+        scope_id: &str,
+    ) -> BusResult<Option<Arc<crate::callbacks::AuditClient>>> {
+        if let Some(runtime) = &self.sandbox_runtime
+            && let Some(client) = runtime.client(scope_id)?
+        {
+            return Ok(Some(client));
+        }
+        Ok(self.audit.clone())
+    }
     async fn audit_sandbox(
         &self,
+        owner: (&str, &tinysecurity_bus::SubjectScope),
         original: serde_json::Value,
-        subject: &tinysecurity_bus::SubjectScope,
         correlation: &tinysecurity_bus::AuditCorrelation2,
         generation: u64,
         redactor: tinysecurity::Redactor,
@@ -214,7 +227,8 @@ impl PolicyService {
                 receipt: None,
             })
         };
-        let Some(client) = &self.audit else {
+        let (scope_id, subject) = owner;
+        let Some(client) = self.sandbox_audit_client(scope_id)? else {
             return Ok(refused());
         };
         if client.scope() != subject || correlation.generation != generation {
@@ -285,8 +299,8 @@ impl PolicyService {
         };
         let evidence = self
             .audit_sandbox(
+                (&request.scope_id, &request.subject),
                 serde_json::json!([request, response]),
-                &request.subject,
                 &request.audit,
                 generation,
                 redactor,
@@ -355,8 +369,8 @@ impl PolicyService {
         }
         response.audit = self
             .audit_sandbox(
+                (&request.request.scope_id, &request.subject),
                 serde_json::json!([request,{"eligible":true}]),
-                &request.subject,
                 &request.audit,
                 generation,
                 redactor,

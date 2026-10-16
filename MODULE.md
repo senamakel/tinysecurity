@@ -432,6 +432,42 @@ them. The tool-permission members (`Evaluate`, `Check` and their scoped and audi
 forms) still cannot return `Allow` once approvals are configured, because a tool call
 must go through the durable lifecycle.
 
+## Runtime sandbox scopes (contract 1.19)
+
+Additive: a 1.18 host keeps working against a 1.19 module, and a 1.19 host refuses a
+1.18 module (it requires the two scope members).
+
+`SandboxConfig2` fixes at most 128 immutable scopes at init, and each scope's subject
+must equal the audit scope's subject. A host that serves an unbounded set of subjects
+(profiles, tenants, derived agents) registers each subject's scope later, the same way
+it registers runtime approval scopes:
+
+| Member | Effect |
+| --- | --- |
+| `RegisterSandboxScope2` | Adds a scope validated exactly like an init scope. An identical repeat on the same stream is `unchanged`; the same identity with other facts or another stream, or an initialized identity, is refused. |
+| `RetireSandboxScope2` | Removes a runtime scope and discards every artifact it issued, pending or active, so none can be checked or consumed afterwards. Initialized scopes are never retired. |
+
+Both are private host-only members served to the authenticated init peer. They need a
+configured sandbox engine (an empty `SandboxConfig2` is enough) and a configured audit:
+every runtime scope carries a host-persisted `audit_stream_id` and records its plans and
+consumes on the host `AuditSink2` under its own subject and stream, never in a native
+journal. A scope's `approval_scope_id` must name a live approval scope of the same
+subject. The receipt (`SandboxScopeReceipt2.scope_handle`, only when
+`report_handle` is set, never on a retirement) carries the subject exactly as
+`AuditSink2` receives it, so a host keys its ledgers by it.
+
+Bounds and eviction never widen policy. The table holds at most 65,536 live scopes; a
+full table refuses a new registration (`capacity`) and never evicts a live scope, so a
+subject's ceilings are never silently dropped or replaced. Retirement is the only way a
+scope leaves, and the registry slot, artifacts and audit client go with it. A runtime
+scope holds at most 8 staged or active artifacts (initialized scopes keep their share of
+1024), so one subject cannot exhaust another's capacity. A live subject keeps its audit
+stream and a retired one keeps it for an hour: registering it again with another stream
+in that window is refused, so a plan still in flight for a retired scope cannot reach
+another ledger. Several scope identities may share a subject; its stream is released
+only when the last of them retires. Changing a live scope's facts is a retirement
+followed by a new registration, which also invalidates its outstanding artifacts.
+
 ## Per-call exact credentials: `RedactWith` (contract 1.16)
 
 Additive: a 1.15 host keeps working against a 1.16 module, and a 1.16 host

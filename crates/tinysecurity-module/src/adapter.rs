@@ -36,6 +36,7 @@ struct PolicyService {
     secret: Option<Arc<secret::SecretState>>,
     secret_cipher: Option<Arc<cipher::CipherState>>,
     sandbox: Option<Arc<tinysecurity::sandbox::Engine>>,
+    sandbox_runtime: Option<Arc<sandbox_scopes::SandboxRuntime>>,
     approvals: Option<Arc<tinysecurity::approval::Engine>>,
     policy: Arc<RwLock<Policy>>,
     audit: Option<Arc<crate::callbacks::AuditClient>>,
@@ -813,6 +814,19 @@ impl PolicyService {
             .await
             .map_err(approval_failure)
     }
+    // Private host-only configuration: the facts are a trusted-adapter claim.
+    async fn register_sandbox_scope2(
+        &self,
+        request: tinysecurity_bus::RegisterSandboxScopeRequest2,
+    ) -> BusResult<tinysecurity_bus::SandboxScopeReceipt2> {
+        self.register_sandbox_scope(request).await
+    }
+    async fn retire_sandbox_scope2(
+        &self,
+        request: tinysecurity_bus::RetireSandboxScopeRequest2,
+    ) -> BusResult<tinysecurity_bus::SandboxScopeReceipt2> {
+        self.retire_sandbox_scope(request).await
+    }
     async fn import_approval_history2(
         &self,
         request: tinysecurity_bus::ApprovalHistoryImport2,
@@ -1171,6 +1185,7 @@ fn service_for(
         secret: None,
         secret_cipher: None,
         sandbox: None,
+        sandbox_runtime: None,
         approvals: None,
         policy,
         audit,
@@ -1581,17 +1596,29 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
     service.secret_cipher.clone_from(&secret_cipher);
     service.signals = Some(connection.clone());
     service.sandbox_clock = device_clock;
-    service.sandbox = sandbox.as_ref().map(|(_, engine)| Arc::clone(engine));
+    service.attach_sandbox(
+        sandbox.as_ref().map(|(_, engine)| engine),
+        audit_config,
+        (&connection, &binding),
+    )?;
     service.approvals = approvals.as_ref().map(|(_, engine)| Arc::clone(engine));
     if let Some(engine) = &service.approvals {
         engine.replace_automatic(judge).map_err(approval_failure)?;
     }
     serve_policy(&connection, service, binding.clone()).await?;
-    device::activate(device.as_ref())?;
-    crypto::activate(crypto.as_ref())?;
-    secret::activate(secret)?;
-    cipher::activate(secret_cipher)?;
+    activate_confidential(device.as_ref(), crypto.as_ref(), secret, secret_cipher)?;
     activate_policy(policy, audit, binding, sandbox, approvals)
+}
+fn activate_confidential(
+    device: Option<&Arc<tinysecurity::crypto::device_handles::Registry>>,
+    crypto: Option<&Arc<crypto::CryptoState>>,
+    secret: Option<Arc<secret::SecretState>>,
+    secret_cipher: Option<Arc<cipher::CipherState>>,
+) -> BusResult<()> {
+    device::activate(device)?;
+    crypto::activate(crypto)?;
+    secret::activate(secret)?;
+    cipher::activate(secret_cipher)
 }
 async fn serve_policy(
     connection: &Connection,
@@ -1642,7 +1669,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanToolDefinition"],
+    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "RegisterSandboxScope2", "RetireSandboxScope2", "Audit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = ["ai.tinyhumans.tinysecurity.KeyringConsent2", "ai.tinyhumans.tinysecurity.SecretCipherConsumer2", "ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],
@@ -1654,6 +1681,8 @@ mod tests;
 
 #[path = "adapter_sandbox.rs"]
 mod sandbox;
+#[path = "adapter_sandbox_scopes.rs"]
+mod sandbox_scopes;
 use sandbox::sandbox_configured;
 
 #[path = "adapter_device.rs"]

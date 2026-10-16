@@ -11,5 +11,5 @@ mod engine;
 mod error;
 mod grants;
 mod registry;
-pub use engine::Engine;
+pub use engine::{Engine, Registration};
 pub use error::{Error, Result};

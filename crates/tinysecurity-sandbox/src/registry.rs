@@ -1,6 +1,9 @@
 //! Opaque module-owned pending/active/consumed artifacts; fingerprints are not authority.
 use crate::{Error, Result};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+};
 use tinysecurity_bus::{SandboxArtifact2, SubjectScope};
 #[derive(Clone, Debug)]
 struct Issued {
@@ -14,7 +17,14 @@ struct State {
     rows: Vec<Issued>,
     high_water_ms: u64,
     per_scope_limit: usize,
+    /// Scopes registered after init; each gets the smallest initialized share.
+    runtime: BTreeSet<String>,
 }
+/// Most staged or active artifacts across every scope. Initialized scopes share at
+/// most 1024 of them, so runtime scopes cannot starve the initialized ones.
+const MAX_ISSUED: usize = 16_384;
+/// Artifacts one runtime scope may hold, the share of the busiest initialized layout.
+const RUNTIME_SCOPE_LIMIT: usize = 8;
 impl State {
     fn advance(&mut self, now_ms: u64) -> Result<()> {
         if now_ms < self.high_water_ms {
@@ -31,6 +41,19 @@ impl Registry {
             ..State::default()
         })))
     }
+    pub(crate) fn mark_runtime(&self, scope_id: &str) {
+        if let Ok(mut state) = self.0.lock() {
+            state.runtime.insert(scope_id.into());
+        }
+    }
+    /// Drop every artifact of a retired scope, activated ones included, so none of
+    /// them can be checked or consumed afterwards.
+    pub(crate) fn purge_scope(&self, scope_id: &str) {
+        if let Ok(mut state) = self.0.lock() {
+            state.runtime.remove(scope_id);
+            state.rows.retain(|row| row.artifact.scope_id != scope_id);
+        }
+    }
     pub(crate) fn stage(
         &self,
         mut artifact: SandboxArtifact2,
@@ -41,10 +64,14 @@ impl Registry {
         }
         let mut state = self.0.lock().map_err(|_| Error::InvalidOperation)?;
         state.advance(now_ms)?;
-        let per_scope_limit = state.per_scope_limit;
+        let per_scope_limit = if state.runtime.contains(&artifact.scope_id) {
+            RUNTIME_SCOPE_LIMIT
+        } else {
+            state.per_scope_limit
+        };
         let issued = &mut state.rows;
         issued.retain(|row| row.artifact.expires_at_ms > now_ms);
-        if issued.len() >= 1024
+        if issued.len() >= MAX_ISSUED
             || issued
                 .iter()
                 .filter(|row| row.artifact.scope_id == artifact.scope_id)
