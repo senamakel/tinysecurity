@@ -3,8 +3,10 @@
 pub use tinysecurity_bus::*;
 mod command;
 mod engine;
+mod host_tool;
 mod path;
 pub use engine::Policy;
+pub use host_tool::scope_ids as host_tool_scope_ids;
 
 mod path_subtree;
 pub use path_subtree::protected_subtree;

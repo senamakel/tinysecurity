@@ -117,6 +117,75 @@ async fn authenticated_module_routes_persistent_decisions_reservation_history_an
     Ok(())
 }
 #[tokio::test]
+async fn admission_questions_are_not_downgraded_by_configured_approvals()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = Connection::connect(bus.connect().await?).await?;
+    let module = Connection::connect(bus.connect().await?).await?;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("ledger");
+    std::fs::write(&path, [])?;
+    let store = Arc::new(Mutex::new(store::DiskStore::open(&path)?));
+    let clock = Arc::new(TestClock(AtomicU64::new(1000)));
+    let failure = Arc::new(AtomicBool::new(false));
+    // Approvals configured, audit forwarded but not required: path, command and
+    // admission members stay available, as the host configures production.
+    let (config, mut audit_config) = settings();
+    audit_config.required = false;
+    serve_approvals_with(
+        &host,
+        &module,
+        &clock,
+        &store,
+        &failure,
+        None,
+        (config, audit_config),
+    )
+    .await?;
+    let module_peer = module.unique_name().ok_or("module peer")?;
+    let proxy = host.proxy(module_peer.as_str(), names::OBJECT_PATH, names::INTERFACE)?;
+    let caller = CallerContext {
+        agent: "agent".into(),
+        call_id: "call".into(),
+        tier: AccessTier::Full,
+        ..Default::default()
+    };
+    let call = |tool: &str, checks: Vec<Check>| EvaluateRequest {
+        caller: caller.clone(),
+        call: ToolCall {
+            tool: tool.into(),
+            arguments_json: "{}".into(),
+            checks,
+        },
+    };
+    let admission: Decision = proxy
+        .call(
+            names::methods::EVALUATE,
+            (call(
+                "read_file",
+                vec![Check::HostAction {
+                    permission: ToolPermission::ReadOnly,
+                    external_effect: false,
+                    spend: false,
+                    command_policy: None,
+                }],
+            ),),
+        )
+        .await?;
+    assert_eq!(admission.verdict, Verdict::Allow);
+    // Any other permission still needs a bound audit event, so it is not allowed.
+    let effect: Decision = proxy
+        .call(
+            names::methods::EVALUATE,
+            (call("local_diagnostic", vec![Check::LocalDiagnostic {}]),),
+        )
+        .await?;
+    assert_ne!(effect.verdict, Verdict::Allow);
+    broker.abort();
+    Ok(())
+}
+#[tokio::test]
 async fn approval_initialization_requires_verified_audit_and_retains_immutable_registration()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let bus = MemoryBus::new();

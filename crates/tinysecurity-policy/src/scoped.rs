@@ -1,5 +1,6 @@
 //! Immutable per-subject policies bound to a path scope, a command scope and a verified caller.
 use crate::engine::{Hooks, validate_settings};
+use crate::host_tool;
 use crate::scoped_forbidden::effective_forbidden;
 use crate::{
     CommandPolicyRegistry, PathPolicyRegistry, PathScope, Policy, RegisteredCommandPolicy,
@@ -105,6 +106,27 @@ fn check_fields(h: &mut Sha256, check: &Check) {
         }
         Check::LocalDiagnostic {} => field(h, "local_diagnostic"),
         Check::HostTool {} => field(h, "host_tool"),
+        Check::HostAction {
+            permission,
+            external_effect,
+            spend,
+            command_policy,
+        } => {
+            field(h, "host_action");
+            field(h, &format!("{permission:?}/{external_effect}/{spend}"));
+            field(h, command_policy.as_ref().map_or("\0none", |id| &id.0));
+        }
+        Check::HostShell {
+            command,
+            declared_class,
+            spend,
+            command_policy,
+        } => {
+            field(h, "host_shell");
+            field(h, command);
+            field(h, &format!("{declared_class:?}/{spend}"));
+            field(h, command_policy.as_ref().map_or("\0none", |id| &id.0));
+        }
         Check::PolicyChange { digest } => {
             field(h, "policy_change");
             field(h, digest);
@@ -328,6 +350,13 @@ impl ScopedPolicy {
             decision.decision.cacheable = true;
             return Ok(decision);
         }
+        // The policy's own command scope answers host-tool checks; naming another
+        // scope is a mismatched request.
+        if host_tool::scope_ids(&request.call.checks)
+            .any(|id| id != &self.registered.command_policy_id)
+        {
+            return Ok(denied(DenialReason::InvalidContext));
+        }
         let (command, path) = (self.hook(), self.path_hook());
         let hooks = Hooks {
             command: &command,
@@ -336,6 +365,7 @@ impl ScopedPolicy {
         let mut decision = policy.evaluate_with(
             &self.effective,
             Some(&hooks),
+            Some(&self.commands),
             &EvaluateRequest {
                 caller: request.caller.clone(),
                 call: request.call.clone(),
@@ -376,6 +406,7 @@ impl ScopedPolicy {
             let mut response = policy.check_with(
                 &self.effective,
                 Some(&hooks),
+                Some(&self.commands),
                 &request.caller,
                 &request.checks,
             );

@@ -190,6 +190,26 @@ impl PolicyService {
             .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))
     }
 
+    /// The one registered command scope an Evaluate request's host-tool checks name,
+    /// if any. Two different scopes in one request, or an unknown one, refuse it.
+    fn host_scope(
+        &self,
+        request: &EvaluateRequest,
+    ) -> BusResult<Option<Arc<tinysecurity::RegisteredCommandPolicy>>> {
+        let mut ids = tinysecurity::host_tool_scope_ids(&request.call.checks);
+        let Some(first) = ids.next() else {
+            return Ok(None);
+        };
+        if ids.any(|other| other != first) {
+            return Err(failure(&tinysecurity_bus::Error::InvalidArguments));
+        }
+        self.commands
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .get_owned(first)
+            .map(Some)
+            .map_err(|error| failure(&error))
+    }
     fn read(&self) -> BusResult<std::sync::RwLockReadGuard<'_, Policy>> {
         self.policy
             .read()
@@ -304,13 +324,22 @@ impl PolicyService {
         self.sandbox_plan(request).await
     }
     async fn evaluate(&self, request: EvaluateRequest) -> BusResult<Decision> {
+        let admission = admission_only(&request);
+        if admission {
+            self.require_unbound_permission()?;
+        }
         let policy = self.read()?.clone();
+        let scope = self.host_scope(&request)?;
         let mut decision = tokio::task::spawn_blocking(move || {
-            policy.evaluate(&request).map_err(|error| failure(&error))
+            policy
+                .evaluate_hosted(scope.as_deref(), &request)
+                .map_err(|error| failure(&error))
         })
         .await
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
-        if self.requires_bound_audit() {
+        // An admission question permits no effect the module audits: the host runs
+        // the tool under its own accounting, so only refusals are bound to audit.
+        if self.requires_bound_audit() && !admission {
             deny_allow(&mut decision);
         }
         Ok(decision)
@@ -334,8 +363,11 @@ impl PolicyService {
         let policy = self.read()?.clone();
         let registry = policy.redactor();
         let original = request.request.clone();
+        let scope = self.host_scope(&original)?;
         let mut decision = tokio::task::spawn_blocking(move || {
-            policy.evaluate(&original).map_err(|error| failure(&error))
+            policy
+                .evaluate_hosted(scope.as_deref(), &original)
+                .map_err(|error| failure(&error))
         })
         .await
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
@@ -1148,6 +1180,16 @@ fn permission_payload(mut original: serde_json::Value) -> BusResult<String> {
 }
 fn approval_failure(error: tinysecurity::approval::Error) -> tinybus::Error {
     tinybus::Error::failed(error.to_string())
+}
+/// Whether every check is a host-tool or shell admission question (contract 1.20).
+fn admission_only(request: &EvaluateRequest) -> bool {
+    use tinysecurity_bus::Check;
+    !request.call.checks.is_empty()
+        && request
+            .call
+            .checks
+            .iter()
+            .all(|check| matches!(check, Check::HostAction { .. } | Check::HostShell { .. }))
 }
 fn deny_allow(decision: &mut Decision) {
     if matches!(decision.verdict, tinysecurity_bus::Verdict::Allow) {

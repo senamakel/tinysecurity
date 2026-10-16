@@ -2,7 +2,7 @@
 use crate::{
     AccessTier, CONTRACT_VERSION, CallerContext, Check, CheckRequest, CheckResponse, Decision,
     DenialReason, Error, EvaluateRequest, ModuleConfig, Origin, POLICY_CHANGE_TOOL, PolicyConfig,
-    PolicyInfo, Result, Verdict, command, names, path,
+    PolicyInfo, RegisteredCommandPolicy, Result, Verdict, command, host_tool, names, path,
 };
 
 /// Registered command-scope check used instead of the bootstrap allowlist.
@@ -82,7 +82,20 @@ impl Policy {
     /// # Errors
     /// Reserved for module failures; ordinary denial is a successful result.
     pub fn evaluate(&self, request: &EvaluateRequest) -> Result<Decision> {
-        self.evaluate_with(&self.config.policy, None, request)
+        self.evaluate_with(&self.config.policy, None, None, request)
+    }
+    /// Authorize a host tool call under a registered command scope (contract 1.20):
+    /// the scope supplies the autonomy tier and the hourly budget that
+    /// `HostAction` and `HostShell` checks read, and that an allowed spending call
+    /// reserves one action from.
+    /// # Errors
+    /// Reserved for module failures; ordinary denial is a successful result.
+    pub fn evaluate_hosted(
+        &self,
+        scope: Option<&RegisteredCommandPolicy>,
+        request: &EvaluateRequest,
+    ) -> Result<Decision> {
+        self.evaluate_with(&self.config.policy, None, scope, request)
     }
     /// Evaluate under per-subject settings and an optional registered command scope.
     /// # Errors
@@ -91,6 +104,7 @@ impl Policy {
         &self,
         settings: &PolicyConfig,
         hooks: Option<&Hooks<'_>>,
+        scope: Option<&RegisteredCommandPolicy>,
         request: &EvaluateRequest,
     ) -> Result<Decision> {
         let matching = !request.call.checks.is_empty()
@@ -116,14 +130,16 @@ impl Policy {
                     .iter()
                     .all(|c| matches!(c, Check::PolicyChange { .. })),
                 tool if tinysecurity_bus::is_host_tool_name2(tool) => {
-                    request
+                    request.call.checks.iter().any(|c| {
+                        matches!(
+                            c,
+                            Check::HostTool {} | Check::HostAction { .. } | Check::HostShell { .. }
+                        )
+                    }) && request
                         .call
                         .checks
                         .iter()
-                        .any(|c| matches!(c, Check::HostTool {}))
-                        && request.call.checks.iter().all(|c| {
-                            !matches!(c, Check::Unknown { .. } | Check::PolicyChange { .. })
-                        })
+                        .all(|c| !matches!(c, Check::Unknown { .. } | Check::PolicyChange { .. }))
                 }
                 _ => false,
             };
@@ -144,7 +160,7 @@ impl Policy {
         // requirement or by the host-tool marker.
         let mut approvable = None;
         for check in &request.call.checks {
-            let decision = self.one(settings, hooks, &request.caller, check);
+            let decision = self.one(settings, hooks, scope, &request.caller, check);
             match decision.verdict {
                 Verdict::Allow => {}
                 Verdict::Deny {
@@ -155,19 +171,39 @@ impl Policy {
                 _ => return Ok(decision),
             }
         }
-        Ok(approvable.unwrap_or_else(|| self.allowed()))
+        if let Some(decision) = approvable {
+            return Ok(decision);
+        }
+        // One reservation per allowed call that asked to spend, after every check
+        // passed, so a refused call never costs an action.
+        if let Some(scope) = scope
+            && request.call.checks.iter().any(host_tool::spends)
+            && !scope.reserve()
+        {
+            return Ok(self.denied(DenialReason::RateLimited {
+                max_per_hour: scope.max_actions_per_hour(),
+            }));
+        }
+        Ok(self.allowed())
     }
     /// Evaluate an ordered batch against a single active generation.
     /// # Errors
     /// Reserved for module failures; individual denials remain ordered results.
     pub fn check(&self, request: &CheckRequest) -> Result<CheckResponse> {
-        Ok(self.check_with(&self.config.policy, None, &request.caller, &request.checks))
+        Ok(self.check_with(
+            &self.config.policy,
+            None,
+            None,
+            &request.caller,
+            &request.checks,
+        ))
     }
     /// Ordered batch under per-subject settings and an optional command scope.
     pub(crate) fn check_with(
         &self,
         settings: &PolicyConfig,
         hooks: Option<&Hooks<'_>>,
+        scope: Option<&RegisteredCommandPolicy>,
         caller: &CallerContext,
         checks: &[Check],
     ) -> CheckResponse {
@@ -175,7 +211,7 @@ impl Policy {
             generation: self.generation,
             decisions: checks
                 .iter()
-                .map(|check| self.one(settings, hooks, caller, check))
+                .map(|check| self.one(settings, hooks, scope, caller, check))
                 .collect(),
         }
     }
@@ -190,6 +226,7 @@ impl Policy {
         &self,
         settings: &PolicyConfig,
         hooks: Option<&Hooks<'_>>,
+        scope: Option<&RegisteredCommandPolicy>,
         caller: &CallerContext,
         check: &Check,
     ) -> Decision {
@@ -202,6 +239,16 @@ impl Policy {
             Check::HostTool {} | Check::PolicyChange { .. } => {
                 Err(DenialReason::ApprovalUnavailable)
             }
+            Check::HostAction {
+                permission,
+                external_effect,
+                ..
+            } => host_tool::action(caller, scope, *permission, *external_effect),
+            Check::HostShell {
+                command,
+                declared_class,
+                ..
+            } => host_tool::shell(caller, settings, scope, command, *declared_class),
             Check::Path { path, write } => path::check(settings, path, *write)
                 .and_then(|()| hooks.map_or(Ok(()), |h| (h.path)(path, *write)))
                 .and_then(|()| {

@@ -1,7 +1,7 @@
 //! Immutable agent scopes with atomic monotonic sliding-window accounting.
 use crate::{
-    CommandDecision, CommandDenial, CommandGate, CommandPolicy, CommandPolicyId, CommandRequest,
-    CommandScope, Error, Result,
+    CommandAutonomy, CommandDecision, CommandDenial, CommandGate, CommandPolicy, CommandPolicyId,
+    CommandRequest, CommandScope, Error, Result,
 };
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -24,6 +24,19 @@ impl CommandClock for MonotonicClock {
 pub struct CommandBudget {
     actions: Mutex<VecDeque<Duration>>,
     clock: Arc<dyn CommandClock>,
+}
+impl CommandBudget {
+    /// Drop reservations older than the sliding hour; returns the current time.
+    fn prune(&self, actions: &mut VecDeque<Duration>) -> Duration {
+        let now = self.clock.now();
+        while actions
+            .front()
+            .is_some_and(|time| now.saturating_sub(*time) >= Duration::from_secs(3600))
+        {
+            actions.pop_front();
+        }
+        now
+    }
 }
 /// Agent-specific immutable command scope and noncacheable execution budget.
 #[derive(Debug)]
@@ -57,13 +70,7 @@ impl RegisteredCommandPolicy {
             return Ok(decision);
         }
         let mut actions = self.budget.actions.lock().map_err(|_| Error::Faulted)?;
-        let now = self.budget.clock.now();
-        while actions
-            .front()
-            .is_some_and(|time| now.saturating_sub(*time) >= Duration::from_secs(3600))
-        {
-            actions.pop_front();
-        }
+        let now = self.budget.prune(&mut actions);
         if actions.len() >= self.scope.policy().max_actions_per_hour as usize {
             decision.gate = CommandGate::Block;
             decision.denial = Some(CommandDenial::RateLimit);
@@ -71,6 +78,69 @@ impl RegisteredCommandPolicy {
             actions.push_back(now);
         }
         Ok(decision)
+    }
+    /// Gate a command without reserving an action (contract 1.20): the class gate, the
+    /// hidden-execution defence, the protected-path floor and the mode's admission
+    /// rules, but never the hourly budget. A host asking "may this run" before a human
+    /// is consulted uses this, and the run itself reserves through [`Self::check`].
+    /// # Errors
+    /// Rejects oversized command input.
+    pub fn gate(
+        &self,
+        command: &str,
+        declared_class: Option<tinysecurity_bus::CommandClass>,
+    ) -> Result<CommandDecision> {
+        self.scope.evaluate(&CommandRequest {
+            policy_id: CommandPolicyId(String::new()),
+            command: command.to_owned(),
+            declared_class,
+        })
+    }
+    /// Whether the scope's discretionary enforcement is on.
+    #[must_use]
+    pub fn enabled(&self) -> bool {
+        self.scope.policy().enabled
+    }
+    /// The acting tier fixed at registration.
+    #[must_use]
+    pub fn autonomy(&self) -> CommandAutonomy {
+        self.scope.policy().autonomy
+    }
+    /// Configured actions per sliding hour.
+    #[must_use]
+    pub fn max_actions_per_hour(&self) -> u32 {
+        self.scope.policy().max_actions_per_hour
+    }
+    /// Whether the hourly budget is spent, without reserving (contract 1.20). Inert
+    /// while enforcement is disabled. An unreadable ledger reads as spent.
+    #[must_use]
+    pub fn exhausted(&self) -> bool {
+        if !self.enabled() {
+            return false;
+        }
+        let Ok(mut actions) = self.budget.actions.lock() else {
+            return true;
+        };
+        self.budget.prune(&mut actions);
+        actions.len() >= self.max_actions_per_hour() as usize
+    }
+    /// Reserve one action from the hourly budget (contract 1.20); `false` when it is
+    /// spent or the ledger is unreadable. Always `true` while enforcement is disabled.
+    /// Reservations are not refunded.
+    #[must_use]
+    pub fn reserve(&self) -> bool {
+        if !self.enabled() {
+            return true;
+        }
+        let Ok(mut actions) = self.budget.actions.lock() else {
+            return false;
+        };
+        let now = self.budget.prune(&mut actions);
+        if actions.len() >= self.max_actions_per_hour() as usize {
+            return false;
+        }
+        actions.push_back(now);
+        true
     }
     /// Legacy allowlist diagnostic, independent of class gate and budget.
     #[must_use]
