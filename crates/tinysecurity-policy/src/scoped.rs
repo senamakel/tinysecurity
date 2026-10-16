@@ -410,6 +410,18 @@ impl ScopedPolicy {
                     .map(|_| policy.deny_with(reason.clone()))
                     .collect::<Vec<Decision>>(),
             }
+        } else if host_tool::scope_ids(&request.checks)
+            .any(|id| id != &self.registered.command_policy_id)
+        {
+            // Naming another command scope is a mismatched request, as for `evaluate`.
+            CheckResponse {
+                generation: policy.generation(),
+                decisions: request
+                    .checks
+                    .iter()
+                    .map(|_| policy.deny_with(DenialReason::InvalidContext))
+                    .collect::<Vec<Decision>>(),
+            }
         } else {
             let (command, path) = (self.hook(), self.path_hook());
             let hooks = Hooks {

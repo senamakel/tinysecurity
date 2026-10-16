@@ -143,6 +143,40 @@ fn naming_another_command_scope_in_a_scoped_call_is_a_mismatch() -> TestResult {
 }
 
 #[test]
+fn naming_another_command_scope_in_a_scoped_batch_is_a_mismatch() -> TestResult {
+    let mut f = Fixture::new()?;
+    let registered = f.registered("a", true, CommandAutonomy::Full)?;
+    let own = registered.command_policy_id.clone();
+    let id = f.register(registered)?;
+    let other =
+        f.commands
+            .register(command_policy(f.dir.path(), true, CommandAutonomy::Full, 5))?;
+    let batch = |scope: &CommandPolicyId| {
+        f.scoped.get_owned(&id).and_then(|policy| {
+            policy.check(
+                &f.engine,
+                &ScopedCheckRequest {
+                    policy_id: id.clone(),
+                    caller: caller("a", "1"),
+                    checks: vec![acting(false, Some(scope)), acting(false, None)],
+                },
+            )
+        })
+    };
+    let own = batch(&own)?;
+    assert!(own.decisions.iter().all(|d| d.verdict == Verdict::Allow));
+    let other = batch(&other)?;
+    assert_eq!(other.decisions.len(), 2);
+    assert!(other.decisions.iter().all(|d| {
+        d.verdict
+            == Verdict::Deny {
+                reason: DenialReason::InvalidContext,
+            }
+    }));
+    Ok(())
+}
+
+#[test]
 fn scoped_batch_checks_read_the_policys_command_scope() -> TestResult {
     let mut f = Fixture::new()?;
     let read_only = f.registered("a", true, CommandAutonomy::ReadOnly)?;

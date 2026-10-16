@@ -120,6 +120,42 @@ pub fn scope_ids(checks: &[Check]) -> impl Iterator<Item = &tinysecurity_bus::Co
     })
 }
 
+/// A request whose host-tool checks do not agree on one command scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScopeConflict;
+
+/// The one scope every host-tool check of a request names, `Ok(None)` when none names
+/// one. `Err` when the request mixes checks that name a scope with checks that do not,
+/// or names two different scopes: one request is judged under one scope, so a check
+/// that left it out must not silently inherit another check's.
+///
+/// # Errors
+/// [`ScopeConflict`] for a mixed or conflicting request; the caller refuses it.
+pub fn request_scope(
+    checks: &[Check],
+) -> std::result::Result<Option<&tinysecurity_bus::CommandPolicyId>, ScopeConflict> {
+    let mut named = None;
+    let mut unnamed = false;
+    for check in checks {
+        let slot = match check {
+            Check::HostAction { command_policy, .. } | Check::HostShell { command_policy, .. } => {
+                command_policy.as_ref()
+            }
+            _ => continue,
+        };
+        match (slot, named) {
+            (None, _) => unnamed = true,
+            (Some(id), None) => named = Some(id),
+            (Some(id), Some(first)) if id != first => return Err(ScopeConflict),
+            _ => {}
+        }
+    }
+    if unnamed && named.is_some() {
+        return Err(ScopeConflict);
+    }
+    Ok(named)
+}
+
 #[cfg(test)]
 #[path = "host_tool_tests.rs"]
 mod tests;

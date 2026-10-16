@@ -191,22 +191,21 @@ impl PolicyService {
     }
 
     /// The one registered command scope a request's host-tool checks name,
-    /// if any. Two different scopes in one request, or an unknown one, refuse it.
+    /// if any. A request that mixes checks naming a scope with checks that do not,
+    /// names two different scopes, or names an unknown one, is refused.
     fn host_scope(
         &self,
         checks: &[tinysecurity_bus::Check],
     ) -> BusResult<Option<Arc<tinysecurity::RegisteredCommandPolicy>>> {
-        let mut ids = tinysecurity::host_tool_scope_ids(checks);
-        let Some(first) = ids.next() else {
+        let Some(id) = tinysecurity::host_tool_request_scope(checks)
+            .map_err(|_| failure(&tinysecurity_bus::Error::InvalidArguments))?
+        else {
             return Ok(None);
         };
-        if ids.any(|other| other != first) {
-            return Err(failure(&tinysecurity_bus::Error::InvalidArguments));
-        }
         self.commands
             .lock()
             .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
-            .get_owned(first)
+            .get_owned(id)
             .map(Some)
             .map_err(|error| failure(&error))
     }

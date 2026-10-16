@@ -7,6 +7,7 @@ mod host_tool;
 mod path;
 pub use engine::Policy;
 pub use host_tool::scope_ids as host_tool_scope_ids;
+pub use host_tool::{ScopeConflict, request_scope as host_tool_request_scope};
 
 mod path_subtree;
 pub use path_subtree::protected_subtree;

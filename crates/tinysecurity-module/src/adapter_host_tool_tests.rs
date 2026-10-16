@@ -163,6 +163,21 @@ async fn evaluate_refuses_an_unknown_scope_and_two_different_scopes() -> TestRes
         .await
         .is_err()
     );
+    // A check that left the scope out never inherits another check's.
+    let bare = Check::HostShell {
+        command: "touch f".into(),
+        declared_class: None,
+        spend: false,
+        command_policy: None,
+    };
+    assert!(
+        evaluate(
+            &service,
+            request("write_file", vec![acting(false, &a), bare.clone()])
+        )
+        .await
+        .is_err()
+    );
     // The same scope named twice is one scope.
     assert_eq!(
         evaluate(

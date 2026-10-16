@@ -480,6 +480,26 @@ fn spending_is_requested_only_by_acting_actions_and_spending_shell() {
 }
 
 #[test]
+fn a_request_is_judged_under_one_scope_or_none() -> TestResult {
+    let (_, a) = registered(true, CommandAutonomy::Full, 5)?;
+    let (_, b) = registered(true, CommandAutonomy::Full, 5)?;
+    let named = |id: &CommandPolicyId| shell_check("ls", false, Some(id));
+    let bare = || shell_check("ls", false, None);
+    assert_eq!(request_scope(&[]), Ok(None));
+    assert_eq!(request_scope(&[Check::HostTool {}, bare()]), Ok(None));
+    assert_eq!(
+        request_scope(&[named(&a), Check::HostTool {}]),
+        Ok(Some(&a))
+    );
+    assert_eq!(request_scope(&[named(&a), named(&a)]), Ok(Some(&a)));
+    assert_eq!(request_scope(&[named(&a), named(&b)]), Err(ScopeConflict));
+    // A check that left the scope out never inherits another check's.
+    assert_eq!(request_scope(&[named(&a), bare()]), Err(ScopeConflict));
+    assert_eq!(request_scope(&[bare(), named(&a)]), Err(ScopeConflict));
+    Ok(())
+}
+
+#[test]
 fn scope_ids_lists_only_host_tool_checks_that_name_one() -> TestResult {
     let (_, id) = registered(true, CommandAutonomy::Full, 5)?;
     let checks = vec![
