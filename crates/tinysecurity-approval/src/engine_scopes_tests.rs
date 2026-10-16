@@ -630,3 +630,74 @@ async fn retirement_finishes_releasing_before_the_subject_can_register_again() -
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn generation_advance_during_admission_never_publishes_the_stale_scope() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    let owner = Arc::new(owner);
+    fixture.admit_pause.store(1, Ordering::SeqCst);
+    let racing = tokio::spawn({
+        let owner = owner.clone();
+        async move { owner.register_scope(register(7)).await }
+    });
+    fixture.ports_entered.notified().await;
+    owner.advance_generation(2)?;
+    fixture.ports_proceed.notify_one();
+    assert_eq!(
+        racing.await.map_err(|_| Error::Unavailable)?.err(),
+        Some(Error::Denied)
+    );
+    // The admitted port state was undone and the scope is not usable.
+    assert_eq!(
+        *fixture.released.lock().map_err(|_| Error::Unavailable)?,
+        vec![id(7)]
+    );
+    assert!(
+        owner
+            .begin(begin_for(7, "local_diagnostic", None, Origin::Operator))
+            .await
+            .is_err()
+    );
+    // A registration made against the new generation succeeds.
+    let mut fresh = register(7);
+    fresh.scope.generation = 2;
+    assert_eq!(
+        owner.register_scope(fresh).await?.outcome,
+        ApprovalScopeOutcome2::Created
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn generation_advance_while_waiting_for_the_lifecycle_denies_the_registration() -> Result<()>
+{
+    let (fixture, owner) = owner()?;
+    let owner = Arc::new(owner);
+    fixture.admit_pause.store(1, Ordering::SeqCst);
+    let holder = tokio::spawn({
+        let owner = owner.clone();
+        async move { owner.register_scope(register(7)).await }
+    });
+    fixture.ports_entered.notified().await;
+    let waiting = tokio::spawn({
+        let owner = owner.clone();
+        async move { owner.register_scope(register(8)).await }
+    });
+    tokio::task::yield_now().await;
+    owner.advance_generation(2)?;
+    fixture.ports_proceed.notify_one();
+    let _ = holder.await.map_err(|_| Error::Unavailable)?;
+    assert_eq!(
+        waiting.await.map_err(|_| Error::Unavailable)?.err(),
+        Some(Error::Denied)
+    );
+    assert_eq!(
+        fixture
+            .admitted
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .len(),
+        1
+    );
+    Ok(())
+}

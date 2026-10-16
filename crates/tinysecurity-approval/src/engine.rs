@@ -1050,10 +1050,15 @@ impl Engine {
         if !request.grants.is_valid() || !binding::hex(&request.audit_stream_id, 32) {
             return Err(Error::Invalid);
         }
-        if request.scope.generation != self.generation.load(Ordering::SeqCst) {
-            return Err(Error::Denied);
+        self.current_generation(&request.scope)
+    }
+    /// Deny a registration made against a generation that is no longer current.
+    fn current_generation(&self, scope: &ApprovalScope2) -> Result<()> {
+        if scope.generation == self.generation.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err(Error::Denied)
         }
-        Ok(())
     }
     fn receipt(
         scopes: &ScopeTable,
@@ -1083,6 +1088,8 @@ impl Engine {
         // Registration and retirement are serialized, so every check below still
         // holds when the entry is inserted and a failed admission is ours to undo.
         let _lifecycle = self.lifecycle.lock().await;
+        // The generation may have advanced while waiting for the lifecycle.
+        self.current_generation(&candidate.scope)?;
         {
             let scopes = self.scopes.read().map_err(|_| Error::Unavailable)?;
             if let Some(existing) = scopes.by_id.get(&candidate.scope.scope_id) {
@@ -1109,6 +1116,11 @@ impl Engine {
         let stream = candidate.audit_stream_id.clone().unwrap_or_default();
         if let Err(error) = self.ports.admit_scope(&candidate.scope, &stream).await {
             // No live scope holds this subject (checked above), so undoing is safe.
+            let _ = self.ports.release_scope(&candidate.scope).await;
+            return Err(error);
+        }
+        // ...or while the ports admitted the subject; a stale scope never goes live.
+        if let Err(error) = self.current_generation(&candidate.scope) {
             let _ = self.ports.release_scope(&candidate.scope).await;
             return Err(error);
         }

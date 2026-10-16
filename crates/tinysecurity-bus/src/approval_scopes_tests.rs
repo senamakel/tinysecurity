@@ -75,6 +75,13 @@ fn grants_reject_human_only_blank_control_oversized_and_overfull_names() {
         }],
     }));
     assert!(bad(ApprovalGrants2 {
+        tools: vec![],
+        flows: vec![FlowToolGrant2 {
+            flow_id: "flow\nadmin".into(),
+            tool: "shell".into(),
+        }],
+    }));
+    assert!(bad(ApprovalGrants2 {
         tools: (0..=MAX_TOOL_GRANTS2).map(|i| format!("t{i}")).collect(),
         flows: vec![],
     }));

@@ -72,21 +72,20 @@ impl ApprovalGrants2 {
     /// Whether the grants respect every bound and name no human-only tool.
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        let name = |s: &str| {
+        let plain = |s: &str| {
             !s.trim().is_empty()
                 && s.len() <= MAX_GRANT_NAME_BYTES2
                 && !s.chars().any(char::is_control)
-                && !HUMAN_ONLY_TOOLS2.contains(&s)
-                && !s.starts_with("native_")
         };
+        let name =
+            |s: &str| plain(s) && !HUMAN_ONLY_TOOLS2.contains(&s) && !s.starts_with("native_");
         self.tools.len() <= MAX_TOOL_GRANTS2
             && self.flows.len() <= MAX_FLOW_GRANTS2
             && self.tools.iter().all(|t| name(t))
-            && self.flows.iter().all(|g| {
-                name(&g.tool)
-                    && !g.flow_id.trim().is_empty()
-                    && g.flow_id.len() <= MAX_GRANT_NAME_BYTES2
-            })
+            && self
+                .flows
+                .iter()
+                .all(|g| name(&g.tool) && plain(&g.flow_id))
     }
 }
 
