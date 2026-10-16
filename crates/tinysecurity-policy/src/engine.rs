@@ -2,7 +2,7 @@
 use crate::{
     AccessTier, CONTRACT_VERSION, CallerContext, Check, CheckRequest, CheckResponse, Decision,
     DenialReason, Error, EvaluateRequest, ModuleConfig, Origin, POLICY_CHANGE_TOOL, PolicyConfig,
-    PolicyInfo, RegisteredCommandPolicy, Result, Verdict, command, host_tool, names, path,
+    PolicyInfo, RegisteredCommandPolicy, Result, Spent, Verdict, command, host_tool, names, path,
 };
 
 /// Registered command-scope check used instead of the bootstrap allowlist.
@@ -175,28 +175,33 @@ impl Policy {
         Ok(approvable.unwrap_or_else(|| self.allowed()))
     }
     /// Reserve the one action a spending call asked for, once the whole call is allowed
-    /// (contract 1.20): after every check, and after any later gate that can still refuse
-    /// it, so a refused call or an approval request costs nothing. `decision` is returned
-    /// unchanged unless it is an `Allow` that spends and the scope's ledger is spent.
+    /// (contract 1.20): after every check, and after any later gate that can still refuse it.
+    /// The returned [`Spent`] gives the action back if it is dropped, so a gate that refuses
+    /// the call, or an error, after this point costs nothing; commit it when the call is
+    /// going to run. `decision` is returned unchanged, with no reservation, unless it is an
+    /// `Allow` that spends; a spent ledger turns it into `rate_limited`.
     #[must_use]
     pub fn settle_spend(
         &self,
-        scope: Option<&RegisteredCommandPolicy>,
+        scope: Option<&std::sync::Arc<RegisteredCommandPolicy>>,
         checks: &[Check],
         mut decision: Decision,
-    ) -> Decision {
-        if let Some(scope) = scope
-            && decision.verdict == Verdict::Allow
-            && checks.iter().any(host_tool::spends)
-            && !scope.reserve()
-        {
+    ) -> (Decision, Option<Spent>) {
+        let Some(scope) = scope else {
+            return (decision, None);
+        };
+        if decision.verdict != Verdict::Allow || !checks.iter().any(host_tool::spends) {
+            return (decision, None);
+        }
+        let spent = scope.reserve_guarded();
+        if spent.is_none() {
             decision.verdict = Verdict::Deny {
                 reason: DenialReason::RateLimited {
                     max_per_hour: scope.max_actions_per_hour(),
                 },
             };
         }
-        decision
+        (decision, spent)
     }
     /// Evaluate an ordered batch against a single active generation.
     /// # Errors
@@ -209,15 +214,6 @@ impl Policy {
             &request.caller,
             &request.checks,
         ))
-    }
-    /// Give back the action [`Self::settle_spend`] reserved for `checks`, because a later
-    /// gate refused the call after all. A no-op for a call that does not spend.
-    pub fn refund_spend(&self, scope: Option<&RegisteredCommandPolicy>, checks: &[Check]) {
-        if let Some(scope) = scope
-            && checks.iter().any(host_tool::spends)
-        {
-            scope.release();
-        }
     }
     /// An ordered batch whose host-tool checks read a registered command scope (contract
     /// 1.20). Never reserves.

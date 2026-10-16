@@ -3,7 +3,7 @@ use crate::engine::{Hooks, validate_settings};
 use crate::host_tool;
 use crate::scoped_forbidden::effective_forbidden;
 use crate::{
-    CommandPolicyRegistry, PathPolicyRegistry, PathScope, Policy, RegisteredCommandPolicy,
+    CommandPolicyRegistry, PathPolicyRegistry, PathScope, Policy, RegisteredCommandPolicy, Spent,
     scoped_widening,
 };
 use sha2::{Digest, Sha256};
@@ -379,23 +379,18 @@ impl ScopedPolicy {
         })
     }
 
-    /// Reserve the one action a spending host-tool call asked for, after every later
-    /// gate allowed it (contract 1.20); see [`Policy::settle_spend`].
+    /// Reserve the one action a spending host-tool call asked for, after every later gate
+    /// allowed it (contract 1.20); see [`Policy::settle_spend`].
     #[must_use]
     pub fn settle_spend(
         &self,
         policy: &Policy,
         checks: &[Check],
         mut decided: ScopedDecision,
-    ) -> ScopedDecision {
-        decided.decision = policy.settle_spend(Some(&self.commands), checks, decided.decision);
-        decided
-    }
-
-    /// Give back the action [`Self::settle_spend`] reserved, because a later gate refused the
-    /// call after all.
-    pub fn refund_spend(&self, policy: &Policy, checks: &[Check]) {
-        policy.refund_spend(Some(&self.commands), checks);
+    ) -> (ScopedDecision, Option<Spent>) {
+        let (decision, spent) = policy.settle_spend(Some(&self.commands), checks, decided.decision);
+        decided.decision = decision;
+        (decided, spent)
     }
 
     /// Check an ordered batch; bound to this policy, the caller and the checks.

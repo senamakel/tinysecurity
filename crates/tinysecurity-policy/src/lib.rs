@@ -20,7 +20,7 @@ mod command_registry;
 mod command_scope;
 mod command_shell;
 pub use command_registry::{
-    CommandBudget, CommandClock, CommandPolicyRegistry, RegisteredCommandPolicy,
+    CommandBudget, CommandClock, CommandPolicyRegistry, RegisteredCommandPolicy, Spent,
 };
 pub use command_scope::CommandScope;
 

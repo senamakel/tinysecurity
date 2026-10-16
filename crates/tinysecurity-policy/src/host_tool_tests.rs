@@ -92,9 +92,11 @@ fn hosted(
     let policy = Policy::new(ModuleConfig::default())?;
     let scope = registry.get_owned(id)?;
     let decision = policy.evaluate_hosted(Some(&scope), request)?;
-    Ok(policy
-        .settle_spend(Some(&scope), &request.call.checks, decision)
-        .verdict)
+    let (decision, spent) = policy.settle_spend(Some(&scope), &request.call.checks, decision);
+    if let Some(spent) = spent {
+        spent.commit();
+    }
+    Ok(decision.verdict)
 }
 
 fn deny(reason: DenialReason) -> Verdict {
@@ -351,26 +353,70 @@ fn a_declared_class_can_only_raise_the_shell_gate() -> TestResult {
 }
 
 #[test]
-fn a_refused_call_can_give_back_the_action_it_reserved() -> TestResult {
+fn a_reservation_not_committed_is_given_back_and_a_committed_one_is_kept() -> TestResult {
     let (registry, id) = registered(true, CommandAutonomy::Full, 1)?;
     let scope = registry.get_owned(&id)?;
     let policy = Policy::new(ModuleConfig::default())?;
-    let spending = vec![action_check(ToolPermission::Write, false, true, Some(&id))];
-    let reading = vec![action_check(ToolPermission::Write, false, false, Some(&id))];
-    assert!(scope.reserve());
+    let spending = request(
+        "write_file",
+        operator(),
+        vec![action_check(ToolPermission::Write, false, true, Some(&id))],
+    );
+    let dry = policy.evaluate_hosted(Some(&scope), &spending)?;
+    // Dropped, whether by a refusing gate or an early return: the action comes back.
+    let (settled, spent) = policy.settle_spend(Some(&scope), &spending.call.checks, dry.clone());
+    assert_eq!(settled.verdict, Verdict::Allow);
     assert!(scope.exhausted());
-    // Only a call that asked to spend refunds; a peek never touches the ledger.
-    policy.refund_spend(Some(&scope), &reading);
-    assert!(scope.exhausted());
-    policy.refund_spend(None, &spending);
-    assert!(scope.exhausted());
-    policy.refund_spend(Some(&scope), &spending);
+    drop(spent);
     assert!(!scope.exhausted());
-    // Nothing to give back from an empty ledger, or while enforcement is disabled.
-    scope.release();
+    // Committed: the action stays spent.
+    let (_, spent) = policy.settle_spend(Some(&scope), &spending.call.checks, dry);
+    spent.ok_or("reserved")?.commit();
+    assert!(scope.exhausted());
+    Ok(())
+}
+
+#[test]
+fn giving_back_removes_the_callers_own_reservation_not_a_newer_one() -> TestResult {
+    #[derive(Debug, Default)]
+    struct Clock(std::sync::atomic::AtomicU64);
+    impl crate::CommandClock for Clock {
+        fn now(&self) -> std::time::Duration {
+            std::time::Duration::from_secs(self.0.load(std::sync::atomic::Ordering::SeqCst))
+        }
+    }
+    let clock = Arc::new(Clock::default());
+    let mut registry = CommandPolicyRegistry::with_clock(clock.clone());
+    let id = registry.register(scope_policy(true, CommandAutonomy::Full, 2))?;
+    let scope = registry.get_owned(&id)?;
+    clock.0.store(10, std::sync::atomic::Ordering::SeqCst);
+    let first = scope.reserve_guarded().ok_or("reserved")?;
+    clock.0.store(20, std::sync::atomic::Ordering::SeqCst);
+    let second = scope.reserve_guarded().ok_or("reserved")?;
+    assert!(scope.exhausted());
+    // The first call fails its gate after the second reserved.
+    drop(first);
+    second.commit();
     assert!(!scope.exhausted());
+    // The slot the second call kept expires an hour after *its* reservation (t=20), not
+    // after the first call's (t=10).
+    assert!(scope.reserve(), "one slot is free");
+    clock.0.store(3605, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        scope.exhausted(),
+        "the reservation made at t=20 is still inside the window"
+    );
+    clock.0.store(3620, std::sync::atomic::Ordering::SeqCst);
+    assert!(!scope.exhausted());
+    Ok(())
+}
+
+#[test]
+fn disabled_enforcement_has_nothing_to_give_back() -> TestResult {
     let (registry, id) = registered(false, CommandAutonomy::Full, 1)?;
-    registry.get_owned(&id)?.release();
+    let scope = registry.get_owned(&id)?;
+    drop(scope.reserve_guarded().ok_or("reserved")?);
+    assert!(!scope.exhausted());
     Ok(())
 }
 
@@ -418,8 +464,9 @@ fn checking_the_dry_decision_never_reserves_and_settling_reserves_once() -> Test
     }
     assert!(!scope.exhausted());
     let dry = policy.evaluate_hosted(Some(&scope), &call)?;
-    let settled = policy.settle_spend(Some(&scope), &call.call.checks, dry.clone());
+    let (settled, spent) = policy.settle_spend(Some(&scope), &call.call.checks, dry.clone());
     assert_eq!(settled.verdict, Verdict::Allow);
+    spent.ok_or("reserved")?.commit();
     assert!(scope.exhausted());
     // A refusal is returned unchanged and never touches the ledger; so is a
     // call with no scope.
@@ -427,14 +474,10 @@ fn checking_the_dry_decision_never_reserves_and_settling_reserves_once() -> Test
         verdict: deny(DenialReason::Access),
         ..dry.clone()
     };
-    assert_eq!(
-        policy.settle_spend(Some(&scope), &call.call.checks, refused.clone()),
-        refused
-    );
-    assert_eq!(
-        policy.settle_spend(None, &call.call.checks, dry.clone()),
-        dry
-    );
+    let (unchanged, spent) = policy.settle_spend(Some(&scope), &call.call.checks, refused.clone());
+    assert_eq!((unchanged, spent.is_none()), (refused, true));
+    let (unchanged, spent) = policy.settle_spend(None, &call.call.checks, dry.clone());
+    assert_eq!((unchanged, spent.is_none()), (dry, true));
     Ok(())
 }
 

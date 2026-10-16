@@ -340,7 +340,12 @@ impl PolicyService {
                 deny_allow(&mut decision);
             }
             // The action is reserved last, so nothing that refuses the call spends it.
-            Ok(policy.settle_spend(scope.as_deref(), &request.call.checks, decision))
+            let (decision, spent) =
+                policy.settle_spend(scope.as_ref(), &request.call.checks, decision);
+            if let Some(spent) = spent {
+                spent.commit();
+            }
+            Ok(decision)
         })
         .await
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
@@ -377,10 +382,11 @@ impl PolicyService {
         })
         .await
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
-        // Reserved before the audit so the durable event records the final verdict, and
-        // given back below if the audit or the approval gate still refuses the call.
-        let decision = settler.settle_spend(scope.as_deref(), &original.call.checks, decision);
-        let reserved = decision.verdict == tinysecurity_bus::Verdict::Allow;
+        // Reserved before the audit so the durable event records the final verdict. The
+        // guard gives the action back on every early return and when the audit or the
+        // approval gate still refuses the call.
+        let (decision, spent) =
+            settler.settle_spend(scope.as_ref(), &original.call.checks, decision);
         let audit = self
             .audit_permission(
                 serde_json::to_value(&request.request)?,
@@ -394,8 +400,10 @@ impl PolicyService {
         if !audit.permitted || self.approvals.is_some() {
             deny_allow(&mut decision);
         }
-        if reserved && decision.verdict != tinysecurity_bus::Verdict::Allow {
-            settler.refund_spend(scope.as_deref(), &original.call.checks);
+        if let Some(spent) = spent
+            && decision.verdict == tinysecurity_bus::Verdict::Allow
+        {
+            spent.commit();
         }
         Ok(tinysecurity_bus::AuditedResponse2 { decision, audit })
     }
@@ -778,25 +786,21 @@ impl PolicyService {
             verdict: tinysecurity_bus::Verdict::Allow,
             cacheable: false,
         };
-        if matches!(
-            policy
-                .settle_spend(scope.as_deref(), &checks, allowed)
-                .verdict,
-            tinysecurity_bus::Verdict::Deny { .. }
-        ) {
+        let (settled, spent) = policy.settle_spend(scope.as_ref(), &checks, allowed);
+        if matches!(settled.verdict, tinysecurity_bus::Verdict::Deny { .. }) {
             return Err(tinybus::Error::failed("approval denied"));
         }
-        let consumed = self
+        let row = self
             .approvals
             .as_ref()
             .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?
             .consume(request)
             .await
-            .map_err(approval_failure);
-        if consumed.is_err() {
-            policy.refund_spend(scope.as_deref(), &checks);
+            .map_err(approval_failure)?;
+        if let Some(spent) = spent {
+            spent.commit();
         }
-        consumed
+        Ok(row)
     }
     async fn record_execution2(
         &self,
@@ -1084,7 +1088,11 @@ impl PolicyService {
                 deny_allow(&mut decision.decision);
             }
             // The action is reserved last, so nothing that refuses the call spends it.
-            Ok(scope.settle_spend(&policy, &request.call.checks, decision))
+            let (decision, spent) = scope.settle_spend(&policy, &request.call.checks, decision);
+            if let Some(spent) = spent {
+                spent.commit();
+            }
+            Ok(decision)
         })
         .await
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
@@ -1153,11 +1161,11 @@ impl PolicyService {
             caller: request.request.caller.clone(),
             call: request.request.call.clone(),
         })?;
-        // Reserved before the audit so the durable event records the final verdict, and
-        // given back below if the audit or the approval gate still refuses the call.
-        let mut decision =
+        // Reserved before the audit so the durable event records the final verdict. The
+        // guard gives the action back on every early return and when the audit or the
+        // approval gate still refuses the call.
+        let (mut decision, spent) =
             policy_scope.settle_spend(&settler, &request.request.call.checks, decision);
-        let reserved = decision.decision.verdict == tinysecurity_bus::Verdict::Allow;
         let audit = self
             .audit_permission(
                 audited,
@@ -1170,8 +1178,10 @@ impl PolicyService {
         if !audit.permitted || self.approvals.is_some() {
             deny_allow(&mut decision.decision);
         }
-        if reserved && decision.decision.verdict != tinysecurity_bus::Verdict::Allow {
-            policy_scope.refund_spend(&settler, &request.request.call.checks);
+        if let Some(spent) = spent
+            && decision.decision.verdict == tinysecurity_bus::Verdict::Allow
+        {
+            spent.commit();
         }
         // Each use of an audited permission needs its own durable event.
         decision.decision.cacheable = false;

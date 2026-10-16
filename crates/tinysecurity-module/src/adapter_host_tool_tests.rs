@@ -416,3 +416,42 @@ async fn an_audited_spend_the_audit_gate_refuses_is_given_back() -> TestResult {
     task.abort();
     Ok(())
 }
+
+fn ledger_is_spent(
+    service: &PolicyService,
+    scope: &CommandPolicyId,
+) -> std::result::Result<bool, Box<dyn std::error::Error>> {
+    let commands = service.commands.lock().map_err(|_| "ledger")?;
+    Ok(commands.get_owned(scope)?.exhausted())
+}
+
+#[tokio::test]
+async fn a_reservation_is_given_back_when_the_call_errors_after_it() -> TestResult {
+    // No audit client and no approval engine are configured, so the audited and
+    // consuming members fail after the point where the action was reserved.
+    let service = service()?;
+    let scope = register(&service, scope_policy(1, CommandAutonomy::Full)?).await?;
+    let audited = tinysecurity_bus::EvaluateAuditedRequest2 {
+        request: request("write_file", vec![acting(true, &scope)]),
+        audit: AuditCorrelation2 {
+            event_id: "a".repeat(32),
+            expected_tail: 0,
+            generation: 1,
+        },
+    };
+    assert!(service.evaluate_audited2(audited).await.is_err());
+    assert!(!ledger_is_spent(&service, &scope)?);
+    let consume = tinysecurity_bus::ApprovalActionRequest2 {
+        scope_id: "a".repeat(32),
+        request_id: "b".repeat(32),
+        request: request("gmail_send", vec![acting(true, &scope)]),
+        audit: AuditCorrelation2 {
+            event_id: "c".repeat(32),
+            expected_tail: 0,
+            generation: 1,
+        },
+    };
+    assert!(service.consume_approval2(consume).await.is_err());
+    assert!(!ledger_is_spent(&service, &scope)?);
+    Ok(())
+}

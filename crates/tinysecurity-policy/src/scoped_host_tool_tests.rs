@@ -33,10 +33,11 @@ fn decide(
 ) -> std::result::Result<Verdict, Box<dyn std::error::Error>> {
     let scope = f.scoped.get_owned(id)?;
     let decided = scope.evaluate(&f.engine, request)?;
-    Ok(scope
-        .settle_spend(&f.engine, &request.call.checks, decided)
-        .decision
-        .verdict)
+    let (decided, spent) = scope.settle_spend(&f.engine, &request.call.checks, decided);
+    if let Some(spent) = spent {
+        spent.commit();
+    }
+    Ok(decided.decision.verdict)
 }
 
 #[test]

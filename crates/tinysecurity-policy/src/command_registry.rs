@@ -38,6 +38,28 @@ impl CommandBudget {
         now
     }
 }
+/// An action reserved from a scope's hourly ledger by host-tool admission. Dropping it gives
+/// the action back; [`Spent::commit`] keeps it.
+#[derive(Debug)]
+#[must_use = "a dropped reservation is given back"]
+pub struct Spent {
+    scope: Arc<RegisteredCommandPolicy>,
+    at: Duration,
+    committed: bool,
+}
+impl Spent {
+    /// Keep the reservation: the call it was made for is going to run.
+    pub fn commit(mut self) {
+        self.committed = true;
+    }
+}
+impl Drop for Spent {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.scope.release_at(self.at);
+        }
+    }
+}
 /// Agent-specific immutable command scope and noncacheable execution budget.
 #[derive(Debug)]
 pub struct RegisteredCommandPolicy {
@@ -126,31 +148,46 @@ impl RegisteredCommandPolicy {
     }
     /// Reserve one action from the hourly budget (contract 1.20); `false` when it is
     /// spent or the ledger is unreadable. Always `true` while enforcement is disabled.
-    /// Reservations are not refunded.
+    /// Reservations made this way are not refunded.
     #[must_use]
     pub fn reserve(&self) -> bool {
+        self.reserve_at().is_some()
+    }
+    /// Reserve one action and return the instant it was recorded at.
+    fn reserve_at(&self) -> Option<Duration> {
         if !self.enabled() {
-            return true;
+            return Some(Duration::ZERO);
         }
         let Ok(mut actions) = self.budget.actions.lock() else {
-            return false;
+            return None;
         };
         let now = self.budget.prune(&mut actions);
         if actions.len() >= self.max_actions_per_hour() as usize {
-            return false;
+            return None;
         }
         actions.push_back(now);
-        true
+        Some(now)
     }
-    /// Give back the newest reservation (contract 1.20), for a call that reserved its
-    /// action and was then refused by a later gate before it could run. Only the host-tool
-    /// admission refunds; `check` reservations are never refunded.
-    pub fn release(&self) {
+    /// Reserve one action for host-tool admission (contract 1.20): the returned [`Spent`]
+    /// gives it back when dropped, unless [`Spent::commit`]ted, so an early return or an
+    /// error after the reservation never consumes quota for a call that cannot run.
+    #[must_use]
+    pub fn reserve_guarded(self: &Arc<Self>) -> Option<Spent> {
+        self.reserve_at().map(|at| Spent {
+            scope: Arc::clone(self),
+            at,
+            committed: false,
+        })
+    }
+    /// Remove the reservation recorded at `at`, not a newer one another call made.
+    fn release_at(&self, at: Duration) {
         if !self.enabled() {
             return;
         }
-        if let Ok(mut actions) = self.budget.actions.lock() {
-            actions.pop_back();
+        if let Ok(mut actions) = self.budget.actions.lock()
+            && let Some(index) = actions.iter().rposition(|time| *time == at)
+        {
+            actions.remove(index);
         }
     }
     /// Legacy allowlist diagnostic, independent of class gate and budget.
