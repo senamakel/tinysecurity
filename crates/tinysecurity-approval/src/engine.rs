@@ -1527,13 +1527,18 @@ impl Engine {
             return Err(Error::Denied);
         }
         self.grant_still_holds(&request, &row)?;
-        Self::correlation(&request.audit, reg.generation)?;
+        // The loads and audit above awaited; judge the live scope, not the snapshot.
+        let live = self.registration(&request.scope_id)?;
+        Self::current(&live, &row)?;
+        Self::correlation(&request.audit, live.generation)?;
         let previous = row.version;
         row.version = previous.checked_add(1).ok_or(Error::Invalid)?;
         row.state = ApprovalLifecycle2::Reserved;
         row.reservation_id = Some(binding::opaque()?);
         row.audit = request.audit;
         self.persist(Some(previous), &row).await?;
+        // A replacement racing the CAS burns the reservation instead of authorizing it.
+        Self::current(&self.registration(&request.scope_id)?, &row)?;
         self.live(&row)?;
         if native {
             self.native_ack(&row, true)?;

@@ -828,3 +828,35 @@ async fn replacement_and_generation_advance_serialize_on_the_scope_table() -> Re
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn policy_replaced_while_consume_awaits_never_reserves_the_old_approval() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    let owner = Arc::new(owner);
+    owner.register_scope(automatic_scope(7)).await?;
+    let call = begin_for(7, "shell", None, Origin::Operator);
+    let row = owner.begin(call.clone()).await?;
+    assert_eq!(row.state, ApprovalLifecycle2::Approved);
+    fixture.pause_load.store(1, Ordering::SeqCst);
+    let mut act = action(&row, 3);
+    act.scope_id = id(7);
+    act.request = call.request;
+    let racing = tokio::spawn({
+        let owner = owner.clone();
+        async move { owner.consume(act).await }
+    });
+    fixture.loaded.notified().await;
+    // Same posture and grants, new policy reference: the approval belongs to the old one.
+    let mut next = automatic_scope(7);
+    next.scope.policy_ref = "runtime-policy-v2".into();
+    assert_eq!(
+        owner.replace_scope(next)?.outcome,
+        ApprovalScopeOutcome2::Replaced
+    );
+    fixture.release_load.notify_one();
+    assert_eq!(
+        racing.await.map_err(|_| Error::Unavailable)?.err(),
+        Some(Error::Denied)
+    );
+    Ok(())
+}
