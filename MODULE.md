@@ -444,7 +444,7 @@ tier and origin, and a registered command scope's autonomy tier and hourly budge
 typed (`read_only_mode`, `rate_limited { max_per_hour }`, `scheduled_read_only`,
 `high_risk`, plus the existing reasons). Reading the budget never spends it; an
 allowed `spend: true` call reserves one action from the scope's ledger, shared with
-`CheckCommand`, after every later gate allowed it. A request made only of these
+`CheckCommand`, and gives it back if a later gate refuses the call. A request made only of these
 checks is an admission question and can answer `Allow` while approvals are configured.
 
 ## Per-call exact credentials: `RedactWith` (contract 1.16)

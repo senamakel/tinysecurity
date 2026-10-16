@@ -49,15 +49,18 @@ configuration itself; the host registers it as a command scope.
   reserving, then reads the budget. Cron refuses every shell command. Typed reasons:
   `floor`, `read_only_mode`, `command`, `high_risk`, `rate_limited`.
 - `command_policy` names a registered command scope. `Evaluate`, `Check` and the approval
-  members resolve it (an unknown scope, or two different scopes in one request, refuse
-  the request); the scoped members always use the policy's own scope and deny a mismatch
-  (`invalid_context`). Without a scope only the tier, origin and external-effect rules
+  members resolve it. A request names one scope or none: an unknown scope, two different
+  scopes, or checks that name a scope beside checks that do not, refuse the request; the scoped members (`Evaluate` and `Check` alike) always use the policy's own scope and
+  deny a mismatch (`invalid_context`). Without a scope only the tier, origin and external-effect rules
   apply (shell falls back to the bootstrap command rules).
 - Budget: reading never spends. `spend: true` reserves one action from the scope's
-  ledger, once per call, after every check and every later gate (audit, approval,
-  downgrade) allowed it, so a refusal or an approval request costs nothing. An approved
-  spending call reserves at `ConsumeApproval2`. The ledger is the scope's, shared with
-  `CheckCommand`. `Check` batches read the budget and never reserve.
+  ledger, once per call, after every check and after the gates that can still refuse it
+  (the bound-audit downgrade), so a refusal or an approval request costs nothing. An
+  audited call reserves before the audit, so the durable event records the final verdict,
+  and gives the action back if the audit or the approval gate still refuses it. An approved
+  spending call reserves at `ConsumeApproval2` before the once-only consumption, so a
+  spent ledger refuses the run without burning the approval. The ledger is the scope's,
+  shared with `CheckCommand`. `Check` batches read the budget and never reserve.
 - Enforcement disabled on the scope leaves autonomy and budget inert.
 - An `Evaluate` made only of `HostAction`/`HostShell` checks is an admission question:
   it can answer `Allow` when approvals are configured, because the host runs the tool

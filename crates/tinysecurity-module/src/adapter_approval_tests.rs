@@ -247,9 +247,16 @@ fn external_action(instance: u64, scope: &CommandPolicyId) -> EvaluateApprovalRe
     request
 }
 
-#[tokio::test]
-async fn approval_cannot_override_a_command_scope_and_an_approved_action_spends_its_budget()
--> std::result::Result<(), Box<dyn std::error::Error>> {
+/// A module with approvals served the way production serves them, and a proxy to it.
+struct ApprovalFixture {
+    _dir: tempfile::TempDir,
+    _host: Connection,
+    _module: Connection,
+    broker: tokio::task::JoinHandle<tinybus::Result<()>>,
+    proxy: tinybus::Proxy,
+}
+
+async fn approval_fixture() -> std::result::Result<ApprovalFixture, Box<dyn std::error::Error>> {
     let bus = MemoryBus::new();
     let broker = Broker::new().spawn(bus.clone());
     let host = Connection::connect(bus.connect().await?).await?;
@@ -263,14 +270,35 @@ async fn approval_cannot_override_a_command_scope_and_an_approved_action_spends_
     serve_approvals(&host, &module, &clock, &store, &failure, None).await?;
     let module_peer = module.unique_name().ok_or("module peer")?;
     let proxy = host.proxy(module_peer.as_str(), names::OBJECT_PATH, names::INTERFACE)?;
+    Ok(ApprovalFixture {
+        _dir: dir,
+        _host: host,
+        _module: module,
+        broker,
+        proxy,
+    })
+}
 
-    // Read-only autonomy is a hard denial: a human cannot approve it away.
-    let read_only: CommandPolicyId = proxy
+async fn register_scope(
+    proxy: &tinybus::Proxy,
+    autonomy: CommandAutonomy,
+    budget: u32,
+) -> std::result::Result<CommandPolicyId, Box<dyn std::error::Error>> {
+    Ok(proxy
         .call(
             names::methods::REGISTER_COMMAND_POLICY,
-            (host_scope_policy(CommandAutonomy::ReadOnly, 5),),
+            (host_scope_policy(autonomy, budget),),
         )
-        .await?;
+        .await?)
+}
+
+#[tokio::test]
+async fn approval_cannot_override_a_command_scope_and_an_approved_action_spends_its_budget()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let fixture = approval_fixture().await?;
+    let proxy = &fixture.proxy;
+    // Read-only autonomy is a hard denial: a human cannot approve it away.
+    let read_only = register_scope(proxy, CommandAutonomy::ReadOnly, 5).await?;
     assert!(
         proxy
             .call::<EvaluateApprovalResponse2>(
@@ -280,15 +308,9 @@ async fn approval_cannot_override_a_command_scope_and_an_approved_action_spends_
             .await
             .is_err()
     );
-
     // A one-action budget: the approved call spends it when it is consumed, and the
     // next call is refused before a human is asked.
-    let scope: CommandPolicyId = proxy
-        .call(
-            names::methods::REGISTER_COMMAND_POLICY,
-            (host_scope_policy(CommandAutonomy::Full, 1),),
-        )
-        .await?;
+    let scope = register_scope(proxy, CommandAutonomy::Full, 1).await?;
     let approved: EvaluateApprovalResponse2 = proxy
         .call(
             names::methods::EVALUATE_APPROVAL2,
@@ -312,7 +334,68 @@ async fn approval_cannot_override_a_command_scope_and_an_approved_action_spends_
             .is_err(),
         "a spent budget cannot be approved"
     );
-    broker.abort();
+    fixture.broker.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_run_refused_for_a_spent_budget_does_not_burn_its_once_only_approval()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let fixture = approval_fixture().await?;
+    let proxy = &fixture.proxy;
+    let scope = register_scope(proxy, CommandAutonomy::Full, 1).await?;
+    let waiting: EvaluateApprovalResponse2 = proxy
+        .call(
+            names::methods::EVALUATE_APPROVAL2,
+            (external_action(4, &scope),),
+        )
+        .await?;
+    assert_eq!(waiting.decision.verdict, Verdict::Allow);
+    // Another call spends the last action before the approved one runs.
+    let spend = EvaluateRequest {
+        caller: begin(0, 1).request.caller,
+        call: ToolCall {
+            tool: "write_file".into(),
+            arguments_json: "{}".into(),
+            checks: vec![Check::HostAction {
+                permission: ToolPermission::Write,
+                external_effect: false,
+                spend: true,
+                command_policy: Some(scope.clone()),
+            }],
+        },
+    };
+    let other_call: Decision = proxy.call(names::methods::EVALUATE, (spend,)).await?;
+    assert_eq!(other_call.verdict, Verdict::Allow);
+    let mut late = action(&waiting.record, 4, 8);
+    late.request = external_action(4, &scope).request;
+    assert!(
+        proxy
+            .call::<ApprovalRow2>(names::methods::CONSUME_APPROVAL2, (late,))
+            .await
+            .is_err(),
+        "the spent budget refuses the run"
+    );
+    let rows: Vec<ApprovalRow2> = proxy
+        .call(
+            names::methods::LIST_APPROVALS2,
+            (ApprovalRecordRequest2 {
+                scope_id: "a".repeat(32),
+                request_id: String::new(),
+                audit: audit(9),
+            },),
+        )
+        .await?;
+    let row = rows
+        .iter()
+        .find(|row| row.request_id == waiting.record.request_id)
+        .ok_or("approval row listed")?;
+    assert_eq!(
+        row.state,
+        ApprovalLifecycle2::Approved,
+        "a refused run leaves the approval unburned"
+    );
+    fixture.broker.abort();
     Ok(())
 }
 

@@ -347,3 +347,72 @@ async fn a_spending_admission_reserves_only_when_it_is_allowed() -> TestResult {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn an_audited_spend_the_audit_gate_refuses_is_given_back() -> TestResult {
+    let bus = tinybus::transport::memory::MemoryBus::new();
+    let task = tinybus::broker::Broker::new().spawn(bus.clone());
+    let host = Connection::connect(bus.connect().await?).await?;
+    let module = Connection::connect(bus.connect().await?).await?;
+    let audit = |required| -> std::result::Result<_, Box<dyn std::error::Error>> {
+        Ok(Arc::new(crate::callbacks::AuditClient::new(
+            module.clone(),
+            crate::callbacks::PeerBinding::new(
+                host.unique_name().as_ref().map(tinybus::BusName::as_str),
+            )?,
+            AuditConfig2 {
+                scope: SubjectScope {
+                    user: "user".into(),
+                    workspace: "workspace".into(),
+                    agent: "agent".into(),
+                },
+                stream_id: "a".repeat(32),
+                timeout_ms: 100,
+                required,
+                native_path: None,
+                max_bytes: 10000,
+                max_archives: 3,
+                journal_max_bytes: 100_000,
+                journal_max_events: 1000,
+            },
+            tinysecurity::Redactor::new(&RedactorConfig::default())?,
+        )?))
+    };
+    let policy = Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?));
+    // No sink is served, so a required audit cannot commit and refuses the call.
+    let required = service_for(policy.clone(), Some(audit(true)?));
+    let optional = service_for(policy, Some(audit(false)?));
+    let scope = register(&required, scope_policy(1, CommandAutonomy::Full)?).await?;
+    let spending = |event: char| tinysecurity_bus::EvaluateAuditedRequest2 {
+        request: request("write_file", vec![acting(true, &scope)]),
+        audit: AuditCorrelation2 {
+            event_id: event.to_string().repeat(32),
+            expected_tail: 0,
+            generation: 1,
+        },
+    };
+    let ledger = || -> std::result::Result<bool, Box<dyn std::error::Error>> {
+        let commands = required.commands.lock().map_err(|_| "ledger")?;
+        Ok(commands.get_owned(&scope)?.exhausted())
+    };
+    for event in ['a', 'b', 'c'] {
+        let refused = required.evaluate_audited2(spending(event)).await?;
+        assert!(!refused.audit.permitted);
+        assert!(matches!(refused.decision.verdict, Verdict::Deny { .. }));
+        assert!(!ledger()?, "a refused audit gives the action back");
+    }
+    // Where the audit lets the call through, the action is spent once.
+    let allowed = optional.evaluate_audited2(spending('d')).await?;
+    assert!(allowed.audit.permitted);
+    assert_eq!(allowed.decision.verdict, Verdict::Allow);
+    assert!(ledger()?);
+    let spent = optional.evaluate_audited2(spending('e')).await?;
+    assert_eq!(
+        spent.decision.verdict,
+        Verdict::Deny {
+            reason: DenialReason::RateLimited { max_per_hour: 1 }
+        }
+    );
+    task.abort();
+    Ok(())
+}

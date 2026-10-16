@@ -392,6 +392,12 @@ impl ScopedPolicy {
         decided
     }
 
+    /// Give back the action [`Self::settle_spend`] reserved, because a later gate refused the
+    /// call after all.
+    pub fn refund_spend(&self, policy: &Policy, checks: &[Check]) {
+        policy.refund_spend(Some(&self.commands), checks);
+    }
+
     /// Check an ordered batch; bound to this policy, the caller and the checks.
     /// # Errors
     /// Reserved for module failures; denial is a successful result.

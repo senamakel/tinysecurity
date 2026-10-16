@@ -142,6 +142,17 @@ impl RegisteredCommandPolicy {
         actions.push_back(now);
         true
     }
+    /// Give back the newest reservation (contract 1.20), for a call that reserved its
+    /// action and was then refused by a later gate before it could run. Only the host-tool
+    /// admission refunds; `check` reservations are never refunded.
+    pub fn release(&self) {
+        if !self.enabled() {
+            return;
+        }
+        if let Ok(mut actions) = self.budget.actions.lock() {
+            actions.pop_back();
+        }
+    }
     /// Legacy allowlist diagnostic, independent of class gate and budget.
     #[must_use]
     pub fn is_command_allowed(&self, command: &str) -> bool {

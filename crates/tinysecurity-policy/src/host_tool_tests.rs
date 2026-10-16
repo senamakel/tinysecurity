@@ -351,6 +351,30 @@ fn a_declared_class_can_only_raise_the_shell_gate() -> TestResult {
 }
 
 #[test]
+fn a_refused_call_can_give_back_the_action_it_reserved() -> TestResult {
+    let (registry, id) = registered(true, CommandAutonomy::Full, 1)?;
+    let scope = registry.get_owned(&id)?;
+    let policy = Policy::new(ModuleConfig::default())?;
+    let spending = vec![action_check(ToolPermission::Write, false, true, Some(&id))];
+    let reading = vec![action_check(ToolPermission::Write, false, false, Some(&id))];
+    assert!(scope.reserve());
+    assert!(scope.exhausted());
+    // Only a call that asked to spend refunds; a peek never touches the ledger.
+    policy.refund_spend(Some(&scope), &reading);
+    assert!(scope.exhausted());
+    policy.refund_spend(None, &spending);
+    assert!(scope.exhausted());
+    policy.refund_spend(Some(&scope), &spending);
+    assert!(!scope.exhausted());
+    // Nothing to give back from an empty ledger, or while enforcement is disabled.
+    scope.release();
+    assert!(!scope.exhausted());
+    let (registry, id) = registered(false, CommandAutonomy::Full, 1)?;
+    registry.get_owned(&id)?.release();
+    Ok(())
+}
+
+#[test]
 fn a_spent_budget_refuses_shell_before_a_human_is_asked() -> TestResult {
     let (registry, id) = registered(true, CommandAutonomy::Supervised, 1)?;
     let scope = registry.get_owned(&id)?;

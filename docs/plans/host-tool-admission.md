@@ -32,9 +32,10 @@ PR, failing test first, sibling `*_tests.rs`, the four root verification command
 
 ```sh
 cargo fmt --all -- --check
-cargo +1.99 clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings
+cargo build --all-targets --all-features
 cargo test --all-features
-cargo llvm-cov --all-features   # every touched source file at or above 90 percent
+cargo llvm-cov --workspace --all-targets --all-features   # every source file at or above 90 percent
 ```
 
 ## Completion checklist

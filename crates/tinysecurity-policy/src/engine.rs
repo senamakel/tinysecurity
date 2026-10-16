@@ -210,6 +210,15 @@ impl Policy {
             &request.checks,
         ))
     }
+    /// Give back the action [`Self::settle_spend`] reserved for `checks`, because a later
+    /// gate refused the call after all. A no-op for a call that does not spend.
+    pub fn refund_spend(&self, scope: Option<&RegisteredCommandPolicy>, checks: &[Check]) {
+        if let Some(scope) = scope
+            && checks.iter().any(host_tool::spends)
+        {
+            scope.release();
+        }
+    }
     /// An ordered batch whose host-tool checks read a registered command scope (contract
     /// 1.20). Never reserves.
     #[must_use]
