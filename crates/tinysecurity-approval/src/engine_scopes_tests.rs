@@ -701,3 +701,52 @@ async fn generation_advance_while_waiting_for_the_lifecycle_denies_the_registrat
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn revoking_a_grant_blocks_consumption_of_its_unconsumed_approval() -> Result<()> {
+    let (_, owner) = owner()?;
+    let mut req = register(7);
+    req.grants = grants(&["shell"], &[]);
+    owner.register_scope(req).await?;
+    let call = begin_for(7, "shell", None, Origin::Operator);
+    let row = owner.begin(call.clone()).await?;
+    assert_eq!(row.state, ApprovalLifecycle2::Approved);
+    // The grant is removed before the approved row is consumed.
+    owner.replace_scope(register(7))?;
+    let mut act = action(&row, 3);
+    act.scope_id = id(7);
+    act.request = call.request;
+    assert_eq!(owner.consume(act).await.err(), Some(Error::Denied));
+    Ok(())
+}
+
+#[tokio::test]
+async fn grant_revoked_while_the_ports_await_never_publishes_an_approval() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    let owner = Arc::new(owner);
+    let mut req = register(7);
+    req.grants = grants(&["shell"], &[]);
+    owner.register_scope(req).await?;
+    fixture.pause_load.store(1, Ordering::SeqCst);
+    let racing = tokio::spawn({
+        let owner = owner.clone();
+        async move {
+            owner
+                .begin(begin_for(7, "shell", None, Origin::Operator))
+                .await
+        }
+    });
+    fixture.loaded.notified().await;
+    owner.replace_scope(register(7))?;
+    fixture.release_load.notify_one();
+    assert_eq!(
+        racing.await.map_err(|_| Error::Unavailable)?.err(),
+        Some(Error::Denied)
+    );
+    // Asking again under the replaced scope needs a human.
+    let again = owner
+        .begin(begin_for(7, "shell", None, Origin::Operator))
+        .await?;
+    assert_eq!(again.state, ApprovalLifecycle2::Pending);
+    Ok(())
+}

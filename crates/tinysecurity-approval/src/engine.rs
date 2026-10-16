@@ -504,6 +504,10 @@ impl Engine {
         if reg.generation != self.generation.load(Ordering::SeqCst) {
             return Err(Error::Denied);
         }
+        // A grant revoked while the ports were awaited must not publish an approval.
+        if granted.is_some() && !Arc::ptr_eq(&entry, &self.entry(&request.scope_id)?) {
+            return Err(Error::Denied);
+        }
         let now = self.now()?;
         if reusable
             .as_ref()
@@ -1452,6 +1456,28 @@ impl Engine {
             acknowledgement,
         })
     }
+    /// A row approved by a host grant is only consumable while a grant still covers
+    /// the call; replacing the scope without it revokes unconsumed approvals.
+    fn grant_still_holds(
+        &self,
+        request: &ApprovalActionRequest2,
+        row: &ApprovalRow2,
+    ) -> Result<()> {
+        if !matches!(
+            row.attribution.as_deref(),
+            Some("auto:tool-grant" | "auto:flow-grant")
+        ) {
+            return Ok(());
+        }
+        let entry = self.entry(&request.scope_id)?;
+        entry
+            .grant(
+                &request.request.call.tool,
+                request.request.caller.flow.as_deref(),
+            )
+            .map(|_| ())
+            .ok_or(Error::Denied)
+    }
     async fn consume_inner(
         &self,
         request: ApprovalActionRequest2,
@@ -1476,6 +1502,7 @@ impl Engine {
         if row.state != ApprovalLifecycle2::Approved || row.host_instance != self.instance {
             return Err(Error::Denied);
         }
+        self.grant_still_holds(&request, &row)?;
         Self::correlation(&request.audit, reg.generation)?;
         let previous = row.version;
         row.version = previous.checked_add(1).ok_or(Error::Invalid)?;
