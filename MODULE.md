@@ -412,6 +412,26 @@ tools and `native_*`, and never beside `Unknown` or `PolicyChange`. Audit
 correlations stay host-allocated (`AuditCorrelation2.event_id` and the tail it
 tracks per stream); the module does not mint them.
 
+### Subject handles and unbound members (contract 1.18)
+
+Additive: a 1.17 host keeps working against a 1.18 module (its wire shapes do not
+change), and a 1.18 host refuses a 1.17 module.
+
+A registration (`RegisterApprovalScopeRequest2.report_handle`) can ask the receipt
+(`ApprovalScopeReceipt2.scope_handle`) to carry the sanitized subject handle the module
+sends in every host callback (`ApprovalStore2`, `AuditSink2`, `ApprovalPrompt2`) for
+that registration. A host that serves many subjects keys its stores by it, so it reads
+the handle from the receipt instead of reproducing the derivation. A request that does
+not ask, and every retirement, gets the 1.17 receipt without the field.
+
+Configuring approvals no longer refuses the filesystem, command and egress members
+(`ValidatePath`, `ValidateParent`, `CheckPath`, `CheckCommand`, `ScopedUrlGuard`,
+`ScopedEgressCheck`, `ConsumeEgressAuthorization`). They are separate permissions that
+never ask a human, so only a required audit (a durable event per permission) refuses
+them. The tool-permission members (`Evaluate`, `Check` and their scoped and audited
+forms) still cannot return `Allow` once approvals are configured, because a tool call
+must go through the durable lifecycle.
+
 ## Per-call exact credentials: `RedactWith` (contract 1.16)
 
 Additive: a 1.15 host keeps working against a 1.16 module, and a 1.16 host

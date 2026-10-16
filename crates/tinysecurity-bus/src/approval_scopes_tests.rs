@@ -102,11 +102,26 @@ fn register_request_wire_is_strict_defaults_grants_and_redacts_debug() -> TestRe
         scope: scope(),
         grants: ApprovalGrants2::default(),
         audit_stream_id: "b".repeat(32),
+        report_handle: false,
     };
     let mut value = serde_json::to_value(&request)?;
+    assert!(
+        value.get("report_handle").is_none(),
+        "a request that does not ask keeps its 1.17 wire shape"
+    );
     assert_eq!(
         serde_json::from_value::<RegisterApprovalScopeRequest2>(value.clone())?,
         request
+    );
+    let asking = RegisterApprovalScopeRequest2 {
+        report_handle: true,
+        ..request.clone()
+    };
+    let asked = serde_json::to_value(&asking)?;
+    assert_eq!(asked["report_handle"], true);
+    assert_eq!(
+        serde_json::from_value::<RegisterApprovalScopeRequest2>(asked)?,
+        asking
     );
     value.as_object_mut().ok_or("object")?.remove("grants");
     assert_eq!(
@@ -147,17 +162,35 @@ fn retire_and_receipt_wire_round_trip() -> TestResult {
     );
     let receipt = ApprovalScopeReceipt2 {
         scope_id: "a".repeat(32),
+        scope_handle: Some(SubjectScope {
+            user: "b".repeat(64),
+            workspace: "c".repeat(64),
+            agent: "d".repeat(64),
+        }),
         generation: 3,
         outcome: ApprovalScopeOutcome2::Replaced,
         live_scopes: 2,
     };
     let value = serde_json::to_value(&receipt)?;
     assert_eq!(value["outcome"], "replaced");
+    assert_eq!(value["scope_handle"]["agent"], "d".repeat(64));
     assert_eq!(
         serde_json::from_value::<ApprovalScopeReceipt2>(value)?,
         receipt
     );
     assert_eq!(format!("{receipt:?}"), "ApprovalScopeReceipt2([REDACTED])");
+    // An older host's receipt keeps its shape: no handle is written unless asked for,
+    // and a receipt without one still decodes.
+    let quiet = ApprovalScopeReceipt2 {
+        scope_handle: None,
+        ..receipt.clone()
+    };
+    let quiet_value = serde_json::to_value(&quiet)?;
+    assert!(quiet_value.get("scope_handle").is_none());
+    assert_eq!(
+        serde_json::from_value::<ApprovalScopeReceipt2>(quiet_value)?,
+        quiet
+    );
     for outcome in ["created", "unchanged", "replaced", "retired"] {
         assert!(serde_json::from_value::<ApprovalScopeOutcome2>(outcome.into()).is_ok());
     }

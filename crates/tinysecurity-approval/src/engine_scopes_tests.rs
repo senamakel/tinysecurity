@@ -28,6 +28,7 @@ fn register(n: u64) -> RegisterApprovalScopeRequest2 {
         scope: scope(n),
         grants: ApprovalGrants2::default(),
         audit_stream_id: STREAM.into(),
+        report_handle: false,
     }
 }
 fn begin_for(n: u64, tool: &str, flow: Option<&str>, origin: Origin) -> EvaluateApprovalRequest2 {
@@ -269,6 +270,7 @@ async fn init_scope_can_be_replaced_and_keeps_the_base_stream() -> Result<()> {
         scope: operator,
         grants: ApprovalGrants2::default(),
         audit_stream_id: STREAM.into(),
+        report_handle: false,
     })?;
     assert_eq!(receipt.outcome, ApprovalScopeOutcome2::Replaced);
     assert_eq!(
@@ -983,5 +985,34 @@ async fn grant_revoked_while_the_approval_is_published_is_not_returned() -> Resu
         racing.await.map_err(|_| Error::Unavailable)?.err(),
         Some(Error::Denied)
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_receipt_reports_the_subject_handle_only_when_asked() -> Result<()> {
+    let (_fixture, owner) = owner()?;
+    let handle = binding::scope_handle(&subject(21))?;
+    let quiet = owner.register_scope(register(21)).await?;
+    assert_eq!(quiet.outcome, ApprovalScopeOutcome2::Created);
+    assert!(quiet.scope_handle.is_none(), "an older host never asked");
+
+    let mut asking = register(21);
+    asking.report_handle = true;
+    let same = owner.register_scope(asking.clone()).await?;
+    assert_eq!(same.outcome, ApprovalScopeOutcome2::Unchanged);
+    assert_eq!(same.scope_handle, Some(handle.clone()));
+
+    asking.grants.tools = vec!["shell".into()];
+    let replaced = owner.replace_scope(asking)?;
+    assert_eq!(replaced.outcome, ApprovalScopeOutcome2::Replaced);
+    assert_eq!(replaced.scope_handle, Some(handle));
+
+    let retired = owner
+        .retire_scope(RetireApprovalScopeRequest2 {
+            scope_id: register(21).scope.scope_id,
+        })
+        .await?;
+    assert_eq!(retired.outcome, ApprovalScopeOutcome2::Retired);
+    assert!(retired.scope_handle.is_none(), "a retirement reports none");
     Ok(())
 }

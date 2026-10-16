@@ -1083,12 +1083,16 @@ impl Engine {
     }
     fn receipt(
         scopes: &ScopeTable,
-        scope_id: &str,
+        scope: &ApprovalScope2,
         generation: u64,
         outcome: ApprovalScopeOutcome2,
+        report_handle: bool,
     ) -> Result<ApprovalScopeReceipt2> {
         Ok(ApprovalScopeReceipt2 {
-            scope_id: scope_id.into(),
+            scope_id: scope.scope_id.clone(),
+            scope_handle: report_handle
+                .then(|| binding::scope_handle(&scope.subject))
+                .transpose()?,
             generation,
             outcome,
             live_scopes: u32::try_from(scopes.by_id.len()).map_err(|_| Error::Invalid)?,
@@ -1105,6 +1109,7 @@ impl Engine {
         request: RegisterApprovalScopeRequest2,
     ) -> Result<ApprovalScopeReceipt2> {
         self.validate_runtime(&request)?;
+        let report = request.report_handle;
         let candidate = ScopeEntry::runtime(request);
         // Registration and retirement are serialized, so every check below still
         // holds when the entry is inserted and a failed admission is ours to undo.
@@ -1119,9 +1124,10 @@ impl Engine {
                 {
                     Self::receipt(
                         &scopes,
-                        &candidate.scope.scope_id,
+                        &candidate.scope,
                         candidate.scope.generation,
                         ApprovalScopeOutcome2::Unchanged,
+                        report,
                     )
                 } else {
                     Err(Error::Conflict)
@@ -1146,10 +1152,15 @@ impl Engine {
         let created = {
             let mut scopes = self.scopes.write().map_err(|_| Error::Unavailable)?;
             self.current_generation(&candidate.scope).map(|()| {
-                let (id, generation) =
-                    (candidate.scope.scope_id.clone(), candidate.scope.generation);
+                let (scope, generation) = (candidate.scope.clone(), candidate.scope.generation);
                 scopes.insert(candidate);
-                Self::receipt(&scopes, &id, generation, ApprovalScopeOutcome2::Created)
+                Self::receipt(
+                    &scopes,
+                    &scope,
+                    generation,
+                    ApprovalScopeOutcome2::Created,
+                    report,
+                )
             })
         };
         match created {
@@ -1171,6 +1182,7 @@ impl Engine {
         request: RegisterApprovalScopeRequest2,
     ) -> Result<ApprovalScopeReceipt2> {
         self.validate_runtime(&request)?;
+        let report = request.report_handle;
         let candidate = ScopeEntry::runtime(request);
         let mut scopes = self.scopes.write().map_err(|_| Error::Unavailable)?;
         // `advance_generation` takes this lock too, so the check is the linearization
@@ -1189,7 +1201,7 @@ impl Engine {
         {
             return Err(Error::Denied);
         }
-        let (id, generation) = (candidate.scope.scope_id.clone(), candidate.scope.generation);
+        let (scope, generation) = (candidate.scope.clone(), candidate.scope.generation);
         let same = existing.same_posture(&candidate);
         if !same {
             // Keep the original stream owner: init scopes stay on the base stream.
@@ -1199,13 +1211,14 @@ impl Engine {
         }
         Self::receipt(
             &scopes,
-            &id,
+            &scope,
             generation,
             if same {
                 ApprovalScopeOutcome2::Unchanged
             } else {
                 ApprovalScopeOutcome2::Replaced
             },
+            report,
         )
     }
     /// Remove a runtime scope. Calls already holding it finish; every later call
@@ -1240,9 +1253,10 @@ impl Engine {
         let scopes = self.scopes.read().map_err(|_| Error::Unavailable)?;
         Self::receipt(
             &scopes,
-            &request.scope_id,
+            &removed.scope,
             0,
             ApprovalScopeOutcome2::Retired,
+            false,
         )
     }
     fn correlation(audit: &AuditCorrelation2, generation: u64) -> Result<()> {
