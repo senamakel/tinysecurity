@@ -282,6 +282,9 @@ struct NativeIntent {
 /// Immutable subject engine. Host-instance ownership prevents orphan execution.
 pub struct Engine {
     scopes: RwLock<ScopeTable>,
+    /// Held across the ports' awaits so registration and retirement of subjects
+    /// never interleave; replacement is atomic under the table lock alone.
+    lifecycle: tokio::sync::Mutex<()>,
     ports: Arc<dyn Ports>,
     clock: Arc<dyn Clock>,
     redactor: RwLock<Redactor>,
@@ -334,6 +337,7 @@ impl Engine {
         let time = (wall, clock.monotonic_ms(), wall, false);
         Ok(Self {
             scopes: RwLock::new(entries),
+            lifecycle: tokio::sync::Mutex::new(()),
             ports,
             clock,
             redactor: RwLock::new(redactor),
@@ -450,8 +454,9 @@ impl Engine {
         request: EvaluateApprovalRequest2,
         deadline: Option<u64>,
     ) -> Result<ApprovalRow2> {
+        // One snapshot: posture, policy reference and grants never mix replacements.
         let entry = self.entry(&request.scope_id)?;
-        let reg = self.registration(&request.scope_id)?;
+        let reg = self.registered(&entry);
         let (bound, args_redacted, external_effect) =
             binding::original(&reg, &request.request, &self.redactor()?)?;
         let rule = tinysecurity_auto::rules::evaluate(&reg, &bound.origin, external_effect);
@@ -1011,10 +1016,15 @@ impl Engine {
             .cloned()
             .ok_or(Error::Denied)
     }
-    fn registration(&self, id: &str) -> Result<ApprovalScope2> {
-        let mut reg = self.entry(id)?.scope.clone();
+    /// The registration of one snapshot, bound to the engine's current generation.
+    fn registered(&self, entry: &ScopeEntry) -> ApprovalScope2 {
+        let mut reg = entry.scope.clone();
         reg.generation = self.generation.load(Ordering::SeqCst);
-        Ok(reg)
+        reg
+    }
+    fn registration(&self, id: &str) -> Result<ApprovalScope2> {
+        let entry = self.entry(id)?;
+        Ok(self.registered(&entry))
     }
     fn validate_scope(scope: &ApprovalScope2) -> Result<()> {
         if scope.scope_id.len() != 32
@@ -1070,6 +1080,9 @@ impl Engine {
     ) -> Result<ApprovalScopeReceipt2> {
         self.validate_runtime(&request)?;
         let candidate = ScopeEntry::runtime(request);
+        // Registration and retirement are serialized, so every check below still
+        // holds when the entry is inserted and a failed admission is ours to undo.
+        let _lifecycle = self.lifecycle.lock().await;
         {
             let scopes = self.scopes.read().map_err(|_| Error::Unavailable)?;
             if let Some(existing) = scopes.by_id.get(&candidate.scope.scope_id) {
@@ -1094,17 +1107,12 @@ impl Engine {
             }
         }
         let stream = candidate.audit_stream_id.clone().unwrap_or_default();
-        self.ports.admit_scope(&candidate.scope, &stream).await?;
+        if let Err(error) = self.ports.admit_scope(&candidate.scope, &stream).await {
+            // No live scope holds this subject (checked above), so undoing is safe.
+            let _ = self.ports.release_scope(&candidate.scope).await;
+            return Err(error);
+        }
         let mut scopes = self.scopes.write().map_err(|_| Error::Unavailable)?;
-        // The ports awaited with no lock held, so re-check what another call may have won.
-        if scopes.by_id.len() >= MAX_APPROVAL_SCOPES2 {
-            return Err(Error::Unavailable);
-        }
-        if scopes.by_id.contains_key(&candidate.scope.scope_id)
-            || scopes.holds_subject(&candidate.scope)
-        {
-            return Err(Error::Conflict);
-        }
         let (id, generation) = (candidate.scope.scope_id.clone(), candidate.scope.generation);
         scopes.insert(candidate);
         Self::receipt(&scopes, &id, generation, ApprovalScopeOutcome2::Created)
@@ -1161,6 +1169,7 @@ impl Engine {
         &self,
         request: RetireApprovalScopeRequest2,
     ) -> Result<ApprovalScopeReceipt2> {
+        let _lifecycle = self.lifecycle.lock().await;
         let removed = self
             .scopes
             .write()

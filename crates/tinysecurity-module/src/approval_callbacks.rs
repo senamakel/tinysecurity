@@ -239,10 +239,11 @@ impl Ports for ApprovalClients {
         let handle = tinysecurity::approval::scope_handle(&scope.subject)?;
         let client = Arc::new(self.runtime_client(scope, audit_stream_id)?);
         self.store.admit(handle.clone())?;
+        // The engine serializes lifecycles, so an existing client is stale (for
+        // example after a failed release) and must not keep another stream.
         let mut audit = self.audit.write().map_err(|_| Error::Unavailable)?;
-        if !audit.iter().any(|(s, _)| s == &handle) {
-            audit.push((handle, client));
-        }
+        audit.retain(|(s, _)| s != &handle);
+        audit.push((handle, client));
         Ok(())
     }
     async fn release_scope(&self, scope: &ApprovalScope2) -> Result<()> {

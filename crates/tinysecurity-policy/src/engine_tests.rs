@@ -189,3 +189,31 @@ fn host_tool_never_relaxes_other_checks_and_rejects_reserved_or_unmarked_calls()
     );
     Ok(())
 }
+
+#[test]
+fn host_tool_marker_never_masks_a_later_hard_denial() -> Result<()> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    let hard = |checks| verdict(&policy, &host_call("file_read", checks));
+    let floor = Check::Path {
+        path: "/root/.ssh/id_rsa".into(),
+        write: false,
+    };
+    let marker_first = hard(vec![Check::HostTool {}, floor.clone()])?;
+    let marker_last = hard(vec![floor, Check::HostTool {}])?;
+    assert_eq!(marker_first, marker_last);
+    assert!(matches!(marker_first, Verdict::Deny { .. }));
+    assert_ne!(
+        marker_first,
+        Verdict::Deny {
+            reason: DenialReason::ApprovalUnavailable
+        }
+    );
+    // Without a concrete denial the marker still asks for approval, wherever it is.
+    assert_eq!(
+        hard(vec![Check::HostTool {}, Check::LocalDiagnostic {}])?,
+        Verdict::Deny {
+            reason: DenialReason::ApprovalUnavailable
+        }
+    );
+    Ok(())
+}

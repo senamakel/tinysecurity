@@ -47,10 +47,18 @@ struct Fixture {
     released: Mutex<Vec<String>>,
     admit_fails: AtomicU64,
     release_fails: AtomicU64,
+    admit_pause: AtomicU64,
+    release_pause: AtomicU64,
+    ports_entered: tokio::sync::Notify,
+    ports_proceed: tokio::sync::Notify,
 }
 #[async_trait::async_trait]
 impl Ports for Fixture {
     async fn admit_scope(&self, scope: &ApprovalScope2, audit_stream_id: &str) -> Result<()> {
+        if self.admit_pause.swap(0, Ordering::SeqCst) != 0 {
+            self.ports_entered.notify_one();
+            self.ports_proceed.notified().await;
+        }
         if self.admit_fails.load(Ordering::SeqCst) != 0 {
             return Err(Error::Unavailable);
         }
@@ -61,6 +69,10 @@ impl Ports for Fixture {
         Ok(())
     }
     async fn release_scope(&self, scope: &ApprovalScope2) -> Result<()> {
+        if self.release_pause.swap(0, Ordering::SeqCst) != 0 {
+            self.ports_entered.notify_one();
+            self.ports_proceed.notified().await;
+        }
         if self.release_fails.load(Ordering::SeqCst) != 0 {
             return Err(Error::Unavailable);
         }

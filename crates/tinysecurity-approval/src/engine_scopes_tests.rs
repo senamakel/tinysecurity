@@ -504,3 +504,129 @@ fn init_rejects_duplicate_identities_and_duplicate_subjects() {
     same_subject.scopes.push(twin);
     assert_eq!(build(same_subject).err(), Some(Error::Invalid));
 }
+
+#[tokio::test]
+async fn racing_registrations_of_one_subject_admit_exactly_one() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    let owner = Arc::new(owner);
+    fixture.admit_pause.store(1, Ordering::SeqCst);
+    let first = tokio::spawn({
+        let owner = owner.clone();
+        async move { owner.register_scope(register(7)).await }
+    });
+    fixture.ports_entered.notified().await;
+    // Same subject, another identity and stream, while the first is mid-admission.
+    let mut rival = register(7);
+    rival.scope.scope_id = id(8);
+    rival.audit_stream_id = "6".repeat(32);
+    let second = tokio::spawn({
+        let owner = owner.clone();
+        async move { owner.register_scope(rival).await }
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        !second.is_finished(),
+        "the rival waits for the first lifecycle"
+    );
+    fixture.ports_proceed.notify_one();
+    assert_eq!(
+        first.await.map_err(|_| Error::Unavailable)??.outcome,
+        ApprovalScopeOutcome2::Created
+    );
+    assert_eq!(
+        second.await.map_err(|_| Error::Unavailable)?.err(),
+        Some(Error::Conflict)
+    );
+    // The ports only ever saw the winner, never the loser's stream.
+    assert_eq!(
+        *fixture.admitted.lock().map_err(|_| Error::Unavailable)?,
+        vec![(id(7), STREAM.to_owned())]
+    );
+    assert!(
+        fixture
+            .released
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_admission_is_undone_and_leaves_no_scope() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    fixture.admit_fails.store(1, Ordering::SeqCst);
+    assert_eq!(
+        owner.register_scope(register(7)).await.err(),
+        Some(Error::Unavailable)
+    );
+    // The failed attempt asked the ports to forget the subject, and none is live.
+    fixture.admit_fails.store(0, Ordering::SeqCst);
+    assert_eq!(
+        *fixture.released.lock().map_err(|_| Error::Unavailable)?,
+        vec![id(7)]
+    );
+    assert!(
+        owner
+            .begin(begin_for(7, "local_diagnostic", None, Origin::Operator))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        owner.register_scope(register(7)).await?.outcome,
+        ApprovalScopeOutcome2::Created
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn retirement_finishes_releasing_before_the_subject_can_register_again() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    let owner = Arc::new(owner);
+    owner.register_scope(register(7)).await?;
+    fixture.release_pause.store(1, Ordering::SeqCst);
+    let retire = tokio::spawn({
+        let owner = owner.clone();
+        async move {
+            owner
+                .retire_scope(RetireApprovalScopeRequest2 { scope_id: id(7) })
+                .await
+        }
+    });
+    fixture.ports_entered.notified().await;
+    let mut again = register(7);
+    again.scope.scope_id = id(8);
+    let registered = tokio::spawn({
+        let owner = owner.clone();
+        async move { owner.register_scope(again).await }
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        !registered.is_finished(),
+        "re-registration waits for the release"
+    );
+    fixture.ports_proceed.notify_one();
+    assert_eq!(
+        retire.await.map_err(|_| Error::Unavailable)??.outcome,
+        ApprovalScopeOutcome2::Retired
+    );
+    assert_eq!(
+        registered.await.map_err(|_| Error::Unavailable)??.outcome,
+        ApprovalScopeOutcome2::Created
+    );
+    // Release happened first, then the replacement was admitted and stays live.
+    assert_eq!(
+        *fixture.released.lock().map_err(|_| Error::Unavailable)?,
+        vec![id(7)]
+    );
+    assert_eq!(
+        fixture
+            .admitted
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .last()
+            .map(|a| a.0.clone()),
+        Some(id(8))
+    );
+    Ok(())
+}

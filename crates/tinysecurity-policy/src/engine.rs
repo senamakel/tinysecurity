@@ -139,13 +139,21 @@ impl Policy {
         if let Some(reason) = scan_denial(&scan.verdict) {
             return Ok(self.denied(reason));
         }
+        // The host-tool marker only says "a human must approve". Every concrete
+        // check runs first, so a later hard denial is never masked by the marker.
+        let mut marked = None;
         for check in &request.call.checks {
             let decision = self.one(settings, hooks, &request.caller, check);
-            if decision.verdict != Verdict::Allow {
-                return Ok(decision);
+            if decision.verdict == Verdict::Allow {
+                continue;
             }
+            if matches!(check, Check::HostTool {}) {
+                marked.get_or_insert(decision);
+                continue;
+            }
+            return Ok(decision);
         }
-        Ok(self.allowed())
+        Ok(marked.unwrap_or_else(|| self.allowed()))
     }
     /// Evaluate an ordered batch against a single active generation.
     /// # Errors
