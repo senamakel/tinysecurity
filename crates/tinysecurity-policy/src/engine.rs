@@ -145,6 +145,14 @@ impl Policy {
                         .checks
                         .iter()
                         .all(|c| !matches!(c, Check::Unknown { .. } | Check::PolicyChange { .. }))
+                        // A `Command` check reserves its own action, so a call that also asks
+                        // a host check to spend would reserve twice.
+                        && !(request.call.checks.iter().any(host_tool::spends)
+                            && request
+                                .call
+                                .checks
+                                .iter()
+                                .any(|c| matches!(c, Check::Command { .. })))
                 }
                 _ => false,
             };
@@ -285,14 +293,16 @@ impl Policy {
                 command,
                 declared_class,
                 ..
-            } => host_tool::shell(
-                caller,
-                settings,
-                scope,
-                hooks.map_or(&[], |hooks| hooks.classes),
-                command,
-                *declared_class,
-            ),
+            } => self.scan_command(command).and_then(|()| {
+                host_tool::shell(
+                    caller,
+                    settings,
+                    scope,
+                    hooks.map_or(&[], |hooks| hooks.classes),
+                    command,
+                    *declared_class,
+                )
+            }),
             Check::Path { path, write } => path::check(settings, path, *write)
                 .and_then(|()| hooks.map_or(Ok(()), |h| (h.path)(path, *write)))
                 .and_then(|()| {
@@ -304,24 +314,25 @@ impl Policy {
                         Ok(())
                     }
                 }),
-            Check::Command { command } => self
-                .redactor
-                .scan_prompt(&crate::ScanPromptRequest {
-                    text: command.clone(),
-                })
-                .map_err(|_| DenialReason::Content)
-                .and_then(|scan| match scan_denial(&scan.verdict) {
-                    Some(reason) => Err(reason),
-                    None => match hooks {
-                        Some(hooks) => (hooks.command)(command),
-                        None => command::check(settings, command),
-                    },
-                }),
+            Check::Command { command } => self.scan_command(command).and_then(|()| match hooks {
+                Some(hooks) => (hooks.command)(command),
+                None => command::check(settings, command),
+            }),
         };
         match result {
             Ok(()) => self.allowed(),
             Err(reason) => self.denied(reason),
         }
+    }
+    /// The semantic scan every shell command text passes before its class is judged.
+    fn scan_command(&self, command: &str) -> std::result::Result<(), DenialReason> {
+        let scan = self
+            .redactor
+            .scan_prompt(&crate::ScanPromptRequest {
+                text: command.to_owned(),
+            })
+            .map_err(|_| DenialReason::Content)?;
+        scan_denial(&scan.verdict).map_or(Ok(()), Err)
     }
     fn allowed(&self) -> Decision {
         Decision {

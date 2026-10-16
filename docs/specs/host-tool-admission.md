@@ -73,6 +73,11 @@ configuration itself; the host registers it as a command scope.
 
 ## Invariants and constraints
 
+- A call never carries both a `Command` check and a spending host check: `Command` reserves its
+  own action, so the pair would reserve twice. Such a call is `unsupported_effect`.
+- Every shell command text, `HostShell` included, passes the semantic scan before its class is
+  judged.
+
 - Checks are derived by the trusted host from the tool it will execute, never from
   model arguments. Tool names stay outside the effect classes, human-only tools and
   `native_*`; a host check beside `Unknown` or `PolicyChange` never authorizes.

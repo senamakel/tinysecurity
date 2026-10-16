@@ -1,4 +1,3 @@
-//! Host-tool admission dispatch through `Evaluate` (contract 1.20).
 use super::*;
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;

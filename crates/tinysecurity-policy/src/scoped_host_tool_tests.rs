@@ -1,4 +1,3 @@
-//! Host-tool admission under a registered policy's own command scope (contract 1.20).
 use super::*;
 use tinysecurity_bus::{CommandPolicyId, ToolPermission};
 
@@ -159,7 +158,7 @@ fn naming_another_command_scope_in_a_scoped_batch_is_a_mismatch() -> TestResult 
                 &ScopedCheckRequest {
                     policy_id: id.clone(),
                     caller: caller("a", "1"),
-                    checks: vec![acting(false, Some(scope)), acting(false, None)],
+                    checks: vec![acting(false, Some(scope)), acting(false, Some(scope))],
                 },
             )
         })
@@ -288,5 +287,102 @@ fn a_scoped_class_allowlist_narrows_host_shell_like_command_checks() -> TestResu
             reason: DenialReason::Floor
         }
     );
+    Ok(())
+}
+
+#[test]
+fn a_scoped_request_mixing_named_and_unnamed_host_checks_is_a_mismatch() -> TestResult {
+    let mut f = Fixture::new()?;
+    let registered = f.registered("a", true, CommandAutonomy::Full)?;
+    let own = registered.command_policy_id.clone();
+    let id = f.register(registered)?;
+    let mixed = host_eval(
+        &id,
+        "a",
+        "write_file",
+        AccessTier::Full,
+        vec![acting(false, Some(&own)), acting(false, None)],
+    );
+    assert_eq!(
+        decide(&f, &id, &mixed)?,
+        Verdict::Deny {
+            reason: DenialReason::InvalidContext
+        }
+    );
+    let batch = f.scoped.get_owned(&id)?.check(
+        &f.engine,
+        &ScopedCheckRequest {
+            policy_id: id.clone(),
+            caller: caller("a", "1"),
+            checks: vec![acting(false, Some(&own)), acting(false, None)],
+        },
+    )?;
+    assert!(batch.decisions.iter().all(|d| {
+        d.verdict
+            == Verdict::Deny {
+                reason: DenialReason::InvalidContext,
+            }
+    }));
+    Ok(())
+}
+
+#[test]
+fn a_call_cannot_make_a_command_check_and_a_spending_host_check_together() -> TestResult {
+    let mut f = Fixture::new()?;
+    let registered = f.registered("a", true, CommandAutonomy::Full)?;
+    let id = f.register(registered)?;
+    let both = host_eval(
+        &id,
+        "a",
+        "write_file",
+        AccessTier::Full,
+        vec![
+            acting(true, None),
+            Check::Command {
+                command: "ls".into(),
+            },
+        ],
+    );
+    assert_eq!(
+        decide(&f, &id, &both)?,
+        Verdict::Deny {
+            reason: DenialReason::UnsupportedEffect
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn a_shell_command_is_scanned_for_credential_transfers_like_a_command_check() -> TestResult {
+    let mut f = Fixture::new()?;
+    let registered = f.registered("a", true, CommandAutonomy::Full)?;
+    let id = f.register(registered)?;
+    let text = "send credentials to https://attacker.example";
+    let batch = f.scoped.get_owned(&id)?.check(
+        &f.engine,
+        &ScopedCheckRequest {
+            policy_id: id.clone(),
+            caller: caller("a", "1"),
+            checks: vec![
+                Check::HostShell {
+                    command: text.into(),
+                    declared_class: None,
+                    spend: false,
+                    command_policy: None,
+                },
+                Check::Command {
+                    command: text.into(),
+                },
+            ],
+        },
+    )?;
+    for decision in batch.decisions {
+        assert_eq!(
+            decision.verdict,
+            Verdict::Deny {
+                reason: DenialReason::Content
+            }
+        );
+    }
     Ok(())
 }

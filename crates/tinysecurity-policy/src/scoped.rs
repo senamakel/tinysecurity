@@ -262,6 +262,15 @@ impl ScopedPolicy {
         &self.paths
     }
 
+    /// Whether the host-tool checks name a command scope other than this policy's own, or
+    /// leave it out beside checks that name one: the policy's own scope answers them all,
+    /// so a request that disagrees about it is mismatched.
+    fn scope_mismatch(&self, checks: &[Check]) -> bool {
+        host_tool::request_scope(checks).map_or(true, |named| {
+            named.is_some_and(|id| id != &self.registered.command_policy_id)
+        })
+    }
+
     fn caller_denial(&self, caller: &CallerContext) -> Option<DenialReason> {
         (self.is_superseded() || caller.agent != self.registered.subject_scope.agent)
             .then_some(DenialReason::InvalidContext)
@@ -352,9 +361,7 @@ impl ScopedPolicy {
         }
         // The policy's own command scope answers host-tool checks; naming another
         // scope is a mismatched request.
-        if host_tool::scope_ids(&request.call.checks)
-            .any(|id| id != &self.registered.command_policy_id)
-        {
+        if self.scope_mismatch(&request.call.checks) {
             return Ok(denied(DenialReason::InvalidContext));
         }
         let (command, path) = (self.hook(), self.path_hook());
@@ -412,9 +419,7 @@ impl ScopedPolicy {
                     .map(|_| policy.deny_with(reason.clone()))
                     .collect::<Vec<Decision>>(),
             }
-        } else if host_tool::scope_ids(&request.checks)
-            .any(|id| id != &self.registered.command_policy_id)
-        {
+        } else if self.scope_mismatch(&request.checks) {
             // Naming another command scope is a mismatched request, as for `evaluate`.
             CheckResponse {
                 generation: policy.generation(),
