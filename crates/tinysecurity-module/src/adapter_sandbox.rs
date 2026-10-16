@@ -216,7 +216,11 @@ impl PolicyService {
             .has_scope(scope_id)
             .and_then(|known| Ok(known && !engine.is_runtime_scope(scope_id)?))
             .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
-        Ok(initialized.then(|| self.audit.clone()).flatten())
+        Ok(if initialized {
+            self.audit.clone()
+        } else {
+            None
+        })
     }
     async fn audit_sandbox(
         &self,
