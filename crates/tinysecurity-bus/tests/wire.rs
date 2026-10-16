@@ -343,7 +343,7 @@ fn redactor_init_is_additive_and_secrets_never_enter_public_info()
         serde_json::to_value(&config)?["redactor"]["secrets"][0],
         "literal-private"
     );
-    assert_eq!(CONTRACT_VERSION, (1, 18));
+    assert_eq!(CONTRACT_VERSION, (1, 19));
     for (mode, wire) in [
         (RedactMode::Text, "text"),
         (RedactMode::StructuredArguments, "structured_arguments"),
@@ -400,5 +400,12 @@ fn redact_with_request_carries_literals_without_echoing_them()
     );
     assert_eq!(names::methods::REDACT_WITH, "RedactWith");
     assert!(names::METHODS.contains(&names::methods::REDACT_WITH));
+    assert_eq!(
+        names::methods::REGISTER_SANDBOX_SCOPE2,
+        "RegisterSandboxScope2"
+    );
+    assert_eq!(names::methods::RETIRE_SANDBOX_SCOPE2, "RetireSandboxScope2");
+    assert!(names::METHODS.contains(&names::methods::REGISTER_SANDBOX_SCOPE2));
+    assert!(names::METHODS.contains(&names::methods::RETIRE_SANDBOX_SCOPE2));
     Ok(())
 }

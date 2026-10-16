@@ -1,6 +1,9 @@
 //! Opaque module-owned pending/active/consumed artifacts; fingerprints are not authority.
 use crate::{Error, Result};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+};
 use tinysecurity_bus::{SandboxArtifact2, SubjectScope};
 #[derive(Clone, Debug)]
 struct Issued {
@@ -14,7 +17,18 @@ struct State {
     rows: Vec<Issued>,
     high_water_ms: u64,
     per_scope_limit: usize,
+    /// Scopes registered after init; each gets the smallest initialized share.
+    runtime: BTreeSet<String>,
+    /// Most artifacts the runtime scopes hold together.
+    runtime_pool_limit: usize,
 }
+/// Most staged or active artifacts across the initialized scopes, which share them.
+const MAX_INITIALIZED_ISSUED: usize = 1024;
+/// Most staged or active artifacts across every runtime scope. A pool of its own, so
+/// busy runtime scopes can never starve the initialized ones (and the reverse).
+pub(crate) const MAX_RUNTIME_ISSUED: usize = 15_360;
+/// Artifacts one runtime subject may hold, the share of the busiest initialized layout.
+const RUNTIME_SCOPE_LIMIT: usize = 8;
 impl State {
     fn advance(&mut self, now_ms: u64) -> Result<()> {
         if now_ms < self.high_water_ms {
@@ -25,11 +39,26 @@ impl State {
     }
 }
 impl Registry {
-    pub(crate) fn new(scopes: usize) -> Self {
+    pub(crate) fn new(scopes: usize, runtime_pool: usize) -> Self {
         Self(Arc::new(Mutex::new(State {
             per_scope_limit: 1024 / scopes.max(1),
+            runtime_pool_limit: runtime_pool,
             ..State::default()
         })))
+    }
+
+    pub(crate) fn mark_runtime(&self, scope_id: &str) {
+        if let Ok(mut state) = self.0.lock() {
+            state.runtime.insert(scope_id.into());
+        }
+    }
+    /// Drop every artifact of a retired scope, activated ones included, so none of
+    /// them can be checked or consumed afterwards.
+    pub(crate) fn purge_scope(&self, scope_id: &str) {
+        if let Ok(mut state) = self.0.lock() {
+            state.runtime.remove(scope_id);
+            state.rows.retain(|row| row.artifact.scope_id != scope_id);
+        }
     }
     pub(crate) fn stage(
         &self,
@@ -41,16 +70,29 @@ impl Registry {
         }
         let mut state = self.0.lock().map_err(|_| Error::InvalidOperation)?;
         state.advance(now_ms)?;
-        let per_scope_limit = state.per_scope_limit;
-        let issued = &mut state.rows;
+        let runtime_scope = state.runtime.contains(&artifact.scope_id);
+        let (per_scope_limit, pool_limit) = if runtime_scope {
+            (RUNTIME_SCOPE_LIMIT, state.runtime_pool_limit)
+        } else {
+            (state.per_scope_limit, MAX_INITIALIZED_ISSUED)
+        };
+        let State { rows, runtime, .. } = &mut *state;
+        let issued = rows;
         issued.retain(|row| row.artifact.expires_at_ms > now_ms);
-        if issued.len() >= 1024
-            || issued
-                .iter()
-                .filter(|row| row.artifact.scope_id == artifact.scope_id)
-                .count()
-                >= per_scope_limit
-        {
+        let (mut pool, mut own) = (0usize, 0usize);
+        for row in issued.iter() {
+            let row_runtime = runtime.contains(&row.artifact.scope_id);
+            pool += usize::from(row_runtime == runtime_scope);
+            // An initialized scope has its own quota. A runtime quota belongs to the
+            // subject, however many scope identities it registered, so splitting one
+            // subject across identities never multiplies its share.
+            own += usize::from(if runtime_scope {
+                row_runtime && row.artifact.subject == artifact.subject
+            } else {
+                row.artifact.scope_id == artifact.scope_id
+            });
+        }
+        if pool >= pool_limit || own >= per_scope_limit {
             return Err(Error::InvalidOperation);
         }
         for _ in 0..4 {

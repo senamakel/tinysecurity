@@ -1,24 +1,45 @@
 //! Bounded immutable registrations and exact declarative plan binding.
 use crate::{Error, Result, grants};
 use sha2::{Digest, Sha256};
-use std::{fmt, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 use tinysecurity_bus::{
     AccessTier, CallerContext, Check, ConstraintEnforcement2, Decision, DenialReason,
-    EvaluateRequest, IsolationLevel2, NetworkPolicy, Origin, ResourceLimits2, SandboxArtifact2,
-    SandboxBackend, SandboxConfig2, SandboxConstraint2, SandboxDenial2, SandboxDeployment2,
-    SandboxExecutor2, SandboxPlanRequest2, SandboxPlanResponse2, SandboxScope2, SandboxSetting2,
-    SourceTrust, SubjectScope, ToolCall, Verdict,
+    EvaluateRequest, IsolationLevel2, MAX_SANDBOX_SCOPES2, NetworkPolicy, Origin, ResourceLimits2,
+    SandboxArtifact2, SandboxBackend, SandboxConfig2, SandboxConstraint2, SandboxDenial2,
+    SandboxDeployment2, SandboxExecutor2, SandboxPlanRequest2, SandboxPlanResponse2, SandboxScope2,
+    SandboxSetting2, SourceTrust, SubjectScope, ToolCall, Verdict,
 };
 use tinysecurity_policy::{PathPolicyRegistry, PathScope};
 #[derive(Clone)]
 struct Scope {
     facts: SandboxScope2,
     paths: Arc<PathScope>,
+    /// Registered after init; only these can be retired.
+    runtime: bool,
+    /// Distinguishes this registration from any other under the same identity, so a
+    /// candidate planned for a retired scope can never be staged under its successor.
+    incarnation: u64,
+}
+/// Outcome of a runtime registration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Registration {
+    /// A new scope is live.
+    Created,
+    /// An identical scope was already registered.
+    Unchanged,
 }
 /// Private planner with facts admitted only through trusted native initialization.
 #[derive(Clone)]
 pub struct Engine {
-    scopes: Vec<Scope>,
+    scopes: Arc<RwLock<BTreeMap<String, Scope>>>,
+    incarnations: Arc<AtomicU64>,
     issued: crate::registry::Registry,
 }
 impl fmt::Debug for Engine {
@@ -128,6 +149,67 @@ fn select<'a>(
             SandboxDenial2::Unsupported
         })
 }
+/// Validate one registration and prepare its owner filesystem policy.
+fn admit(facts: SandboxScope2, runtime: bool) -> Result<Scope> {
+    if !id(&facts.scope_id)
+        || !id(&facts.subject.user)
+        || !id(&facts.subject.workspace)
+        || !id(&facts.subject.agent)
+        || facts.max_ttl_ms == 0
+        || facts.max_ttl_ms > 300_000
+        || !valid_limits(&facts.limits)
+        || facts.sources.is_empty()
+        || facts.sources.len() > 128
+        || facts.executors.len() > 32
+        || facts.grant_ceiling.len() > 128
+        || facts.sources.iter().enumerate().any(|(i, s)| {
+            !id(&s.source_id)
+                || !id(&s.provenance)
+                || facts.sources[..i]
+                    .iter()
+                    .any(|p| p.source_id == s.source_id)
+        })
+        || facts.executors.iter().enumerate().any(|(i, e)| {
+            !id(&e.executor_id)
+                || !id(&e.capability_id)
+                || e.constraints.len() > 8
+                || facts.executors[..i]
+                    .iter()
+                    .any(|p| p.executor_id == e.executor_id)
+                || e.constraints.iter().enumerate().any(|(j, c)| {
+                    e.constraints[..j]
+                        .iter()
+                        .any(|p| p.constraint == c.constraint)
+                })
+        })
+        || facts
+            .grant_ceiling
+            .iter()
+            .any(|g| g.path.len() > 4096 || !std::path::Path::new(&g.path).is_absolute())
+        || facts.proxy.as_ref().is_some_and(|p| {
+            !id(&p.proxy_id)
+                || !facts
+                    .executors
+                    .iter()
+                    .any(|e| e.executor_id == p.executor_id && e.capability_id == p.capability_id)
+        })
+    {
+        return Err(Error::InvalidConfig);
+    }
+    let mut registry = PathPolicyRegistry::default();
+    let policy_id = registry
+        .register(facts.paths.clone())
+        .map_err(|_| Error::InvalidConfig)?;
+    let paths = registry
+        .get_owned(&policy_id)
+        .map_err(|_| Error::InvalidConfig)?;
+    Ok(Scope {
+        facts,
+        paths,
+        runtime,
+        incarnation: 0,
+    })
+}
 impl Engine {
     /// Admit immutable facts supplied across the authenticated SDK initialization boundary.
     /// # Errors
@@ -136,64 +218,83 @@ impl Engine {
         if config.scopes.len() > 128 {
             return Err(Error::InvalidConfig);
         }
-        let mut registry = PathPolicyRegistry::default();
-        let mut scopes: Vec<Scope> = Vec::new();
+        let mut scopes = BTreeMap::new();
+        let initial = config.scopes.len();
+        let incarnations = Arc::new(AtomicU64::new(1));
         for facts in config.scopes {
-            if !id(&facts.scope_id)
-                || !id(&facts.subject.user)
-                || !id(&facts.subject.workspace)
-                || !id(&facts.subject.agent)
-                || facts.max_ttl_ms == 0
-                || facts.max_ttl_ms > 300_000
-                || !valid_limits(&facts.limits)
-                || facts.sources.is_empty()
-                || facts.sources.len() > 128
-                || facts.executors.len() > 32
-                || facts.grant_ceiling.len() > 128
-                || scopes.iter().any(|s| s.facts.scope_id == facts.scope_id)
-                || facts.sources.iter().enumerate().any(|(i, s)| {
-                    !id(&s.source_id)
-                        || !id(&s.provenance)
-                        || facts.sources[..i]
-                            .iter()
-                            .any(|p| p.source_id == s.source_id)
-                })
-                || facts.executors.iter().enumerate().any(|(i, e)| {
-                    !id(&e.executor_id)
-                        || !id(&e.capability_id)
-                        || e.constraints.len() > 8
-                        || facts.executors[..i]
-                            .iter()
-                            .any(|p| p.executor_id == e.executor_id)
-                        || e.constraints.iter().enumerate().any(|(j, c)| {
-                            e.constraints[..j]
-                                .iter()
-                                .any(|p| p.constraint == c.constraint)
-                        })
-                })
-                || facts
-                    .grant_ceiling
-                    .iter()
-                    .any(|g| g.path.len() > 4096 || !std::path::Path::new(&g.path).is_absolute())
-                || facts.proxy.as_ref().is_some_and(|p| {
-                    !id(&p.proxy_id)
-                        || !facts.executors.iter().any(|e| {
-                            e.executor_id == p.executor_id && e.capability_id == p.capability_id
-                        })
-                })
-            {
+            let mut scope = admit(facts, false)?;
+            scope.incarnation = incarnations.fetch_add(1, Ordering::SeqCst);
+            if scopes.insert(scope.facts.scope_id.clone(), scope).is_some() {
                 return Err(Error::InvalidConfig);
             }
-            let policy_id = registry
-                .register(facts.paths.clone())
-                .map_err(|_| Error::InvalidConfig)?;
-            let paths = registry
-                .get_owned(&policy_id)
-                .map_err(|_| Error::InvalidConfig)?;
-            scopes.push(Scope { facts, paths });
         }
-        let issued = crate::registry::Registry::new(scopes.len());
-        Ok(Self { scopes, issued })
+        Ok(Self {
+            scopes: Arc::new(RwLock::new(scopes)),
+            incarnations,
+            issued: crate::registry::Registry::new(initial, crate::registry::MAX_RUNTIME_ISSUED),
+        })
+    }
+    fn table(&self) -> Result<std::sync::RwLockReadGuard<'_, BTreeMap<String, Scope>>> {
+        self.scopes.read().map_err(|_| Error::InvalidOperation)
+    }
+    /// Number of live scopes, initialized and runtime.
+    /// # Errors
+    /// Fails closed if the table is poisoned.
+    pub fn live_scopes(&self) -> Result<usize> {
+        Ok(self.table()?.len())
+    }
+    /// Add a scope after init. An identical repeat is idempotent; reusing the identity
+    /// with different facts conflicts. A full table refuses: a live scope is never
+    /// evicted to make room, so policy is never silently dropped or replaced.
+    /// # Errors
+    /// `InvalidConfig` for malformed facts, `Conflict` for a changed identity and
+    /// `Capacity` when `MAX_SANDBOX_SCOPES2` scopes are live.
+    pub fn register_scope(&self, facts: SandboxScope2) -> Result<Registration> {
+        let mut scope = admit(facts, true)?;
+        let mut table = self.scopes.write().map_err(|_| Error::InvalidOperation)?;
+        if let Some(existing) = table.get(&scope.facts.scope_id) {
+            return if existing.facts == scope.facts {
+                Ok(Registration::Unchanged)
+            } else {
+                Err(Error::Conflict)
+            };
+        }
+        if table.len() >= MAX_SANDBOX_SCOPES2 {
+            return Err(Error::Capacity);
+        }
+        self.issued.mark_runtime(&scope.facts.scope_id);
+        scope.incarnation = self.incarnations.fetch_add(1, Ordering::SeqCst);
+        table.insert(scope.facts.scope_id.clone(), scope);
+        Ok(Registration::Created)
+    }
+    /// Remove a runtime scope and discard every artifact it issued, pending or active.
+    /// Initialized scopes can never be retired. Returns the retired scope's subject.
+    /// # Errors
+    /// `Unknown` for a missing scope and `NotRetirable` for an initialized one.
+    pub fn retire_scope(&self, scope_id: &str) -> Result<SubjectScope> {
+        let mut table = self.scopes.write().map_err(|_| Error::InvalidOperation)?;
+        match table.get(scope_id) {
+            None => return Err(Error::Unknown),
+            Some(scope) if !scope.runtime => return Err(Error::NotRetirable),
+            Some(_) => {}
+        }
+        let removed = table.remove(scope_id).ok_or(Error::Unknown)?;
+        // Purged under the table lock that `stage` also holds, so no artifact of a
+        // retired scope can be staged after this point.
+        self.issued.purge_scope(scope_id);
+        Ok(removed.facts.subject)
+    }
+    /// Whether any scope, initialized or runtime, is registered under this identity.
+    /// # Errors
+    /// Fails closed if the table is poisoned.
+    pub fn has_scope(&self, scope_id: &str) -> Result<bool> {
+        Ok(self.table()?.contains_key(scope_id))
+    }
+    /// Whether a runtime (not initialized) scope is registered under this identity.
+    /// # Errors
+    /// Fails closed if the table is poisoned.
+    pub fn is_runtime_scope(&self, scope_id: &str) -> Result<bool> {
+        Ok(self.table()?.get(scope_id).is_some_and(|s| s.runtime))
     }
     /// Construct a bounded declarative plan at an injected trusted clock value.
     /// # Errors
@@ -231,10 +332,9 @@ impl Engine {
         if request.generation != generation {
             return Err(SandboxDenial2::Stale);
         }
-        let scope = self
-            .scopes
-            .iter()
-            .find(|s| s.facts.scope_id == request.scope_id)
+        let table = self.table().map_err(|_| SandboxDenial2::InvalidContext)?;
+        let scope = table
+            .get(&request.scope_id)
             .ok_or(SandboxDenial2::InvalidContext)?;
         let facts = &scope.facts;
         let source = facts
@@ -337,10 +437,9 @@ impl Engine {
         let artifact = self
             .resolve(request, generation, now_ms)
             .map_err(|_| Error::InvalidOperation)?;
-        let facts = &self
-            .scopes
-            .iter()
-            .find(|s| s.facts.scope_id == request.scope_id)
+        let table = self.table()?;
+        let facts = &table
+            .get(&request.scope_id)
             .ok_or(Error::InvalidOperation)?
             .facts;
         let approval_scope = facts
@@ -400,12 +499,46 @@ impl Engine {
         };
         Ok((artifact, approval_scope, original))
     }
-    /// Stage a candidate in the bounded native registry before its canonical audit.
-    /// This internal method grants no execution and must never be exposed on the bus.
+    /// The registration a scope identity currently has, to be captured before planning
+    /// and handed to [`Self::stage_for`]. `None` when no such scope is registered.
     /// # Errors
-    /// Rejects entropy failure, full registry, expired candidate or invalid identity.
-    pub fn stage(&self, artifact: SandboxArtifact2, now_ms: u64) -> Result<SandboxArtifact2> {
+    /// Fails closed if the table is poisoned.
+    pub fn incarnation(&self, scope_id: &str) -> Result<Option<u64>> {
+        Ok(self.table()?.get(scope_id).map(|scope| scope.incarnation))
+    }
+    /// Stage a candidate in the bounded native registry before its canonical audit,
+    /// only while the scope it was planned under is still the registration the caller
+    /// captured. A scope that was retired, even if the same identity registered again
+    /// since, refuses the candidate. This internal method grants no execution and must
+    /// never be exposed on the bus.
+    /// # Errors
+    /// Rejects entropy failure, full registry, expired candidate, invalid identity and
+    /// a scope that is no longer the captured incarnation.
+    pub fn stage_for(
+        &self,
+        incarnation: u64,
+        artifact: SandboxArtifact2,
+        now_ms: u64,
+    ) -> Result<SandboxArtifact2> {
+        // Held across the insert so `retire_scope` (which purges under the write lock)
+        // either removes this row or makes the scope check below fail.
+        let table = self.table()?;
+        if !table.get(&artifact.scope_id).is_some_and(|scope| {
+            scope.facts.subject == artifact.subject && scope.incarnation == incarnation
+        }) {
+            return Err(Error::InvalidOperation);
+        }
         self.issued.stage(artifact, now_ms)
+    }
+    /// [`Self::stage_for`] under the scope's current registration. For a caller that
+    /// plans and stages with no retirement possible between the two.
+    /// # Errors
+    /// As [`Self::stage_for`].
+    pub fn stage(&self, artifact: SandboxArtifact2, now_ms: u64) -> Result<SandboxArtifact2> {
+        let incarnation = self
+            .incarnation(&artifact.scope_id)?
+            .ok_or(Error::InvalidOperation)?;
+        self.stage_for(incarnation, artifact, now_ms)
     }
     /// Remove a failed pending artifact; activated permissions cannot be removed by this port.
     pub fn discard(&self, artifact: &SandboxArtifact2) {
@@ -458,21 +591,19 @@ impl Engine {
         generation: u64,
         now_ms: u64,
     ) -> Result<bool> {
-        let Some(executor) = self
-            .scopes
-            .iter()
-            .find(|scope| scope.facts.scope_id == artifact.scope_id)
-            .and_then(|scope| {
-                scope
-                    .facts
-                    .executors
-                    .iter()
-                    .find(|executor| executor.executor_id == artifact.executor_id)
-            })
-        else {
+        // Cloned so no table lock is held across `validate`, which locks it again.
+        let executor = self.table()?.get(&artifact.scope_id).and_then(|scope| {
+            scope
+                .facts
+                .executors
+                .iter()
+                .find(|executor| executor.executor_id == artifact.executor_id)
+                .cloned()
+        });
+        let Some(executor) = executor else {
             return Ok(false);
         };
-        self.validate(request, artifact, generation, now_ms, executor)
+        self.validate(request, artifact, generation, now_ms, &executor)
     }
     /// Validate exact plan identity, live generation/time and executor revision before launch.
     /// This verifies the declarative artifact only; `TinyBox` must still recheck actual enforcement.
@@ -540,6 +671,9 @@ pub(crate) fn denied(generation: u64, reason: SandboxDenial2) -> SandboxPlanResp
 #[cfg(test)]
 #[path = "plan_matrix_tests.rs"]
 mod plan_matrix_tests;
+#[cfg(test)]
+#[path = "runtime_scopes_tests.rs"]
+mod runtime_scopes_tests;
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 pub(crate) mod tests;
