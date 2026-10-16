@@ -197,9 +197,14 @@ impl PolicyService {
         Some(artifact)
     }
     /// The audit client that records a scope's plans: its own stream for a runtime
-    /// scope, the base client for an initialized one.
+    /// scope, the base client for an initialized one, and none for any other
+    /// identity. A retired or unknown runtime identity never falls back to the base
+    /// stream, so its events cannot land in another ledger. Callers resolve it once,
+    /// before planning, so a plan in flight keeps the stream it started on even if
+    /// its scope is retired meanwhile.
     fn sandbox_audit_client(
         &self,
+        engine: &tinysecurity::sandbox::Engine,
         scope_id: &str,
     ) -> BusResult<Option<Arc<crate::callbacks::AuditClient>>> {
         if let Some(runtime) = &self.sandbox_runtime
@@ -207,11 +212,18 @@ impl PolicyService {
         {
             return Ok(Some(client));
         }
-        Ok(self.audit.clone())
+        let initialized = engine
+            .has_scope(scope_id)
+            .and_then(|known| Ok(known && !engine.is_runtime_scope(scope_id)?))
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
+        Ok(initialized.then(|| self.audit.clone()).flatten())
     }
     async fn audit_sandbox(
         &self,
-        owner: (&str, &tinysecurity_bus::SubjectScope),
+        owner: (
+            Option<Arc<crate::callbacks::AuditClient>>,
+            &tinysecurity_bus::SubjectScope,
+        ),
         original: serde_json::Value,
         correlation: &tinysecurity_bus::AuditCorrelation2,
         generation: u64,
@@ -227,8 +239,8 @@ impl PolicyService {
                 receipt: None,
             })
         };
-        let (scope_id, subject) = owner;
-        let Some(client) = self.sandbox_audit_client(scope_id)? else {
+        let (client, subject) = owner;
+        let Some(client) = client else {
             return Ok(refused());
         };
         if client.scope() != subject || correlation.generation != generation {
@@ -264,6 +276,7 @@ impl PolicyService {
         let Some(engine) = self.sandbox.clone() else {
             return Ok(refused(generation));
         };
+        let audit_client = self.sandbox_audit_client(&engine, &request.scope_id)?;
         let original = request.clone();
         let worker = Arc::clone(&engine);
         let now = self.wall_ms()?;
@@ -299,7 +312,7 @@ impl PolicyService {
         };
         let evidence = self
             .audit_sandbox(
-                (&request.scope_id, &request.subject),
+                (audit_client, &request.subject),
                 serde_json::json!([request, response]),
                 &request.audit,
                 generation,
@@ -346,6 +359,7 @@ impl PolicyService {
         let Some(engine) = &self.sandbox else {
             return Ok(response);
         };
+        let audit_client = self.sandbox_audit_client(engine, &request.request.scope_id)?;
         if engine
             .check_issued(
                 &request.artifact,
@@ -369,7 +383,7 @@ impl PolicyService {
         }
         response.audit = self
             .audit_sandbox(
-                (&request.request.scope_id, &request.subject),
+                (audit_client, &request.subject),
                 serde_json::json!([request,{"eligible":true}]),
                 &request.audit,
                 generation,

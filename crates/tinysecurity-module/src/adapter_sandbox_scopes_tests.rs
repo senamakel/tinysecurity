@@ -456,3 +456,63 @@ async fn an_unusable_audit_base_refuses_registration_and_releases_the_pin() -> T
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_retired_runtime_identity_never_audits_on_the_base_stream() -> TestResult {
+    let h = with_runtime().await?;
+    // A runtime scope for the very subject the base audit client serves.
+    let mut own = h.facts.clone();
+    own.scope_id = "own-runtime".into();
+    own.approval_scope_id = None;
+    h.service
+        .register_sandbox_scope2(registration(&own, TENANT_STREAM, false))
+        .await?;
+    h.service
+        .retire_sandbox_scope2(RetireSandboxScopeRequest2 {
+            scope_id: own.scope_id.clone(),
+        })
+        .await?;
+    let before = rows(&h).len();
+    let denied = h.service.plan2(fixture::request(&own, 1)).await?;
+    assert_eq!(denied.denial, Some(SandboxDenial2::InvalidContext));
+    assert!(denied.audit.is_none_or(|audit| !audit.committed));
+    assert_eq!(rows(&h).len(), before, "nothing reached any ledger");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_plan_in_flight_when_its_scope_retires_keeps_its_own_stream_and_never_activates()
+-> TestResult {
+    let h = with_runtime().await?;
+    let mut own = h.facts.clone();
+    own.scope_id = "own-runtime".into();
+    own.approval_scope_id = None;
+    h.service
+        .register_sandbox_scope2(registration(&own, TENANT_STREAM, false))
+        .await?;
+    h.sink.mode.store(4, Ordering::SeqCst);
+    let plan = h.service.plan2(fixture::request(&own, 1));
+    let retire = async {
+        while rows(&h).is_empty() {
+            tokio::task::yield_now().await;
+        }
+        let retired = h
+            .service
+            .retire_sandbox_scope2(RetireSandboxScopeRequest2 {
+                scope_id: own.scope_id.clone(),
+            })
+            .await;
+        h.sink.barrier.wait().await;
+        retired
+    };
+    let (plan, retired) = tokio::join!(plan, retire);
+    retired?;
+    let plan = plan?;
+    assert!(plan.artifact.is_none());
+    assert_ne!(plan.decision.verdict, tinysecurity_bus::Verdict::Allow);
+    let sent = rows(&h);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].stream_id, TENANT_STREAM);
+    assert!(sent.iter().all(|row| row.stream_id != "c".repeat(32)));
+    Ok(())
+}

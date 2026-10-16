@@ -219,3 +219,38 @@ fn a_full_table_refuses_a_new_scope_without_evicting_a_live_one() -> TestResult 
     assert_eq!(engine.register_scope(overflow)?, Registration::Created);
     Ok(())
 }
+
+#[test]
+fn saturated_runtime_scopes_never_starve_initialized_artifact_capacity() -> TestResult {
+    let (_dir, init, base) = fixture()?;
+    let mut engine = engine_with(vec![init.clone()])?;
+    // A small runtime pool: 4 scopes of 8 artifacts fill it.
+    engine.issued = crate::registry::Registry::new(1, 32);
+    for index in 0..4 {
+        let scope = runtime_variant(&init, &format!("t{index}"));
+        let request = request_for(&base, &scope);
+        engine.register_scope(scope)?;
+        let candidate = engine
+            .plan(&request, 1, 100)?
+            .artifact
+            .ok_or("plan denied")?;
+        for _ in 0..8 {
+            engine.stage(candidate.clone(), 100)?;
+        }
+    }
+    let extra = runtime_variant(&init, "extra");
+    let extra_request = request_for(&base, &extra);
+    engine.register_scope(extra)?;
+    let extra_candidate = engine
+        .plan(&extra_request, 1, 100)?
+        .artifact
+        .ok_or("plan denied")?;
+    assert!(engine.stage(extra_candidate, 100).is_err());
+    // The initialized scope still stages its own share, and only its own.
+    let init_candidate = engine.plan(&base, 1, 100)?.artifact.ok_or("plan denied")?;
+    for _ in 0..1024 {
+        engine.stage(init_candidate.clone(), 100)?;
+    }
+    assert!(engine.stage(init_candidate, 100).is_err());
+    Ok(())
+}

@@ -220,7 +220,7 @@ impl Engine {
         }
         Ok(Self {
             scopes: Arc::new(RwLock::new(scopes)),
-            issued: crate::registry::Registry::new(initial),
+            issued: crate::registry::Registry::new(initial, crate::registry::MAX_RUNTIME_ISSUED),
         })
     }
     fn table(&self) -> Result<std::sync::RwLockReadGuard<'_, BTreeMap<String, Scope>>> {
