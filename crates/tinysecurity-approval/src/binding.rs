@@ -282,8 +282,11 @@ fn lifecycle_valid(row: &ApprovalRow2) -> bool {
                         row.attribution.as_deref(),
                         Some(
                             "auto:host-policy"
+                                | "auto:trusted-automation"
+                                | "auto:local-operator"
                                 | "auto:tool-grant"
                                 | "auto:flow-grant"
+                                | "flow-trust-grant"
                                 | "exact-reviewed-grant"
                         )
                     )

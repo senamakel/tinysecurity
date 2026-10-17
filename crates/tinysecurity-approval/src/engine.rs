@@ -246,19 +246,33 @@ impl ScopeEntry {
     }
     /// Host-configured grants only convert a required approval; denials and
     /// automatic scopes were decided before, and reviewed reuse never reaches here.
+    /// An unlabelled origin is approved by a whole-tool grant alone. `durable_flow`
+    /// says a live durable flow-trust row covers this exact tool and flow.
     fn grant_for(
         &self,
         request: &EvaluateApprovalRequest2,
         rule: tinysecurity_auto::rules::Rule,
+        durable_flow: bool,
     ) -> Option<&'static str> {
-        (rule == tinysecurity_auto::rules::Rule::Approval)
-            .then(|| {
-                self.grant(
+        match rule {
+            tinysecurity_auto::rules::Rule::Approval => self
+                .grant(
                     &request.request.call.tool,
                     request.request.caller.flow.as_deref(),
                 )
-            })
-            .flatten()
+                .or_else(|| durable_flow.then_some("auto:flow-grant")),
+            tinysecurity_auto::rules::Rule::GrantOnly => {
+                self.tool_grant(&request.request.call.tool)
+            }
+            _ => None,
+        }
+    }
+    /// Whole-tool grant of the scope; human-only and native tools never match.
+    fn tool_grant(&self, tool: &str) -> Option<&'static str> {
+        (!HUMAN_ONLY_TOOLS2.contains(&tool)
+            && !binding::is_native(tool)
+            && self.tools.contains(tool))
+        .then_some("auto:tool-grant")
     }
     /// Which host-configured grant, if any, approves this exact tool and flow.
     /// Human-only tools never match, even if a grant names them.
@@ -290,6 +304,8 @@ pub struct Engine {
     /// Held across the ports' awaits so registration and retirement of subjects
     /// never interleave; replacement is atomic under the table lock alone.
     lifecycle: tokio::sync::Mutex<()>,
+    /// Serializes flow-trust grants and revocations so one pair has one live row.
+    flow_trust_lock: tokio::sync::Mutex<()>,
     ports: Arc<dyn Ports>,
     clock: Arc<dyn Clock>,
     redactor: RwLock<Redactor>,
@@ -343,6 +359,7 @@ impl Engine {
         Ok(Self {
             scopes: RwLock::new(entries),
             lifecycle: tokio::sync::Mutex::new(()),
+            flow_trust_lock: tokio::sync::Mutex::new(()),
             ports,
             clock,
             redactor: RwLock::new(redactor),
@@ -464,10 +481,7 @@ impl Engine {
         let reg = self.registered(&entry);
         let (bound, args_redacted, external_effect) =
             binding::original(&reg, &request.request, &self.redactor()?)?;
-        let rule = tinysecurity_auto::rules::evaluate(&reg, &bound.origin, external_effect);
-        if rule == tinysecurity_auto::rules::Rule::Deny {
-            return Err(Error::Denied);
-        }
+        let rule = Self::origin_rule(&entry, &reg, &bound.origin, &request, external_effect)?;
         let now = self.now()?;
         let ttl = match bound.origin {
             Origin::Copilot | Origin::SubAgent => 180_000,
@@ -492,9 +506,8 @@ impl Engine {
         let (reusable, human_only) = self
             .begin_reuse(&request, &reg, &bound, &rows, now, deadline.is_some())
             .await?;
-        let granted = (!human_only && reusable.is_none())
-            .then(|| entry.grant_for(&request, rule))
-            .flatten();
+        let eligible = !human_only && reusable.is_none();
+        let granted = Self::automatic_grant(&entry, &reg, &rows, &request, rule, now, eligible);
         let automatic =
             !human_only && (rule == tinysecurity_auto::rules::Rule::Automatic || granted.is_some());
         let judge = if !human_only && reusable.is_none() && !automatic {
@@ -542,7 +555,12 @@ impl Engine {
                 ApprovalLifecycle2::Pending
             },
             choice: approved.then_some(ApprovalChoice2::Once),
-            attribution: Self::attribution(reusable.is_some(), qualified, granted, automatic),
+            attribution: Self::attribution(
+                reusable.is_some(),
+                qualified,
+                granted,
+                automatic.then(|| Self::automatic_label(&request.request.caller.origin)),
+            ),
             decision_ticket_sha256: None,
             outcome: None,
             reservation_id: None,
@@ -561,6 +579,42 @@ impl Engine {
         }
         Ok(row)
     }
+    /// The host-configured or durable grant that approves the call, when none of the
+    /// human-only or reviewed-reuse paths already decided it.
+    fn automatic_grant(
+        entry: &ScopeEntry,
+        reg: &ApprovalScope2,
+        rows: &[ApprovalRow2],
+        request: &EvaluateApprovalRequest2,
+        rule: tinysecurity_auto::rules::Rule,
+        now: u64,
+        eligible: bool,
+    ) -> Option<&'static str> {
+        if !eligible {
+            return None;
+        }
+        let durable = Self::durable_flow_trust(reg, rows, &request.request, now);
+        entry.grant_for(request, rule, durable)
+    }
+    /// The origin's shortcut for this call, or a denial: a Cron external effect is
+    /// refused outright, and an origin nobody labelled is refused unless the scope
+    /// holds a whole-tool grant for the tool (no prompt, no reuse, no judge).
+    fn origin_rule(
+        entry: &ScopeEntry,
+        reg: &ApprovalScope2,
+        origin: &Origin,
+        request: &EvaluateApprovalRequest2,
+        external_effect: bool,
+    ) -> Result<tinysecurity_auto::rules::Rule> {
+        use tinysecurity_auto::rules::Rule;
+        match tinysecurity_auto::rules::evaluate(reg, origin, external_effect) {
+            Rule::Deny => Err(Error::Denied),
+            Rule::GrantOnly if entry.tool_grant(&request.request.call.tool).is_none() => {
+                Err(Error::Denied)
+            }
+            rule => Ok(rule),
+        }
+    }
     /// An automatic approval stands only while the scope entry it was derived from is
     /// still the live one: a grant or posture replaced during an await revokes it.
     fn automatic_stands(&self, entry: &Arc<ScopeEntry>, id: &str, automatic: bool) -> Result<()> {
@@ -575,7 +629,7 @@ impl Engine {
         reused: bool,
         qualified: bool,
         granted: Option<&'static str>,
-        automatic: bool,
+        automatic: Option<&'static str>,
     ) -> Option<String> {
         if reused {
             Some("exact-reviewed-grant".into())
@@ -584,7 +638,15 @@ impl Engine {
         } else {
             granted
                 .map(Into::into)
-                .or_else(|| automatic.then(|| "auto:host-policy".into()))
+                .or_else(|| automatic.map(Into::into))
+        }
+    }
+    /// Attribution of an approval the scope's own posture or the origin made automatic.
+    fn automatic_label(origin: &Origin) -> &'static str {
+        match origin {
+            Origin::TrustedAutomation => "auto:trusted-automation",
+            Origin::LocalOperator => "auto:local-operator",
+            _ => "auto:host-policy",
         }
     }
     fn begin_tool_label(&self, tool: &str, native: bool) -> Result<String> {
@@ -1517,23 +1579,29 @@ impl Engine {
     /// A row approved without a human is only consumable while the scope still
     /// approves it: a grant that covers the call, or the posture that made it
     /// automatic. Replacing the scope revokes unconsumed approvals.
-    fn grant_still_holds(
+    async fn grant_still_holds(
         &self,
         request: &ApprovalActionRequest2,
         row: &ApprovalRow2,
     ) -> Result<()> {
         let posture = match row.attribution.as_deref() {
             Some("auto:tool-grant" | "auto:flow-grant") => false,
-            Some("auto:host-policy") => true,
+            Some("auto:host-policy" | "auto:trusted-automation" | "auto:local-operator") => true,
             _ => return Ok(()),
         };
         let entry = self.entry(&request.scope_id)?;
-        let granted = entry
+        let mut granted = entry
             .grant(
                 &request.request.call.tool,
                 request.request.caller.flow.as_deref(),
             )
             .is_some();
+        if !granted && row.attribution.as_deref() == Some("auto:flow-grant") {
+            // A durable flow-trust row can have been revoked since the approval.
+            let reg = self.registered(&entry);
+            let rows = self.rows(&reg).await?;
+            granted = Self::durable_flow_trust(&reg, &rows, &request.request, self.now()?);
+        }
         let automatic = posture
             && tinysecurity_auto::rules::evaluate(
                 &entry.scope,
@@ -1570,7 +1638,7 @@ impl Engine {
         if row.state != ApprovalLifecycle2::Approved || row.host_instance != self.instance {
             return Err(Error::Denied);
         }
-        self.grant_still_holds(&request, &row)?;
+        self.grant_still_holds(&request, &row).await?;
         // The loads and audit above awaited; judge the live scope, not the snapshot.
         let live = self.registration(&request.scope_id)?;
         Self::current(&live, &row)?;
@@ -1584,7 +1652,7 @@ impl Engine {
         // A replacement racing the CAS burns the reservation instead of authorizing it,
         // whether it changed the policy reference, a grant or the automatic posture.
         Self::current(&self.registration(&request.scope_id)?, &row)?;
-        self.grant_still_holds(&request, &row)?;
+        self.grant_still_holds(&request, &row).await?;
         self.live(&row)?;
         if native {
             self.native_ack(&row, true)?;
@@ -1802,6 +1870,8 @@ fn reusable_grant<'a>(
     })
 }
 
+#[path = "engine_flow_trust.rs"]
+mod flow_trust;
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 mod tests;

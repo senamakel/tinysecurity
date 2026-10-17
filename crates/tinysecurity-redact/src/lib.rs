@@ -16,12 +16,13 @@
 mod extended;
 mod patterns;
 mod prompt;
+mod score;
 mod structured;
 use sha2::{Digest, Sha256};
 use std::{fmt, sync::Arc};
 use tinysecurity_bus::{
     Error, RedactMode, RedactRequest, RedactResponse, RedactorConfig, Result, ScanPromptRequest,
-    ScanResponse, ScanToolDefinitionRequest,
+    ScanPromptScoredRequest2, ScanPromptScoredResponse2, ScanResponse, ScanToolDefinitionRequest,
 };
 
 pub(crate) const MAX_INPUT: usize = 65_536;
@@ -35,6 +36,7 @@ pub struct Redactor(Arc<Registry>);
 struct Registry {
     patterns: patterns::Patterns,
     scanner: prompt::Scanner,
+    scorer: score::Scorer,
     /// The initialization literals, kept so a per-call extension can union them.
     base: RedactorConfig,
 }
@@ -53,6 +55,7 @@ impl Redactor {
         Ok(Self(Arc::new(Registry {
             patterns: patterns::Patterns::new(config)?,
             scanner: prompt::Scanner::new()?,
+            scorer: score::Scorer::new()?,
             base: config.clone(),
         })))
     }
@@ -103,6 +106,18 @@ impl Redactor {
     pub fn scan_prompt(&self, request: &ScanPromptRequest) -> Result<ScanResponse> {
         bounded(&request.text)?;
         Ok(self.0.scanner.scan(&request.text))
+    }
+    /// Score original prompt intent: additive rule weights, a tier and the rule codes,
+    /// without redaction. Results provide context and never authorize execution.
+    ///
+    /// # Errors
+    /// Rejects input exceeding the deterministic work ceiling.
+    pub fn scan_prompt_scored(
+        &self,
+        request: &ScanPromptScoredRequest2,
+    ) -> Result<ScanPromptScoredResponse2> {
+        bounded(&request.text)?;
+        Ok(self.0.scorer.score(&request.text))
     }
     /// Scan a tool's name, keys, values and unknown metadata in the full JSON object.
     ///

@@ -1059,3 +1059,6 @@ async fn a_receipt_reports_the_subject_handle_only_when_asked() -> Result<()> {
     assert!(retired.scope_handle.is_none(), "a retirement reports none");
     Ok(())
 }
+
+#[path = "engine_gaps_tests.rs"]
+mod gaps_tests;

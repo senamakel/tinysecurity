@@ -1262,3 +1262,6 @@ async fn automatic_approval_cannot_authorize_a_widening_policy_change()
 }
 #[path = "adapter_scope_tests.rs"]
 mod adapter_scope_tests;
+
+#[path = "adapter_gaps_tests.rs"]
+mod gaps_tests;

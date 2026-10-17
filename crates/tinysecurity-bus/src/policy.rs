@@ -38,6 +38,18 @@ pub enum Origin {
     Cron,
     /// Remote service caller.
     Saas,
+    /// The host's own pre-declared automation: an internal background job or a
+    /// workflow action the user already declared (contract 1.22). Approval
+    /// evaluation allows it as an audited automatic approval and never parks it.
+    TrustedAutomation,
+    /// A local operator invoking the core directly, such as the CLI or a direct
+    /// chat (contract 1.22). Approval evaluation allows it as an audited automatic
+    /// approval and never parks it.
+    LocalOperator,
+    /// A call whose origin the host could not label (contract 1.22). Approval
+    /// evaluation denies it unless the registered scope holds a whole-tool grant for
+    /// the tool, which approves it as an audited automatic approval.
+    Unlabelled,
 }
 /// Access ceiling verified by the host.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
