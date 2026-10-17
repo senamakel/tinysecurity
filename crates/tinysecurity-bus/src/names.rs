@@ -123,6 +123,8 @@ pub mod methods {
     pub const CONSUME_SANDBOX_PLAN2: &str = "ConsumeSandboxPlan2";
     /// Exact durable version-two audit member.
     pub const AUDIT2: &str = "Audit2";
+    /// Host-recorded audit event appended to one subject's registered stream (contract 1.21).
+    pub const RECORD_AUDIT2: &str = "RecordAudit2";
     /// Original operation evaluation bound to exact pre-execution audit.
     pub const EVALUATE_AUDITED2: &str = "EvaluateAudited2";
     /// Ordered check evaluation bound to exact pre-execution audit.
@@ -171,6 +173,7 @@ pub const METHODS: &[&str] = &[
     methods::SCAN_PROMPT,
     methods::SCAN_TOOL_DEFINITION,
     methods::AUDIT2,
+    methods::RECORD_AUDIT2,
     methods::EVALUATE_APPROVAL2,
     methods::DECIDE2,
     methods::CONSUME_APPROVAL2,

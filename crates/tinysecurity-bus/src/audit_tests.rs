@@ -151,3 +151,72 @@ fn legacy_audit_member_is_not_served_and_audit2_covers_every_legacy_kind()
     assert_eq!(serde_json::to_string(&AuditKind2::Shell)?, "\"shell\"");
     Ok(())
 }
+
+fn record() -> AuditRecordRequest2 {
+    AuditRecordRequest2 {
+        subject: request().scope,
+        stream_id: "a".repeat(32),
+        kind: AuditKind2::Execution,
+        attribution: "tool:shell".into(),
+        arguments_json: "{}".into(),
+        rule_ids: vec![],
+        audit: crate::AuditCorrelation2 {
+            event_id: "b".repeat(32),
+            expected_tail: 0,
+            generation: 1,
+        },
+    }
+}
+#[test]
+fn a_host_record_is_bounded_and_limited_to_host_recordable_kinds() {
+    assert!(record().validate().is_ok());
+    let mut policy = record();
+    policy.kind = AuditKind2::PolicyDecision;
+    assert!(policy.validate().is_ok());
+    for kind in [
+        AuditKind2::PolicyChanged,
+        AuditKind2::NativeRoutine,
+        AuditKind2::Approval,
+        AuditKind2::Judge,
+        AuditKind2::Shell,
+        AuditKind2::Sandbox,
+    ] {
+        let mut module_only = record();
+        module_only.kind = kind;
+        assert!(module_only.validate().is_err());
+    }
+    let mutations: [fn(&mut AuditRecordRequest2); 7] = [
+        |r| r.stream_id = "short".into(),
+        |r| r.audit.event_id = "z".repeat(32),
+        |r| r.subject.agent.clear(),
+        |r| r.audit.expected_tail = u64::MAX,
+        |r| r.arguments_json = "x".repeat(MAX_RECORD_ARGUMENTS_BYTES + 1),
+        |r| r.rule_ids = vec!["floor".into(); 65],
+        |r| r.attribution = "x".repeat(1025),
+    ];
+    for mutate in mutations {
+        let mut bad = record();
+        mutate(&mut bad);
+        assert!(bad.validate().is_err());
+    }
+}
+#[test]
+fn a_host_record_wire_form_is_exact_and_its_debug_is_redacted() -> Result<(), serde_json::Error> {
+    let wire = serde_json::to_value(record())?;
+    assert_eq!(wire["kind"], "execution");
+    assert_eq!(
+        serde_json::from_value::<AuditRecordRequest2>(wire.clone())?,
+        record()
+    );
+    let mut extra = wire;
+    extra["extra"] = serde_json::json!(1);
+    assert!(serde_json::from_value::<AuditRecordRequest2>(extra).is_err());
+    assert_eq!(
+        serde_json::to_value(AuditKind2::PolicyDecision)?,
+        "policy_decision"
+    );
+    assert!(!format!("{:?}", record()).contains("safe-user"));
+    assert_eq!(crate::names::methods::RECORD_AUDIT2, "RecordAudit2");
+    assert!(crate::names::METHODS.contains(&crate::names::methods::RECORD_AUDIT2));
+    Ok(())
+}

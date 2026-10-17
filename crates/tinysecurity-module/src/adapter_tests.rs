@@ -7,6 +7,8 @@ use tinysecurity_bus::*;
 pub(super) mod approval_tests;
 #[path = "adapter_host_tool_tests.rs"]
 mod host_tool_tests;
+#[path = "adapter_record_audit_tests.rs"]
+mod record_audit_tests;
 #[path = "adapter_scoped_audit_tests.rs"]
 mod scoped_audit_tests;
 #[tokio::test]

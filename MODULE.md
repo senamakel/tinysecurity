@@ -489,6 +489,28 @@ module, and a 1.21 host refuses a 1.20 module.
   sets the flag for an untrusted source or a mandatory-isolation (`SaaS`) scope is refused
   (`floor`), and an executor with no isolation or the `noop` backend is never accepted.
 
+## Host-recorded audit events (contract 1.21)
+
+Additive. `Audit2` accepts only the module's init-time scope and stream, which a host that
+serves many subjects never evaluates anything under. `RecordAudit2` appends one host event
+to the stream of the subject the host names:
+
+- `AuditRecordRequest2` carries the `subject`, its persisted `stream_id`, an `AuditKind2`, the
+  `attribution`, `arguments_json`, `rule_ids` and the exact `AuditCorrelation2` (event id,
+  committed tail, policy generation) the host reserved under its own stream lock.
+- The module sanitizes the payload with the policy's redactor (identifier-hashed subject, text
+  attribution, structured arguments), forwards it through the same `AuditSink2.Append`
+  callback and answers with the `AuditResponse2` evidence of `Audit2`. A host must treat an
+  answer without `committed` as a failed record; the module never fabricates a receipt.
+- Only `AuditKind2::Execution` and the new `AuditKind2::PolicyDecision` are accepted
+  (`AuditKind2::host_recordable`), so a host record cannot impersonate a module decision
+  (permission check, approval, judge, sandbox, policy change, native routine). `PolicyDecision`
+  is a call the host let through without a prompt: `auto_approve_all`, approvals switched off
+  for the agent, or an allowlist match.
+- A subject is bound to the first stream it is recorded under; a different stream for it, a
+  stale generation, a malformed identity or an oversized payload answers denied and uncommitted.
+  The member needs a configured audit client and errors without one.
+
 ## Host-tool admission (contract 1.20)
 
 Additive ([specification](docs/specs/host-tool-admission.md)). `Check::HostAction` and `Check::HostShell` judge a host
