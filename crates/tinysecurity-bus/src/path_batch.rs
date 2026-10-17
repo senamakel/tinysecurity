@@ -61,7 +61,8 @@ pub struct PathBatchResponse2 {
 /// Query the unconditional protected-path floor for paths outside any scope.
 ///
 /// The floor is lexical and needs no registered policy: credential stores, core
-/// system roots, `..` traversal and NUL bytes. It holds whether or not the host's
+/// system roots, parent-directory traversal (`..` and the forms Windows normalizes to it,
+/// such as `.. ` and `...`) and NUL bytes. It holds whether or not the host's
 /// discretionary policy is enabled.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

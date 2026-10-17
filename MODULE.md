@@ -48,7 +48,9 @@ checks. Check is an internal trusted-host operation, not a model-visible tool.
 Path checks require the host's absolute operation-resolved target, resolve existing
 ancestors including symlinks, and enforce the
 credential/system/traversal floor on lexical and resolved forms even when
-policy is disabled. Unknown native path dialects, broken symlinks and failed
+policy is disabled. Traversal is any segment that starts with `..` and holds only dots and
+spaces (`..`, `.. `, `...`), on every OS, since Windows normalizes those to `..`; such a
+`forbidden_paths` entry is rejected at registration. Unknown native path dialects, broken symlinks and failed
 resolution deny. Enabled action roots must resolve to existing directories;
 workspace and configured forbidden roots deny before approval. New files can
 be checked through their existing parent. Permission does not guarantee
@@ -503,7 +505,8 @@ cannot bind the call answers an error, never an allow. Latency budgets are per c
   like `CheckPath`.
 - `ProtectedPath2` (`ProtectedPathRequest2` -> `ProtectedPathResponse2`): the unconditional
   lexical floor with no scope and no filesystem access: credential stores, system and
-  installation roots, `..` traversal, NUL bytes and Windows roots and extended prefixes, on every
+  installation roots, parent-directory traversal (`..` and any segment of two or more dots
+  followed only by dots and spaces, such as `.. ` or `...`, which Windows normalizes to `..`), NUL bytes and Windows roots and extended prefixes, on every
   OS. At most 4096 paths. Budget: in memory, sub-millisecond.
 - `ProtectedFloor2` (no arguments): the floor's vocabulary (credential directories, single-file
   stores, segment pairs, lower-cased absolute prefixes), built from the constants the matcher
