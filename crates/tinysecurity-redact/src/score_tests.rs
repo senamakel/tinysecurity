@@ -680,3 +680,11 @@ fn registry_rejects_prompts_over_the_work_ceiling() {
     });
     assert!(result.is_err());
 }
+
+#[test]
+fn leet_and_cyrillic_confusables_fold_to_the_letters_they_imitate() {
+    let scorer = Scorer::new().unwrap_or_else(|_| unreachable!());
+    let normalized = scorer.normalize("01345786@ аеорсухіѕһԁ ＡＢＣ");
+    assert_eq!(normalized.collapsed, "oieastbga aeopcyxishd abc");
+    assert_eq!(normalized.compact, "oieastbgaaeopcyxishdabc");
+}
