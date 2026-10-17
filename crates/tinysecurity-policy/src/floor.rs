@@ -5,18 +5,10 @@
 //! from the very constants the matcher uses, so the two cannot drift.
 use crate::path::{
     CREDENTIAL_COMPONENTS, CREDENTIAL_FILE_STORES, CREDENTIAL_PAIRS, CRITICAL_ROOTS,
-    INSTALLATION_ROOTS, strip_native_namespace,
+    INSTALLATION_ROOTS, WINDOWS_SYSTEM_ROOTS, strip_native_namespace,
 };
 use std::path::Path;
 use tinysecurity_bus::ProtectedFloor2;
-
-/// Lower-cased absolute Windows system roots, on every drive and every OS.
-const WINDOWS_PREFIXES: &[&str] = &[
-    "c:/windows",
-    "c:/program files",
-    "c:/program files (x86)",
-    "c:/programdata",
-];
 
 /// Whether `path` is inside the unconditional floor: credential stores, system and
 /// installation roots, `..` traversal, NUL bytes and Windows system roots (including
@@ -54,8 +46,10 @@ pub fn floor_vocabulary() -> ProtectedFloor2 {
         prefixes: CRITICAL_ROOTS
             .iter()
             .chain(INSTALLATION_ROOTS)
-            .chain(WINDOWS_PREFIXES)
             .map(own)
+            // The matcher accepts these under every drive letter; the vocabulary names
+            // the canonical `C:` form.
+            .chain(WINDOWS_SYSTEM_ROOTS.iter().map(|root| format!("c:/{root}")))
             .collect(),
     }
 }

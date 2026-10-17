@@ -38,6 +38,14 @@ pub(super) const CREDENTIAL_PAIRS: &[(&str, &str)] = &[
     (".docker", "config.json"),
     (".cargo", "credentials.toml"),
 ];
+/// Windows system directories, matched under every drive letter by
+/// [`windows_system_root`]; the exported vocabulary derives from this list.
+pub(super) const WINDOWS_SYSTEM_ROOTS: &[&str] = &[
+    "windows",
+    "program files",
+    "program files (x86)",
+    "programdata",
+];
 pub(super) fn denial_segment(segment: &str) -> &str {
     segment
         .split(':')
@@ -119,10 +127,7 @@ pub(super) fn windows_system_root(path: &str) -> bool {
             .next()
             .unwrap_or(part)
             .trim_end_matches([' ', '.']);
-        matches!(
-            root,
-            "windows" | "program files" | "program files (x86)" | "programdata"
-        )
+        WINDOWS_SYSTEM_ROOTS.contains(&root)
     })
 }
 pub(super) fn valid_root(root: &str) -> bool {
