@@ -1,5 +1,7 @@
 //! Native immutable scoped privacy and URL policy. Hosts link only the bus contract.
 mod privacy;
+mod privacy_check;
+pub use privacy_check::privacy_verdict;
 mod registry;
 mod resolver;
 mod url_guard;

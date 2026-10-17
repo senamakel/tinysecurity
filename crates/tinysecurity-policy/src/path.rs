@@ -26,6 +26,10 @@ pub(super) const CREDENTIAL_COMPONENTS: &[&str] = &[
     ".pgpass",
     ".npmrc",
 ];
+/// Members of [`CREDENTIAL_COMPONENTS`] that name a single credential file rather
+/// than a credential directory. A subset, so the two views cannot drift.
+pub(super) const CREDENTIAL_FILE_STORES: &[&str] =
+    &[".netrc", ".git-credentials", ".pgpass", ".npmrc"];
 pub(super) const CREDENTIAL_PAIRS: &[(&str, &str)] = &[
     ("microsoft", "protect"),
     ("microsoft", "credentials"),
