@@ -430,3 +430,7 @@ mod tests;
 #[cfg(test)]
 #[path = "path_scope_contract_tests.rs"]
 mod contract_tests;
+
+#[cfg(test)]
+#[path = "path_scope_host_port_tests.rs"]
+mod host_port_tests;
