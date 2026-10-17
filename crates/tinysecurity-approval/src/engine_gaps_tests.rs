@@ -104,19 +104,30 @@ async fn automatic_origin_approvals_are_consumable_once_and_record_their_outcome
 async fn automatic_origins_never_approve_a_human_only_tool() -> Result<()> {
     let (_, owner) = owner()?;
     owner.register_scope(register(7)).await?;
-    for (index, origin) in [Origin::TrustedAutomation, Origin::LocalOperator]
-        .into_iter()
-        .enumerate()
-    {
-        let mut req = begin_for(7, "sandbox_host_network", None, origin);
-        req.request.caller.call_id = format!("plan-{index}");
-        req.request.call.checks = vec![Check::Unknown {
-            description: "sandbox_host_network".into(),
-        }];
-        req.audit = at(index as u64 + 1);
-        let row = owner.begin(req).await?;
-        assert_eq!(row.state, ApprovalLifecycle2::Pending, "{index}");
-        assert!(row.attribution.is_none());
+    let mut sequence = 0;
+    for tool in [
+        "sandbox_host_network",
+        "device_crypto",
+        "policy_change",
+        "native_secret_grant",
+    ] {
+        for origin in [Origin::TrustedAutomation, Origin::LocalOperator] {
+            sequence += 1;
+            let mut req = begin_for(7, tool, None, origin.clone());
+            req.request.caller.call_id = format!("plan-{sequence}");
+            req.request.call.checks = vec![Check::Unknown {
+                description: tool.into(),
+            }];
+            req.audit = at(sequence);
+            // The native grants are refused outright; the rest wait for a person.
+            match owner.begin(req).await {
+                Ok(row) => {
+                    assert_eq!(row.state, ApprovalLifecycle2::Pending, "{tool} {origin:?}");
+                    assert!(row.attribution.is_none());
+                }
+                Err(error) => assert_eq!(error, Error::Denied, "{tool} {origin:?}"),
+            }
+        }
     }
     Ok(())
 }

@@ -612,6 +612,15 @@ impl Engine {
             Rule::GrantOnly if entry.tool_grant(&request.request.call.tool).is_none() => {
                 Err(Error::Denied)
             }
+            // A human-only tool needs a fresh human decision under every origin: the
+            // trusted-origin shortcuts never cover it.
+            Rule::Automatic
+                if matches!(origin, Origin::TrustedAutomation | Origin::LocalOperator)
+                    && (HUMAN_ONLY_TOOLS2.contains(&request.request.call.tool.as_str())
+                        || binding::is_native(&request.request.call.tool)) =>
+            {
+                Ok(Rule::Approval)
+            }
             rule => Ok(rule),
         }
     }
