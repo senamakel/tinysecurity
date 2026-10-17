@@ -278,13 +278,11 @@ async fn granting_a_live_pair_twice_changes_nothing_and_lists_it_once() -> Resul
         one.iter()
             .all(|e| e.flow == all[0].flow || e.flow == all[1].flow || e.flow == all[2].flow)
     );
-    assert!(
-        owner
-            .list_flow_trust(listing(7, Some("flow-9")))
-            .await?
-            .entries
-            .is_empty()
-    );
+    let none = owner
+        .list_flow_trust(listing(7, Some("flow-9")))
+        .await?
+        .entries;
+    assert_eq!(none.len(), 0);
     Ok(())
 }
 
@@ -305,13 +303,8 @@ async fn revoking_flow_trust_stops_new_approvals_and_is_idempotent() -> Result<(
         .await?;
     assert_eq!(again.outcome, FlowTrustOutcome2::Absent);
     assert!(again.request_id.is_none());
-    assert!(
-        owner
-            .list_flow_trust(listing(7, None))
-            .await?
-            .entries
-            .is_empty()
-    );
+    let none = owner.list_flow_trust(listing(7, None)).await?.entries;
+    assert_eq!(none.len(), 0);
     let mut req = shell(7, Some("flow-1"), Origin::Operator, "call-1");
     req.audit = at(3);
     assert_eq!(owner.begin(req).await?.state, ApprovalLifecycle2::Pending);
@@ -417,13 +410,8 @@ async fn flow_trust_is_stale_after_the_policy_generation_advances() -> Result<()
         ..at(2)
     };
     assert_eq!(owner.begin(next).await?.state, ApprovalLifecycle2::Pending);
-    assert!(
-        owner
-            .list_flow_trust(listing(7, None))
-            .await?
-            .entries
-            .is_empty()
-    );
+    let none = owner.list_flow_trust(listing(7, None)).await?.entries;
+    assert_eq!(none.len(), 0);
     Ok(())
 }
 
