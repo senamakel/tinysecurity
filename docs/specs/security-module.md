@@ -222,6 +222,11 @@ phase. `RecordAudit2` (contract 1.21) lets the host append an `Execution` or
 `PolicyDecision` event to the stream of any subject it names, under the same
 sanitation, correlation and receipt rules as `Audit2`; see MODULE.md.
 
+Contract 1.22 adds `CheckPaths2`, `ProtectedPath2`, `ProtectedFloor2`, `SpendAction2`,
+`PeekBudget2`, `ClassifyHostAction2` and `PrivacyCheck2`: batch path checks, the unscoped
+lexical floor and its vocabulary, the shared hourly action ledger, host-action
+classification and a pure privacy decision. All fail closed; see MODULE.md.
+
 Local files: Unix creates journal, lock and JSONL projections fd-relative with
 mode 0600 and verifies owner and mode on every open. Windows requires a
 preprovisioned protected current-user DACL and creates new views with restricted

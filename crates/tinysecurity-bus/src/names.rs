@@ -67,6 +67,20 @@ pub mod methods {
     pub const VALIDATE_PARENT: &str = "ValidateParent";
     /// Boolean filesystem policy query.
     pub const CHECK_PATH: &str = "CheckPath";
+    /// One boolean filesystem query kind over an ordered batch of paths (contract 1.22).
+    pub const CHECK_PATHS2: &str = "CheckPaths2";
+    /// Unconditional protected-path floor over paths outside any scope (contract 1.22).
+    pub const PROTECTED_PATH2: &str = "ProtectedPath2";
+    /// The floor's component, file, pair and prefix vocabulary (contract 1.22).
+    pub const PROTECTED_FLOOR2: &str = "ProtectedFloor2";
+    /// Reserve one action from a registered command scope's hourly ledger (contract 1.22).
+    pub const SPEND_ACTION2: &str = "SpendAction2";
+    /// Read a registered command scope's hourly ledger without spending (contract 1.22).
+    pub const PEEK_BUDGET2: &str = "PeekBudget2";
+    /// Informational class of a host action by permission and external effect (contract 1.22).
+    pub const CLASSIFY_HOST_ACTION2: &str = "ClassifyHostAction2";
+    /// Descriptor-level privacy decision for a transfer with no pinned destination (contract 1.22).
+    pub const PRIVACY_CHECK2: &str = "PrivacyCheck2";
     /// Register an immutable per-subject policy over path and command scopes.
     pub const REGISTER_POLICY: &str = "RegisterPolicy";
     /// Atomically replace an active policy, with human review when it widens.
@@ -167,6 +181,13 @@ pub const METHODS: &[&str] = &[
     methods::VALIDATE_PATH,
     methods::VALIDATE_PARENT,
     methods::CHECK_PATH,
+    methods::CHECK_PATHS2,
+    methods::PROTECTED_PATH2,
+    methods::PROTECTED_FLOOR2,
+    methods::SPEND_ACTION2,
+    methods::PEEK_BUDGET2,
+    methods::CLASSIFY_HOST_ACTION2,
+    methods::PRIVACY_CHECK2,
     methods::REGISTER_COMMAND_POLICY,
     methods::CLASSIFY_COMMAND,
     methods::CHECK_COMMAND,

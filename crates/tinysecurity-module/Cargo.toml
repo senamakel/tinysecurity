@@ -35,6 +35,8 @@ tokio = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 # Disposable native filesystem policy scopes.
 tempfile.workspace = true
+# Generic bus-call helper in the gap-member tests bounds on `DeserializeOwned`.
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 [lints]

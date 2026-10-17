@@ -121,6 +121,33 @@ impl PolicyService {
         }
         Ok(evidence)
     }
+    /// Read or reserve one action from a registered command scope's hourly ledger.
+    /// A read-only tier refuses before anything is spent; a disabled scope is inert.
+    async fn budget_decision(
+        &self,
+        request: tinysecurity_bus::BudgetRequest2,
+        spend: bool,
+    ) -> BusResult<tinysecurity_bus::BudgetDecision2> {
+        use tinysecurity_bus::{BudgetDecision2, CommandAutonomy};
+        self.require_unbound_permission()?;
+        let scope = self
+            .commands
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .get_owned(&request.command_policy)
+            .map_err(|error| failure(&error))?;
+        let max_per_hour = scope.max_actions_per_hour();
+        let decision = if !scope.enabled() {
+            BudgetDecision2::Allow
+        } else if scope.autonomy() == CommandAutonomy::ReadOnly {
+            BudgetDecision2::ReadOnlyMode
+        } else if (spend && !scope.reserve()) || (!spend && scope.exhausted()) {
+            BudgetDecision2::RateLimited { max_per_hour }
+        } else {
+            BudgetDecision2::Allow
+        };
+        std::future::ready(Ok(decision)).await
+    }
     async fn run_path<T, F>(&self, id: tinysecurity_bus::PathPolicyId, operation: F) -> BusResult<T>
     where
         T: Send + 'static,
@@ -469,6 +496,83 @@ impl PolicyService {
         self.run_path(request.policy_id, move |scope| {
             scope.check_path(&request.path, request.kind)
         })
+        .await
+    }
+    async fn check_paths2(
+        &self,
+        request: tinysecurity_bus::PathBatchRequest2,
+    ) -> BusResult<tinysecurity_bus::PathBatchResponse2> {
+        self.require_unbound_permission()?;
+        request.validate().map_err(|error| failure(&error))?;
+        let tinysecurity_bus::PathBatchRequest2 {
+            policy_id,
+            kind,
+            paths,
+        } = request;
+        // One blocking hop for the whole batch; each entry is an independent
+        // `CheckPath`-equivalent query with no result shared between entries.
+        let allowed = self
+            .run_path(policy_id, move |scope| {
+                paths
+                    .iter()
+                    .map(|path| scope.check_path(path, kind))
+                    .collect::<Vec<_>>()
+            })
+            .await?;
+        Ok(tinysecurity_bus::PathBatchResponse2 { allowed })
+    }
+    async fn protected_path2(
+        &self,
+        request: tinysecurity_bus::ProtectedPathRequest2,
+    ) -> BusResult<tinysecurity_bus::ProtectedPathResponse2> {
+        request.validate().map_err(|error| failure(&error))?;
+        std::future::ready(Ok(tinysecurity_bus::ProtectedPathResponse2 {
+            protected: request
+                .paths
+                .iter()
+                .map(|path| tinysecurity::lexical_floor(path))
+                .collect(),
+        }))
+        .await
+    }
+    async fn protected_floor2(&self) -> BusResult<tinysecurity_bus::ProtectedFloor2> {
+        std::future::ready(Ok(tinysecurity::floor_vocabulary())).await
+    }
+    async fn spend_action2(
+        &self,
+        request: tinysecurity_bus::BudgetRequest2,
+    ) -> BusResult<tinysecurity_bus::BudgetDecision2> {
+        self.budget_decision(request, true).await
+    }
+    async fn peek_budget2(
+        &self,
+        request: tinysecurity_bus::BudgetRequest2,
+    ) -> BusResult<tinysecurity_bus::BudgetDecision2> {
+        self.budget_decision(request, false).await
+    }
+    async fn classify_host_action2(
+        &self,
+        request: tinysecurity_bus::HostActionClassRequest2,
+    ) -> BusResult<tinysecurity_bus::HostActionClassResponse2> {
+        std::future::ready(Ok(tinysecurity_bus::HostActionClassResponse2 {
+            class: request.class(),
+        }))
+        .await
+    }
+    async fn privacy_check2(
+        &self,
+        request: tinysecurity_bus::PrivacyCheckRequest2,
+    ) -> BusResult<tinysecurity_bus::PrivacyCheckResponse2> {
+        self.require_unbound_permission()?;
+        request.validate().map_err(|error| failure(&error))?;
+        let generation = self.read()?.info().generation;
+        std::future::ready(Ok(tinysecurity_bus::PrivacyCheckResponse2 {
+            decision: Decision {
+                generation,
+                verdict: tinysecurity::privacy_verdict(&request),
+                cacheable: false,
+            },
+        }))
         .await
     }
 
@@ -1840,7 +1944,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "GrantFlowTool2", "RevokeFlowTool2", "ListFlowTrust2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "RegisterSandboxScope2", "RetireSandboxScope2", "Audit2", "RecordAudit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanPrompt2", "ScanToolDefinition"],
+    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "GrantFlowTool2", "RevokeFlowTool2", "ListFlowTrust2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "RegisterSandboxScope2", "RetireSandboxScope2", "Audit2", "RecordAudit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "CheckPaths2", "ProtectedPath2", "ProtectedFloor2", "SpendAction2", "PeekBudget2", "ClassifyHostAction2", "PrivacyCheck2", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanPrompt2", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = ["ai.tinyhumans.tinysecurity.KeyringConsent2", "ai.tinyhumans.tinysecurity.SecretCipherConsumer2", "ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],

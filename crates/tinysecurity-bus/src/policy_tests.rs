@@ -130,6 +130,7 @@ fn new_denial_reasons_have_stable_wire_forms_and_old_ones_are_unchanged() -> Tes
             serde_json::json!("scheduled_read_only"),
         ),
         (DenialReason::HighRisk, serde_json::json!("high_risk")),
+        (DenialReason::Privacy, serde_json::json!("privacy")),
         (
             DenialReason::RateLimited { max_per_hour: 7 },
             serde_json::json!({"rate_limited": {"max_per_hour": 7}}),

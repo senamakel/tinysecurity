@@ -9,6 +9,8 @@ pub use engine::Policy;
 pub use host_tool::scope_ids as host_tool_scope_ids;
 pub use host_tool::{ScopeConflict, request_scope as host_tool_request_scope};
 
+mod floor;
+pub use floor::{floor_vocabulary, lexical_floor};
 mod path_subtree;
 pub use path_subtree::protected_subtree;
 mod path_scope;
