@@ -597,6 +597,7 @@ accepted input.
 `ScanPrompt` and `ScanToolDefinition` keep their verdict wire. Their scanner now also reports a
 space-padded `jailbreak` as `override.obfuscated_role`, so a remote tool description with spaced-out
 trigger words no longer slips through.
+
 ## Executor choice, workspace-less plans and the operator's host run (contract 1.22)
 
 Additive: `SandboxPlanRequest2.options` (`SandboxPlanOptions2`) and two `SandboxArtifact2`
