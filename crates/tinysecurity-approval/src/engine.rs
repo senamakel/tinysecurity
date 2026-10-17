@@ -579,6 +579,10 @@ impl Engine {
         }
         Ok(row)
     }
+    /// The judge never qualifies a human-only tool, however the tool is named.
+    fn judge_barred(tool: &str) -> bool {
+        binding::is_native(tool) || HUMAN_ONLY_TOOLS2.contains(&tool)
+    }
     /// The host-configured or durable grant that approves the call, when none of the
     /// human-only or reviewed-reuse paths already decided it.
     fn automatic_grant(
@@ -848,6 +852,9 @@ impl Engine {
         bound: &tinysecurity_bus::ApprovalBinding2,
         external_effect: bool,
     ) -> Result<Option<tinysecurity_bus::JudgeEvidence2>> {
+        if Self::judge_barred(&request.request.call.tool) {
+            return Ok(None);
+        }
         let Some(engine) = self.automatic()? else {
             return Ok(None);
         };

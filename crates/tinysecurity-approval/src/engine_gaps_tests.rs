@@ -600,3 +600,29 @@ async fn a_full_scope_takes_no_new_flow_trust_but_still_answers_for_a_live_one()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_revoked_pair_can_be_granted_again_even_on_a_full_scope() -> Result<()> {
+    let (_, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    for n in 0..960u64 {
+        owner
+            .grant_flow_tool(grant(7, &format!("flow-{n}"), "shell", n + 1))
+            .await?;
+    }
+    let revoked = owner
+        .revoke_flow_tool(revoke(7, "flow-0", "shell", 961))
+        .await?;
+    assert_eq!(revoked.outcome, FlowTrustOutcome2::Revoked);
+    let again = owner
+        .grant_flow_tool(grant(7, "flow-0", "shell", 962))
+        .await?;
+    assert_eq!(again.outcome, FlowTrustOutcome2::Granted);
+    assert!(
+        owner
+            .grant_flow_tool(grant(7, "brand-new", "shell", 963))
+            .await
+            .is_err()
+    );
+    Ok(())
+}

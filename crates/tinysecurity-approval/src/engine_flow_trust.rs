@@ -119,7 +119,12 @@ impl Engine {
         }
         // A scope's whole row set must stay loadable (`ApprovalLoadRequest2` caps it),
         // so a long-lived grant never takes the last slot of a full scope.
-        if rows.len() >= MAX_SCOPE_ROWS {
+        // A pair that already has a record (revoked or expired) renews without
+        // pushing the scope far past its margin, so it is never locked out.
+        let known = rows
+            .iter()
+            .any(|r| r.attribution.as_deref() == Some(ATTRIBUTION) && r.binding.call_sha256 == key);
+        if rows.len() >= MAX_SCOPE_ROWS && !known {
             return Err(Error::Unavailable);
         }
         let redactor = self.redactor()?;
