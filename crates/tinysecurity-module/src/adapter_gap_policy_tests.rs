@@ -165,7 +165,7 @@ async fn path_batch_fails_closed_on_unknown_scope_and_oversize() -> TestResult {
         },
     )
     .await?;
-    assert!(empty.allowed.is_empty());
+    assert_eq!(empty.allowed, Vec::<bool>::new());
     Ok(())
 }
 
