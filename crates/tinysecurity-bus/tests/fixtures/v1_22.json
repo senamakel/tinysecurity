@@ -1,0 +1,34 @@
+{
+  "PathBatchRequest2": {
+    "policy_id": "path-scope-0",
+    "kind": "resolved_write",
+    "paths": ["/work/a.txt", "/work/b.txt"]
+  },
+  "PathBatchResponse2": { "allowed": [true, false] },
+  "ProtectedPathRequest2": { "paths": ["/home/u/.ssh/id_rsa"] },
+  "ProtectedPathResponse2": { "protected": [true] },
+  "ProtectedFloor2": {
+    "components": [".ssh"],
+    "files": [".netrc"],
+    "pairs": [[".docker", "config.json"]],
+    "prefixes": ["/etc"]
+  },
+  "BudgetRequest2": { "command_policy": "command-scope-0" },
+  "BudgetDecision2": { "status": "rate_limited", "max_per_hour": 20 },
+  "HostActionClassRequest2": { "permission": "write", "external_effect": true },
+  "HostActionClassResponse2": { "class": "network" },
+  "PrivacyCheckRequest2": {
+    "privacy": "sensitive",
+    "external": true,
+    "class": "user_content",
+    "destination_label": "openrouter",
+    "risk": { "level": "low", "categories": ["email"] }
+  },
+  "PrivacyCheckResponse2": {
+    "decision": {
+      "generation": 3,
+      "verdict": { "kind": "deny", "reason": "privacy" },
+      "cacheable": false
+    }
+  }
+}

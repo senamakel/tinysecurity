@@ -22,32 +22,38 @@ mod approval_scopes;
 pub use approval_scopes::*;
 mod audit;
 mod audited;
+mod budget;
 mod callbacks;
 mod command_policy;
 mod egress;
 mod error;
 mod future;
+mod path_batch;
 mod path_policy;
 mod policy;
+mod privacy_check;
 mod prompt;
 mod redact;
 mod scoped_policy;
 pub use audit::*;
 pub use audited::*;
+pub use budget::*;
 pub use callbacks::*;
 pub use command_policy::*;
 pub use egress::*;
 pub use error::*;
 pub use future::*;
+pub use path_batch::*;
 pub use path_policy::*;
 pub use policy::*;
+pub use privacy_check::*;
 pub use prompt::*;
 pub use redact::RedactWithRequest;
 pub use redact::RedactorConfig;
 pub use scoped_policy::*;
 pub mod names;
 /// Current wire vocabulary version, independent of the artifact version.
-pub const CONTRACT_VERSION: (u32, u32) = (1, 21);
+pub const CONTRACT_VERSION: (u32, u32) = (1, 22);
 /// Whether a remote module's advertised version supplies this host's vocabulary.
 ///
 /// `version` is the provider version received by the host, not a host requirement
