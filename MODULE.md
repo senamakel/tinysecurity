@@ -547,7 +547,7 @@ decides what each answers, without parking the call:
 | `Unlabelled` | Denied, unless the scope holds a whole-tool grant for the tool: then an audited approval attributed `auto:tool-grant`. No prompt, no reviewed-reuse row, no judge, and neither `auto_approve_all` nor a flow grant approves it. |
 
 A human-only tool (`sandbox_host_network`, `device_crypto`, `policy_change` and the native
-grants) still needs its own fresh human decision under every origin. The automatic approvals are
+grants) still needs its own fresh human decision under every origin, and no earlier decision of its content is reused. A sandbox scope whose origin is `Unlabelled` is treated like `SaaS` for the operator privileges (mandatory isolation, no operator host network, no unjailed host run). The automatic approvals are
 persisted and audited through the same callbacks as any other row and are consumed once like any
 other row; replacing the scope or a grant revokes an unconsumed one.
 
@@ -563,6 +563,7 @@ automatic one attributed `auto:flow-grant`.
 
 - The row's binding digests live in their own domain, so the row can never equal a real call's
   binding: it is never consumed, never resumed and never satisfies `PreauthorizeFlow2`.
+- A flow identity may be up to 1024 bytes (a caller's flow identity), a tool name follows the 256-byte grant-name rule, and revocation validates names exactly as a grant does. A scope that already holds 960 rows refuses a new grant (`unavailable`) so its whole row set stays loadable.
 - Granting a live pair is `Unchanged`; revoking a missing pair is `Absent`, so both are idempotent.
   Grants and revocations of a scope are serialized, so one pair has one live row.
 - The row is bound to the scope's subject, policy reference and generation, like every durable

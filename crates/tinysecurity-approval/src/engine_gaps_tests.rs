@@ -475,3 +475,154 @@ async fn a_flow_trust_row_cannot_be_preauthorized_decided_or_consumed_as_a_human
     assert!(owner.consume(consume).await.is_err());
     Ok(())
 }
+
+#[tokio::test]
+async fn an_unlabelled_approval_dies_when_only_a_flow_grant_remains() -> Result<()> {
+    let (_, owner) = owner()?;
+    let mut req = register(7);
+    req.grants = grants(&["shell"], &[]);
+    owner.register_scope(req.clone()).await?;
+    let call = shell(7, Some("flow-1"), Origin::Unlabelled, "call-1");
+    let row = owner.begin(call.clone()).await?;
+    assert_eq!(row.attribution.as_deref(), Some("auto:tool-grant"));
+    // The whole-tool grant is replaced by a flow grant for the same tool and flow.
+    req.grants = grants(&[], &[("flow-1", "shell")]);
+    owner.replace_scope(req)?;
+    let consumption = ApprovalActionRequest2 {
+        scope_id: id(7),
+        request_id: row.request_id,
+        request: call.request,
+        audit: at(2),
+    };
+    assert!(owner.consume(consumption).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_reviewed_human_only_tool_is_never_reused_by_a_trusted_origin() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    fixture.choice.store(1, Ordering::SeqCst); // the human answers "this tool"
+    let ask = |call: &str, tail: u64| {
+        let mut req = begin_for(7, "policy_change", None, Origin::LocalOperator);
+        req.request.caller.call_id = call.into();
+        req.request.call.checks = vec![Check::Unknown {
+            description: "policy_change".into(),
+        }];
+        req.audit = at(tail);
+        req
+    };
+    let first = owner.begin(ask("call-1", 1)).await?;
+    assert_eq!(first.state, ApprovalLifecycle2::Pending);
+    let decision = DecideRequest2 {
+        scope_id: id(7),
+        request_id: first.request_id,
+        decision_ticket: "private-human-ticket".into(),
+        audit: at(2),
+    };
+    owner.decide(decision).await?;
+    let again = owner.begin(ask("call-2", 3)).await?;
+    assert_eq!(
+        again.state,
+        ApprovalLifecycle2::Pending,
+        "asked a person again"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn revocation_refuses_names_a_grant_could_never_carry() -> Result<()> {
+    let (_, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    for (flow, tool) in [
+        ("flow-1", "device_crypto"),
+        ("flow-1", "native_secret_grant"),
+        ("flow-1", " "),
+        ("flow\n1", "shell"),
+        ("", "shell"),
+    ] {
+        assert_eq!(
+            owner.revoke_flow_tool(revoke(7, flow, tool, 1)).await.err(),
+            Some(Error::Invalid),
+            "{flow:?} {tool:?}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_flow_identity_may_be_as_long_as_a_callers_but_a_tool_name_keeps_its_bound() -> Result<()>
+{
+    let (_, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    let flow = "f".repeat(1024);
+    let receipt = owner.grant_flow_tool(grant(7, &flow, "shell", 1)).await?;
+    assert_eq!(receipt.outcome, FlowTrustOutcome2::Granted);
+    assert!(
+        owner
+            .grant_flow_tool(grant(7, &"f".repeat(1025), "shell", 2))
+            .await
+            .is_err()
+    );
+    assert!(
+        owner
+            .grant_flow_tool(grant(7, "flow-1", &"t".repeat(257), 2))
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_full_scope_takes_no_new_flow_trust_but_still_answers_for_a_live_one() -> Result<()> {
+    let (_, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    for n in 0..960u64 {
+        owner
+            .grant_flow_tool(grant(7, &format!("flow-{n}"), "shell", n + 1))
+            .await?;
+    }
+    assert_eq!(
+        owner
+            .grant_flow_tool(grant(7, "one-more", "shell", 961))
+            .await
+            .err(),
+        Some(Error::Unavailable)
+    );
+    let again = owner
+        .grant_flow_tool(grant(7, "flow-0", "shell", 962))
+        .await?;
+    assert_eq!(again.outcome, FlowTrustOutcome2::Unchanged);
+    // The scope still loads.
+    assert_eq!(
+        owner.list_flow_trust(listing(7, None)).await?.entries.len(),
+        960
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_revoked_pair_can_be_granted_again_even_on_a_full_scope() -> Result<()> {
+    let (_, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    for n in 0..960u64 {
+        owner
+            .grant_flow_tool(grant(7, &format!("flow-{n}"), "shell", n + 1))
+            .await?;
+    }
+    let revoked = owner
+        .revoke_flow_tool(revoke(7, "flow-0", "shell", 961))
+        .await?;
+    assert_eq!(revoked.outcome, FlowTrustOutcome2::Revoked);
+    let again = owner
+        .grant_flow_tool(grant(7, "flow-0", "shell", 962))
+        .await?;
+    assert_eq!(again.outcome, FlowTrustOutcome2::Granted);
+    assert!(
+        owner
+            .grant_flow_tool(grant(7, "brand-new", "shell", 963))
+            .await
+            .is_err()
+    );
+    Ok(())
+}
