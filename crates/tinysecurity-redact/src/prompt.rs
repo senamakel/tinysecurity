@@ -71,19 +71,30 @@ impl Scanner {
             }
         }
         let compact: String = normalized.chars().filter(|c| !c.is_whitespace()).collect();
-        if [
-            "ignorepreviousinstructions",
-            "ignoreallpreviousinstructions",
-        ]
-        .iter()
-        .any(|s| compact.contains(s))
-            && !result.rule_ids.iter().any(|s| s == "override.instructions")
-        {
-            result
-                .rule_ids
-                .push("override.obfuscated_instructions".into());
-            if result.verdict == ScanVerdict::Clean {
-                result.verdict = ScanVerdict::Suspicious;
+        // Whitespace-stripped variant: only for triggers an attacker space-pads and that
+        // are distinctive enough to match without word boundaries.
+        for (id, literals, blocking_rule) in [
+            (
+                "override.obfuscated_instructions",
+                &[
+                    "ignorepreviousinstructions",
+                    "ignoreallpreviousinstructions",
+                ][..],
+                "override.instructions",
+            ),
+            (
+                "override.obfuscated_role",
+                &["jailbreak"][..],
+                "override.role",
+            ),
+        ] {
+            if literals.iter().any(|s| compact.contains(s))
+                && !result.rule_ids.iter().any(|s| s == blocking_rule)
+            {
+                result.rule_ids.push(id.into());
+                if result.verdict == ScanVerdict::Clean {
+                    result.verdict = ScanVerdict::Suspicious;
+                }
             }
         }
         result.rule_ids.sort();

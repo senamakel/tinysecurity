@@ -529,6 +529,74 @@ cannot bind the call answers an error, never an allow. Latency budgets are per c
   `Verdict::Deny { reason: DenialReason::Privacy }`, `cacheable: false`, stamped with the live
   policy generation. Budget: a pure in-memory decision. Refused with required audit.
 
+## Approval origin classes, durable flow trust and scored prompt screening (contract 1.22)
+
+Additive: every new member and enum value is absent from a 1.21 host's traffic, and a 1.22 host
+refuses a 1.21 module.
+
+### Origin classes for `EvaluateApproval2`
+
+`Origin` gains `TrustedAutomation`, `LocalOperator` and `Unlabelled`. The module, not the host,
+decides what each answers, without parking the call:
+
+| Origin | Answer |
+| --- | --- |
+| `Cron` | An external effect is denied; a read stays automatic (unchanged). |
+| `TrustedAutomation` | Audited automatic approval, attribution `auto:trusted-automation`. The host's internal background jobs and workflow actions the user already declared. |
+| `LocalOperator` | Audited automatic approval, attribution `auto:local-operator`. The CLI and a direct chat. |
+| `Unlabelled` | Denied, unless the scope holds a whole-tool grant for the tool: then an audited approval attributed `auto:tool-grant`. No prompt, no reviewed-reuse row, no judge, and neither `auto_approve_all` nor a flow grant approves it. |
+
+A human-only tool (`sandbox_host_network`, `device_crypto`, `policy_change` and the native
+grants) still needs its own fresh human decision under every origin. The automatic approvals are
+persisted and audited through the same callbacks as any other row and are consumed once like any
+other row; replacing the scope or a grant revokes an unconsumed one.
+
+### Durable flow trust: `GrantFlowTool2`, `RevokeFlowTool2`, `ListFlowTrust2`
+
+"Always allow this tool in this flow" persists across restarts through the host-served
+`ApprovalStore2` callback, with no host-side store. One `GrantFlowTool2 { scope_id, flow_id, tool,
+audit }` writes one `Approved` row (choice `flow`, attribution `flow-trust-grant`, no human ticket)
+through `Cas`; `RevokeFlowTool2` cancels it; `ListFlowTrust2 { scope_id, flow_id? }` reads the
+live rows (flow identifiers come back as the stored identifier hash). While a row is live,
+`EvaluateApproval2` converts a required approval of the exact tool inside the exact flow into an
+automatic one attributed `auto:flow-grant`.
+
+- The row's binding digests live in their own domain, so the row can never equal a real call's
+  binding: it is never consumed, never resumed and never satisfies `PreauthorizeFlow2`.
+- Granting a live pair is `Unchanged`; revoking a missing pair is `Absent`, so both are idempotent.
+  Grants and revocations of a scope are serialized, so one pair has one live row.
+- The row is bound to the scope's subject, policy reference and generation, like every durable
+  grant: advancing the generation or replacing the policy reference makes it stale. It lives ten
+  years (`FLOW_TRUST_LIFETIME_MS2`); a later grant of the same pair renews an expired row.
+- A human-only or native tool, a blank or control-character name and an oversized name are
+  refused. A trust never overrides a denial, a Cron external effect or a human-only tool. An
+  approval it produced is re-checked at consumption, so revoking the trust first revokes it.
+- Grants configured in `RegisterApprovalScope2` stay in memory and are replayed by the host; the
+  durable rows are additional.
+- Latency budget: one `Load` plus one `Cas` and one audit append, so the host's store latency plus
+  about 1 ms. `ListFlowTrust2` is one `Load`.
+
+### Scored prompt screening: `ScanPrompt2`
+
+`ScanPrompt2 { text }` answers `{ tier, score_milli, rule_ids }`. The tier is `allow`, `review` or
+`block` (thresholds 550 and 700 thousandths); the score is the additive rule weight in
+thousandths, capped at 1000; `rule_ids` are content-free codes in detection order. It carries the
+detector the host used to run itself: the override, role-hijack, system-prompt, credential and
+tool-abuse rules, the obfuscated-instruction and exfiltration-intent heuristics, leet, Cyrillic,
+fullwidth and invisible-character normalization, and three matching variants (lowered, collapsed,
+compact) so space-padded single-token triggers still score. Its false-positive tuning is kept:
+recalled-memory transcripts that merely mention "system prompt" or a "token push", the plural
+"tokens" of language-model text, and a colleague named Dan. A base64-like run and an
+invisible character are reported (`obfuscation.base64_run`, `obfuscation.invisible_character`) but
+carry no weight: they are common in benign content. The host's optional environment classifier is
+not part of the module. A tier is context and never authorizes execution. Input is bounded at
+64 KiB; larger input is refused, never truncated. Latency budget: about 20 us per KiB in release
+(1 KiB 19 us, 4 KiB 65 us, 64 KiB 1.0 ms on the reference machine), so p99 under 5 ms for any
+accepted input.
+
+`ScanPrompt` and `ScanToolDefinition` keep their verdict wire. Their scanner now also reports a
+space-padded `jailbreak` as `override.obfuscated_role`, so a remote tool description with spaced-out
+trigger words no longer slips through.
 ## Executor choice, workspace-less plans and the operator's host run (contract 1.22)
 
 Additive: `SandboxPlanRequest2.options` (`SandboxPlanOptions2`) and two `SandboxArtifact2`

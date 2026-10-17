@@ -41,6 +41,12 @@ pub mod methods {
     pub const EXPIRE_APPROVAL2: &str = "ExpireApproval2";
     /// Bounded exact already-reviewed flow grant validation.
     pub const PREAUTHORIZE_FLOW2: &str = "PreauthorizeFlow2";
+    /// Durably trust one tool inside one flow (contract 1.22).
+    pub const GRANT_FLOW_TOOL2: &str = "GrantFlowTool2";
+    /// Withdraw durable trust of one tool inside one flow (contract 1.22).
+    pub const REVOKE_FLOW_TOOL2: &str = "RevokeFlowTool2";
+    /// Read the live durable flow trust of one scope (contract 1.22).
+    pub const LIST_FLOW_TRUST2: &str = "ListFlowTrust2";
     /// Register a runtime approval scope and its tool and flow grants (contract 1.17).
     pub const REGISTER_APPROVAL_SCOPE2: &str = "RegisterApprovalScope2";
     /// Atomically replace one scope's posture, grants or policy reference (contract 1.17).
@@ -117,6 +123,8 @@ pub mod methods {
     pub const REDACT_WITH: &str = "RedactWith";
     /// `ScanPrompt` member.
     pub const SCAN_PROMPT: &str = "ScanPrompt";
+    /// Scored prompt screening: tier, score and rule codes (contract 1.22).
+    pub const SCAN_PROMPT2: &str = "ScanPrompt2";
     /// `ScanToolDefinition` member.
     pub const SCAN_TOOL_DEFINITION: &str = "ScanToolDefinition";
     /// `EgressCheck` member.
@@ -192,6 +200,7 @@ pub const METHODS: &[&str] = &[
     methods::REDACT,
     methods::REDACT_WITH,
     methods::SCAN_PROMPT,
+    methods::SCAN_PROMPT2,
     methods::SCAN_TOOL_DEFINITION,
     methods::AUDIT2,
     methods::RECORD_AUDIT2,
@@ -203,6 +212,9 @@ pub const METHODS: &[&str] = &[
     methods::CANCEL_APPROVAL2,
     methods::EXPIRE_APPROVAL2,
     methods::PREAUTHORIZE_FLOW2,
+    methods::GRANT_FLOW_TOOL2,
+    methods::REVOKE_FLOW_TOOL2,
+    methods::LIST_FLOW_TRUST2,
     methods::REGISTER_APPROVAL_SCOPE2,
     methods::REPLACE_APPROVAL_SCOPE2,
     methods::RETIRE_APPROVAL_SCOPE2,
