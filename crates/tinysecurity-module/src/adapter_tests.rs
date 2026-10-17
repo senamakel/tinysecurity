@@ -5,6 +5,8 @@ use tinybus::{Interface, broker::Broker, transport::memory::MemoryBus};
 use tinysecurity_bus::*;
 #[path = "adapter_approval_tests.rs"]
 pub(super) mod approval_tests;
+#[path = "adapter_gap_policy_tests.rs"]
+mod gap_policy_tests;
 #[path = "adapter_host_tool_tests.rs"]
 mod host_tool_tests;
 #[path = "adapter_record_audit_tests.rs"]

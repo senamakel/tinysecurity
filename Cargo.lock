@@ -1801,6 +1801,7 @@ version = "0.13.0"
 dependencies = [
  "async-trait",
  "getrandom 0.3.4",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",

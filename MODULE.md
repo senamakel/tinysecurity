@@ -489,6 +489,46 @@ module, and a 1.21 host refuses a 1.20 module.
   sets the flag for an untrusted source or a mandatory-isolation (`SaaS`) scope is refused
   (`floor`), and an executor with no isolation or the `noop` backend is never accepted.
 
+## Policy and egress gap members (contract 1.22)
+
+Additive. Seven members close the gaps that kept host-side security code alive. Every external
+effect fails closed: an unknown scope, a malformed or oversized input, or a required audit that
+cannot bind the call answers an error, never an allow. Latency budgets are per call.
+
+- `CheckPaths2` (`PathBatchRequest2` -> `PathBatchResponse2`): one `PathCheckKind` over up to
+  4096 paths (each at most 4096 bytes) under a registered path scope. The answer has the
+  request's length and order and equals the per-path `CheckPath` answers; no result is shared
+  between entries. Budget: one `spawn_blocking` for the whole batch, filesystem metadata per
+  path, so a directory walk pays one bus round trip per batch. Refused with required audit,
+  like `CheckPath`.
+- `ProtectedPath2` (`ProtectedPathRequest2` -> `ProtectedPathResponse2`): the unconditional
+  lexical floor with no scope and no filesystem access: credential stores, system and
+  installation roots, `..` traversal, NUL bytes and Windows roots and extended prefixes, on every
+  OS. At most 4096 paths. Budget: in memory, sub-millisecond.
+- `ProtectedFloor2` (no arguments): the floor's vocabulary (credential directories, single-file
+  stores, segment pairs, lower-cased absolute prefixes), built from the constants the matcher
+  uses, so a host handing it to a jail grant resolver cannot drift from `ProtectedPath2`.
+  Budget: in memory, sub-millisecond.
+- `SpendAction2` and `PeekBudget2` (`BudgetRequest2` -> `BudgetDecision2`): the registered
+  command scope's hourly ledger, the one `CheckCommand` and `Check::HostAction` spend. For an
+  enabled scope, a read-only tier answers `read_only_mode` before anything is spent; otherwise
+  `PeekBudget2` answers `rate_limited` when the ledger is spent and `SpendAction2` reserves one
+  action or answers `rate_limited` (reservations are not refunded). A disabled scope always
+  answers `allow` and spends nothing. An unknown scope is an error. The ledger survives
+  reinit. Budget: in memory, sub-millisecond. Refused with required audit.
+- `ClassifyHostAction2` (`HostActionClassRequest2` -> `HostActionClassResponse2`): the
+  informational `CommandClass` of a host tool from its permission level and external effect.
+  Never an execution grant and independent of audit configuration. Budget: in memory,
+  sub-millisecond.
+- `PrivacyCheck2` (`PrivacyCheckRequest2` -> `PrivacyCheckResponse2`): the privacy half of
+  egress for call sites with no destination to pin. `Standard`, a local destination and the
+  control plane always pass; `local_only` refuses every external transfer that is not control
+  plane; `sensitive` refuses external user content unless it was assessed `none` or `low`
+  with no identifying category (credential, secret, token, password, identifier, email,
+  phone, ssn, card) and refuses an unassessed payload. A refusal is
+  `Verdict::Deny { reason: DenialReason::Privacy }`, `cacheable: false`, stamped with the live
+  policy generation. Budget: a pure in-memory decision. Refused with required audit.
+
 ## Host-recorded audit events (contract 1.21)
 
 Additive. `Audit2` accepts only the module's init-time scope and stream, which a host that

@@ -35,6 +35,7 @@ tokio = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 # Disposable native filesystem policy scopes.
 tempfile.workspace = true
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 [lints]

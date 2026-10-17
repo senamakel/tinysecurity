@@ -11,11 +11,11 @@ const CLASSES: [PrivacyDataClass2; 3] = [
     PrivacyDataClass2::UserContent,
 ];
 
-fn risk(level: PrivacyRiskLevel2, categories: &[&str]) -> Option<PrivacyRisk2> {
-    Some(PrivacyRisk2 {
+fn risk(level: PrivacyRiskLevel2, categories: &[&str]) -> PrivacyRisk2 {
+    PrivacyRisk2 {
         level,
         categories: categories.iter().map(|c| (*c).to_owned()).collect(),
-    })
+    }
 }
 
 fn request(
@@ -38,7 +38,7 @@ fn expected_denied(
     mode: &PrivacyMode,
     external: bool,
     class: PrivacyDataClass2,
-    risk: &Option<PrivacyRisk2>,
+    risk: Option<&PrivacyRisk2>,
 ) -> bool {
     if !external || class == PrivacyDataClass2::ControlPlane {
         return false;
@@ -80,13 +80,13 @@ fn expected_denied(
 fn full_truth_table_over_mode_external_class_and_risk() {
     let risks = [
         None,
-        risk(PrivacyRiskLevel2::None, &[]),
-        risk(PrivacyRiskLevel2::Low, &[]),
-        risk(PrivacyRiskLevel2::Low, &["Email_Address"]),
-        risk(PrivacyRiskLevel2::None, &["geo", "language"]),
-        risk(PrivacyRiskLevel2::Medium, &[]),
-        risk(PrivacyRiskLevel2::High, &["geo"]),
-        risk(PrivacyRiskLevel2::None, &["CREDENTIAL"]),
+        Some(risk(PrivacyRiskLevel2::None, &[])),
+        Some(risk(PrivacyRiskLevel2::Low, &[])),
+        Some(risk(PrivacyRiskLevel2::Low, &["Email_Address"])),
+        Some(risk(PrivacyRiskLevel2::None, &["geo", "language"])),
+        Some(risk(PrivacyRiskLevel2::Medium, &[])),
+        Some(risk(PrivacyRiskLevel2::High, &["geo"])),
+        Some(risk(PrivacyRiskLevel2::None, &["CREDENTIAL"])),
     ];
     let mut rows = 0;
     for mode in MODES {
@@ -99,7 +99,7 @@ fn full_truth_table_over_mode_external_class_and_risk() {
                         class,
                         assessment.clone(),
                     ));
-                    let want = if expected_denied(&mode, external, class, assessment) {
+                    let want = if expected_denied(&mode, external, class, assessment.as_ref()) {
                         Verdict::Deny {
                             reason: DenialReason::Privacy,
                         }
@@ -154,11 +154,11 @@ fn named_cases_pin_the_host_rule() {
     assert!(!denied(
         PrivacyMode::Sensitive,
         PrivacyDataClass2::UserContent,
-        risk(PrivacyRiskLevel2::Low, &["language"])
+        Some(risk(PrivacyRiskLevel2::Low, &["language"]))
     ));
     assert!(denied(
         PrivacyMode::Sensitive,
         PrivacyDataClass2::UserContent,
-        risk(PrivacyRiskLevel2::Low, &["Phone"])
+        Some(risk(PrivacyRiskLevel2::Low, &["Phone"]))
     ));
 }
