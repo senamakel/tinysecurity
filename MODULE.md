@@ -471,6 +471,24 @@ another ledger. Several scope identities may share a subject; its stream is rele
 only when the last of them retires. Changing a live scope's facts is a retirement
 followed by a new registration, which also invalidates its outstanding artifacts.
 
+## Operator host network and process-level jails (contract 1.21)
+
+Additive: both fields default to off, so a 1.20 host keeps its behaviour against a 1.21
+module, and a 1.21 host refuses a 1.20 module.
+
+- `SandboxScope2.operator_host_network` declares that the owner's configuration already
+  grants the host's own network up to `network_ceiling`. A `Plan2` for `NetworkPolicy::Host`
+  under such a scope is planned without a per-command human approval (the artifact carries no
+  approval reservation). A request above the ceiling is still refused (`ceiling`), and the
+  field is ignored when the scope's deployment or origin is `SaaS`, where host networking
+  always needs an exact human approval.
+- `SandboxPlanRequest2.accept_process_isolation` marks an ordinary tool command of the
+  scope's operator. Only then may a process-level jail whose constraints are best effort
+  (macOS Seatbelt) run it; the artifact's `minimum_isolation` is `process`. An executor that
+  meets the kernel floor with every constraint enforced is always preferred. A request that
+  sets the flag for an untrusted source or a mandatory-isolation (`SaaS`) scope is refused
+  (`floor`), and an executor with no isolation or the `noop` backend is never accepted.
+
 ## Host-tool admission (contract 1.20)
 
 Additive ([specification](docs/specs/host-tool-admission.md)). `Check::HostAction` and `Check::HostShell` judge a host

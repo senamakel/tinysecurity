@@ -84,6 +84,17 @@ fn supports(executor: &SandboxExecutor2, constraint: SandboxConstraint2) -> bool
         .iter()
         .any(|s| s.constraint == constraint && s.enforcement == ConstraintEnforcement2::Enforced)
 }
+/// Like [`supports`], but a best-effort declaration also counts. Only a plan the
+/// request marked as an ordinary operator command may rely on it.
+fn supports_best_effort(executor: &SandboxExecutor2, constraint: SandboxConstraint2) -> bool {
+    executor.constraints.iter().any(|s| {
+        s.constraint == constraint
+            && matches!(
+                s.enforcement,
+                ConstraintEnforcement2::Enforced | ConstraintEnforcement2::BestEffort
+            )
+    })
+}
 /// A real backend (never `Noop`) reporting kernel or microVM isolation: the only
 /// executors an untrusted tier or `SaaS` scope may ever be planned onto.
 fn suitable_for_untrusted(executor: &SandboxExecutor2) -> bool {
@@ -120,11 +131,29 @@ fn requirements(request: &SandboxPlanRequest2) -> Vec<SandboxConstraint2> {
     }
     constraints
 }
+/// Choose the executor. An executor that meets the kernel-isolation floor with every
+/// constraint exactly enforced always wins; only when the request accepted process
+/// isolation (an ordinary operator command) is a process-level jail with best-effort
+/// constraints considered, and only if no exact executor is available.
 fn select<'a>(
     facts: &'a SandboxScope2,
     request: &SandboxPlanRequest2,
     constraints: &[SandboxConstraint2],
     isolation: bool,
+) -> std::result::Result<&'a SandboxExecutor2, SandboxDenial2> {
+    match pick(facts, request, constraints, isolation, false) {
+        Err(_) if isolation && request.accept_process_isolation => {
+            pick(facts, request, constraints, isolation, true)
+        }
+        other => other,
+    }
+}
+fn pick<'a>(
+    facts: &'a SandboxScope2,
+    request: &SandboxPlanRequest2,
+    constraints: &[SandboxConstraint2],
+    isolation: bool,
+    process_level: bool,
 ) -> std::result::Result<&'a SandboxExecutor2, SandboxDenial2> {
     let mut executors: Vec<_> = facts.executors.iter().collect();
     executors.sort_by_key(|e| i32::from(e.backend != SandboxBackend::MicroVm));
@@ -132,9 +161,20 @@ fn select<'a>(
         .into_iter()
         .find(|e| {
             e.available
-                && (!isolation || suitable_for_untrusted(e))
+                && (!isolation
+                    || if process_level {
+                        e.isolation != IsolationLevel2::None
+                    } else {
+                        suitable_for_untrusted(e)
+                    })
                 && e.backend != SandboxBackend::Noop
-                && constraints.iter().all(|c| supports(e, *c))
+                && constraints.iter().all(|c| {
+                    if process_level {
+                        supports_best_effort(e, *c)
+                    } else {
+                        supports(e, *c)
+                    }
+                })
                 && (request.network != NetworkPolicy::EgressProxy
                     || facts.proxy.as_ref().is_some_and(|p| {
                         p.pinned_destinations
@@ -307,7 +347,10 @@ impl Engine {
     ) -> Result<SandboxPlanResponse2> {
         let result = self.resolve(request, generation, now_ms);
         Ok(match result {
-            Ok(_) if request.network == NetworkPolicy::Host => {
+            Ok(_)
+                if request.network == NetworkPolicy::Host
+                    && !self.operator_host_network(request) =>
+            {
                 denied(generation, SandboxDenial2::Approval)
             }
             Ok(artifact) => SandboxPlanResponse2 {
@@ -321,6 +364,19 @@ impl Engine {
                 audit: None,
             },
             Err(reason) => denied(generation, reason),
+        })
+    }
+    /// Whether the request's scope grants the host's own network from its owner's
+    /// configuration, so no per-command human approval is needed. Never in `SaaS`.
+    fn operator_host_network(&self, request: &SandboxPlanRequest2) -> bool {
+        self.table().is_ok_and(|table| {
+            table.get(&request.scope_id).is_some_and(|scope| {
+                let facts = &scope.facts;
+                facts.operator_host_network
+                    && facts.network_ceiling == NetworkPolicy::Host
+                    && facts.deployment != SandboxDeployment2::Saas
+                    && facts.origin != Origin::Saas
+            })
         })
     }
     fn resolve(
@@ -376,6 +432,9 @@ impl Engine {
         let mandatory = facts.deployment == SandboxDeployment2::Saas
             || facts.origin == Origin::Saas
             || source.trust != SourceTrust::TrustedHost;
+        if request.accept_process_isolation && mandatory {
+            return Err(SandboxDenial2::Floor);
+        }
         let isolation = mandatory
             || (facts.environment != SandboxSetting2::Disabled
                 && (facts.agent_mode == SandboxSetting2::Enabled
@@ -386,10 +445,16 @@ impl Engine {
             .checked_add(u64::from(request.ttl_ms))
             .ok_or(SandboxDenial2::InvalidRequest)?;
         let mut artifact = SandboxArtifact2 {
-            minimum_isolation: if isolation {
+            minimum_isolation: if !isolation {
+                IsolationLevel2::None
+            } else if suitable_for_untrusted(executor)
+                && constraints.iter().all(|c| supports(executor, *c))
+            {
                 IsolationLevel2::Kernel
             } else {
-                IsolationLevel2::None
+                // Only an executor chosen for a request that accepted process isolation
+                // can be here: the kernel-level pass found nothing exact.
+                IsolationLevel2::Process
             },
             approval_reservation_id: None,
             plan_id: String::new(),
@@ -624,12 +689,21 @@ impl Engine {
             || executor.backend == SandboxBackend::Noop
             || (artifact.minimum_isolation == IsolationLevel2::Kernel
                 && !suitable_for_untrusted(executor))
+            || (artifact.minimum_isolation == IsolationLevel2::Process
+                && (!request.accept_process_isolation
+                    || executor.isolation == IsolationLevel2::None))
             || artifact.generation != generation
             || now_ms >= artifact.expires_at_ms
             || artifact.executor_id != executor.executor_id
             || artifact.capability_id != executor.capability_id
             || !executor.available
-            || !artifact.constraints.iter().all(|c| supports(executor, *c))
+            || !artifact.constraints.iter().all(|c| {
+                if artifact.minimum_isolation == IsolationLevel2::Process {
+                    supports_best_effort(executor, *c)
+                } else {
+                    supports(executor, *c)
+                }
+            })
         {
             return Ok(false);
         }
@@ -668,6 +742,9 @@ pub(crate) fn denied(generation: u64, reason: SandboxDenial2) -> SandboxPlanResp
         audit: None,
     }
 }
+#[cfg(test)]
+#[path = "operator_options_tests.rs"]
+mod operator_options_tests;
 #[cfg(test)]
 #[path = "plan_matrix_tests.rs"]
 mod plan_matrix_tests;

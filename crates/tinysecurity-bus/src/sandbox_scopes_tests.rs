@@ -36,6 +36,7 @@ fn scope() -> SandboxScope2 {
         },
         grant_ceiling: vec![],
         network_ceiling: NetworkPolicy::None,
+        operator_host_network: false,
         limits: ResourceLimits2::default(),
         sources: vec![],
         executors: vec![],
@@ -130,4 +131,19 @@ fn debug_output_never_prints_registered_facts() {
     assert!(!text.contains("secret-scope") && !text.contains(&"b".repeat(32)));
     assert!(text.contains("[REDACTED]"));
     assert_eq!(MAX_SANDBOX_SCOPES2, 65_536);
+}
+
+#[test]
+fn contract_121_scope_field_is_additive_on_the_wire() -> TestResult {
+    let mut value = serde_json::to_value(scope())?;
+    let fields = value.as_object_mut().ok_or("scope is not an object")?;
+    // A 1.20 host does not send the field, and the module reads it as "not granted".
+    assert_eq!(fields.remove("operator_host_network"), Some(false.into()));
+    let older: SandboxScope2 = serde_json::from_value(value)?;
+    assert!(!older.operator_host_network);
+    let mut granted = scope();
+    granted.operator_host_network = true;
+    let text = serde_json::to_string(&granted)?;
+    assert!(serde_json::from_str::<SandboxScope2>(&text)?.operator_host_network);
+    Ok(())
 }

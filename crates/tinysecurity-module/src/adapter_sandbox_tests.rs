@@ -91,6 +91,7 @@ async fn legacy_plan_and_missing_registered_scope_never_authorize()
         network: tinysecurity_bus::NetworkPolicy::None,
         limits: tinysecurity_bus::ResourceLimits2::default(),
         deny_subprocesses: false,
+        accept_process_isolation: false,
         generation: 1,
         ttl_ms: 1000,
         audit: tinysecurity_bus::AuditCorrelation2 {

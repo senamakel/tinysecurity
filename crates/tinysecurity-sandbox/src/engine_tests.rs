@@ -51,6 +51,7 @@ pub(crate) fn fixture() -> std::result::Result<
             write: true,
         }],
         network_ceiling: NetworkPolicy::EgressProxy,
+        operator_host_network: false,
         limits: ResourceLimits2::default(),
         sources: vec![SandboxSource2 {
             source_id: "source".into(),
@@ -92,6 +93,7 @@ pub(crate) fn fixture() -> std::result::Result<
         network: NetworkPolicy::None,
         limits: ResourceLimits2::default(),
         deny_subprocesses: false,
+        accept_process_isolation: false,
         generation: 1,
         ttl_ms: 1000,
         audit: AuditCorrelation2 {
