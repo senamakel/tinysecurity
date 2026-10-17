@@ -401,7 +401,7 @@ impl Engine {
                 facts.operator_host_network
                     && facts.network_ceiling == NetworkPolicy::Host
                     && facts.deployment != SandboxDeployment2::Saas
-                    && facts.origin != Origin::Saas
+                    && !matches!(facts.origin, Origin::Saas | Origin::Unlabelled)
             })
         })
     }
@@ -436,7 +436,7 @@ impl Engine {
             return Err(SandboxDenial2::InvalidRequest);
         }
         let mandatory = facts.deployment == SandboxDeployment2::Saas
-            || facts.origin == Origin::Saas
+            || matches!(facts.origin, Origin::Saas | Origin::Unlabelled)
             || source.trust != SourceTrust::TrustedHost;
         if request.options.host_run {
             return Self::host_run(

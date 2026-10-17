@@ -83,6 +83,8 @@ fn operator_host_network_is_ignored_under_saas() -> Res {
     for (deployment, origin) in [
         (SandboxDeployment2::Saas, Origin::Operator),
         (SandboxDeployment2::Local, Origin::Saas),
+        // A caller the host could not label gets no operator privilege.
+        (SandboxDeployment2::Local, Origin::Unlabelled),
     ] {
         let mut scope = scope.clone();
         scope.deployment = deployment;
@@ -191,5 +193,19 @@ fn process_level_jail_needs_a_real_jail_and_a_kernel_jail_still_wins() -> Res {
         .ok_or("no artifact")?;
     assert_eq!(artifact.minimum_isolation, IsolationLevel2::Kernel);
     assert_eq!(artifact.executor_id, "executor");
+    Ok(())
+}
+
+#[test]
+fn an_unlabelled_origin_is_sandboxed_mandatorily_and_gets_no_unjailed_host_run() -> Res {
+    let (_dir, mut scope, mut request) = operator()?;
+    scope.origin = Origin::Unlabelled;
+    scope.environment = SandboxSetting2::Disabled;
+    request.options.host_run = true;
+    let response = engine(scope)?.plan(&request, 1, 100)?;
+    assert!(
+        response.artifact.is_none() || response.denial.is_some(),
+        "an unlabelled caller must not receive an unjailed host run"
+    );
     Ok(())
 }

@@ -13,11 +13,15 @@ use super::{
     RedactMode, Result, binding,
 };
 use tinysecurity_bus::{
-    FLOW_TRUST_LIFETIME_MS2, FlowToolGrant2, FlowTrustEntry2, FlowTrustList2, FlowTrustOutcome2,
-    FlowTrustReceipt2, GrantFlowToolRequest2, ListFlowTrustRequest2, RevokeFlowToolRequest2,
+    FLOW_TRUST_LIFETIME_MS2, FlowTrustEntry2, FlowTrustList2, FlowTrustOutcome2, FlowTrustReceipt2,
+    GrantFlowToolRequest2, ListFlowTrustRequest2, RevokeFlowToolRequest2,
 };
 
 const ATTRIBUTION: &str = "flow-trust-grant";
+
+/// Rows a scope may hold before a new grant is refused, below the 1024 the module's
+/// load contract accepts so ordinary approvals keep a margin.
+const MAX_SCOPE_ROWS: usize = 960;
 
 /// Digest of the exact `(flow, tool)` pair, domain-separated from every call digest.
 fn trust_key(flow_id: &str, tool: &str) -> String {
@@ -73,14 +77,16 @@ impl Engine {
         })
     }
 
+    /// Whether a flow and a tool name could ever name a grant: the flow may be as
+    /// long as a caller's flow identity (1024 bytes), the tool follows the shared
+    /// grant-name rules.
     fn trust_pair_valid(flow_id: &str, tool: &str) -> bool {
-        flow_id.len() <= 1024
+        !flow_id.trim().is_empty()
+            && flow_id.len() <= 1024
+            && !flow_id.chars().any(char::is_control)
             && ApprovalGrants2 {
-                tools: vec![],
-                flows: vec![FlowToolGrant2 {
-                    flow_id: flow_id.into(),
-                    tool: tool.into(),
-                }],
+                tools: vec![tool.into()],
+                flows: Vec::new(),
             }
             .is_valid()
     }
@@ -110,6 +116,11 @@ impl Engine {
                 outcome: FlowTrustOutcome2::Unchanged,
                 request_id: Some(existing.request_id.clone()),
             });
+        }
+        // A scope's whole row set must stay loadable (`ApprovalLoadRequest2` caps it),
+        // so a long-lived grant never takes the last slot of a full scope.
+        if rows.len() >= MAX_SCOPE_ROWS {
+            return Err(Error::Unavailable);
         }
         let redactor = self.redactor()?;
         let flow = binding::text(&redactor, &request.flow_id, RedactMode::IdentifierHash)?;
@@ -173,7 +184,7 @@ impl Engine {
         &self,
         request: RevokeFlowToolRequest2,
     ) -> Result<FlowTrustReceipt2> {
-        if request.flow_id.is_empty() || request.flow_id.len() > 1024 || request.tool.is_empty() {
+        if !Self::trust_pair_valid(&request.flow_id, &request.tool) {
             return Err(Error::Invalid);
         }
         let _serial = self.flow_trust_lock.lock().await;

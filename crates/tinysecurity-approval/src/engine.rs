@@ -718,7 +718,11 @@ impl Engine {
                 request.request.call.tool.as_str(),
                 "sandbox_host_network" | "device_crypto"
             );
-        let reusable = if human_only {
+        // No human-only tool is ever approved by an earlier human decision of its content.
+        let never_reused = human_only
+            || binding::is_native(&request.request.call.tool)
+            || HUMAN_ONLY_TOOLS2.contains(&request.request.call.tool.as_str());
+        let reusable = if never_reused {
             None
         } else {
             self.live_reusable(reg, bound, rows, now).await?
@@ -1599,12 +1603,18 @@ impl Engine {
             _ => return Ok(()),
         };
         let entry = self.entry(&request.scope_id)?;
-        let mut granted = entry
-            .grant(
-                &request.request.call.tool,
-                request.request.caller.flow.as_deref(),
-            )
-            .is_some();
+        // An unlabelled call is approved by a whole-tool grant alone; a flow grant
+        // added since never keeps its approval alive.
+        let mut granted = if row.binding.origin == Origin::Unlabelled {
+            entry.tool_grant(&request.request.call.tool).is_some()
+        } else {
+            entry
+                .grant(
+                    &request.request.call.tool,
+                    request.request.caller.flow.as_deref(),
+                )
+                .is_some()
+        };
         if !granted && row.attribution.as_deref() == Some("auto:flow-grant") {
             // A durable flow-trust row can have been revoked since the approval.
             let reg = self.registered(&entry);
