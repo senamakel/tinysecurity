@@ -226,6 +226,10 @@ pub struct SandboxPlanRequest2 {
     /// executor must meet the kernel-isolation floor with exactly enforced constraints.
     #[serde(default)]
     pub accept_process_isolation: bool,
+    /// Executor preference, workspace-less and host-run options (contract 1.22). Absent
+    /// means the module chooses the executor and the plan grants what is requested.
+    #[serde(default, skip_serializing_if = "SandboxPlanOptions2::is_default")]
+    pub options: SandboxPlanOptions2,
     /// Current policy generation.
     pub generation: u64,
     /// Requested artifact lifetime.
@@ -236,6 +240,38 @@ pub struct SandboxPlanRequest2 {
 impl std::fmt::Debug for SandboxPlanRequest2 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("SandboxPlanRequest2([REDACTED])")
+    }
+}
+/// Optional planning requests of one spawn (contract 1.22). Every field defaults to off, so
+/// a 1.21 host keeps its behaviour against a 1.22 module and an older module refuses a
+/// request that sets one (`deny_unknown_fields`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxPlanOptions2 {
+    /// The backend the owner's configuration prefers. The module plans onto an eligible
+    /// executor of this backend first; it never makes an ineligible executor eligible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_backend: Option<SandboxBackend>,
+    /// Plan only onto an executor of `preferred_backend`: no eligible one is `unsupported`
+    /// instead of another executor. Ignored without a preferred backend.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_preferred_backend: bool,
+    /// The spawn needs no workspace (a container with no workspace mount). The plan
+    /// refuses a writable grant (`ceiling`) and its artifact records `no_workspace`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_workspace: bool,
+    /// The operator disabled the sandbox and asks for a run on the host. Issued as a
+    /// `host_run` artifact only for a trusted operator source under a local deployment and
+    /// origin whose scope carries the disabled `environment` setting; any other request
+    /// that sets it is refused (`floor`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub host_run: bool,
+}
+impl SandboxPlanOptions2 {
+    /// Whether every option is off (the 1.21 shape of a request).
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
     }
 }
 /// Declarative plan, not a confinement attestation or reusable execution authorization.
@@ -280,6 +316,15 @@ pub struct SandboxArtifact2 {
     pub limits: ResourceLimits2,
     /// Every required constraint must remain Enforced at execution.
     pub constraints: Vec<SandboxConstraint2>,
+    /// The operator disabled the sandbox and the module planned a run on the host
+    /// (contract 1.22): `backend` is `noop`, `minimum_isolation` is `none` and no grant or
+    /// constraint applies. Never issued for `SaaS` or for a source that is not the trusted
+    /// operator.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub host_run: bool,
+    /// The plan grants no workspace (contract 1.22): it carries no writable root.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_workspace: bool,
 }
 impl std::fmt::Debug for SandboxArtifact2 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

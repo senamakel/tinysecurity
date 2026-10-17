@@ -284,6 +284,7 @@ fn diagnostic_operation(
         limits: ResourceLimits2::default(),
         deny_subprocesses: true,
         accept_process_isolation: false,
+        options: SandboxPlanOptions2::default(),
         generation: 1,
         ttl_ms: 1,
         audit: audit.clone(),
@@ -308,6 +309,88 @@ fn diagnostic_operation(
         proxy_id: Some("private".into()),
         limits: ResourceLimits2::default(),
         constraints: vec![],
+        host_run: false,
+        no_workspace: false,
     };
     (request, artifact)
+}
+
+fn private_pair() -> (SandboxPlanRequest2, SandboxArtifact2) {
+    let subject = SubjectScope {
+        user: "private".into(),
+        workspace: "private".into(),
+        agent: "private".into(),
+    };
+    let audit = AuditCorrelation2 {
+        event_id: "private".into(),
+        expected_tail: 0,
+        generation: 1,
+    };
+    let claim = SandboxApprovalUse2 {
+        request_id: "private".into(),
+        audit: audit.clone(),
+    };
+    diagnostic_operation(&subject, &audit, &claim)
+}
+
+fn minimal_request() -> std::result::Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let (request, _) = private_pair();
+    Ok(serde_json::to_value(request).required()?)
+}
+
+#[test]
+fn a_request_without_options_keeps_the_1_21_wire_shape()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let value = minimal_request()?;
+    assert!(value.get("options").is_none(), "{value}");
+    let mut with_unknown = value.clone();
+    with_unknown["options"] = serde_json::json!({"unknown": true});
+    assert!(serde_json::from_value::<SandboxPlanRequest2>(with_unknown).is_err());
+    let back: SandboxPlanRequest2 = serde_json::from_value(value).required()?;
+    assert!(back.options.is_default());
+    Ok(())
+}
+
+#[test]
+fn plan_options_have_a_pinned_wire_form() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let options = SandboxPlanOptions2 {
+        preferred_backend: Some(SandboxBackend::Docker),
+        require_preferred_backend: true,
+        no_workspace: true,
+        host_run: true,
+    };
+    assert_eq!(
+        serde_json::to_value(&options).required()?,
+        serde_json::json!({
+            "preferred_backend": "docker",
+            "require_preferred_backend": true,
+            "no_workspace": true,
+            "host_run": true,
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(SandboxPlanOptions2::default()).required()?,
+        serde_json::json!({})
+    );
+    assert!(!options.is_default());
+    let back: SandboxPlanOptions2 =
+        serde_json::from_value(serde_json::json!({"host_run": true})).required()?;
+    assert!(back.host_run && back.preferred_backend.is_none());
+    Ok(())
+}
+
+#[test]
+fn an_artifact_marks_a_host_run_and_a_workspace_less_plan_only_when_set()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let (_, mut artifact) = private_pair();
+    let value = serde_json::to_value(&artifact).required()?;
+    assert!(value.get("host_run").is_none() && value.get("no_workspace").is_none());
+    artifact.host_run = true;
+    artifact.no_workspace = true;
+    let value = serde_json::to_value(&artifact).required()?;
+    assert_eq!(value["host_run"], true);
+    assert_eq!(value["no_workspace"], true);
+    let back: SandboxArtifact2 = serde_json::from_value(value).required()?;
+    assert!(back.host_run && back.no_workspace);
+    Ok(())
 }
