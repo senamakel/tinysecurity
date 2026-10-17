@@ -1,7 +1,7 @@
 use super::*;
 use tinysecurity_bus::{
     AuditCorrelation2, ConstraintSupport2, PathAccess, PathGrant, PathPolicy, PathTrustedRoot,
-    SandboxApprovalUse2, SandboxProxy2, SandboxSource2,
+    SandboxApprovalUse2, SandboxPlanOptions2, SandboxProxy2, SandboxSource2,
 };
 pub(crate) fn fixture() -> std::result::Result<
     (tempfile::TempDir, SandboxScope2, SandboxPlanRequest2),
@@ -94,6 +94,7 @@ pub(crate) fn fixture() -> std::result::Result<
         limits: ResourceLimits2::default(),
         deny_subprocesses: false,
         accept_process_isolation: false,
+        options: SandboxPlanOptions2::default(),
         generation: 1,
         ttl_ms: 1000,
         audit: AuditCorrelation2 {

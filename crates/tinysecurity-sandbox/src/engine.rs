@@ -14,7 +14,7 @@ use tinysecurity_bus::{
     EvaluateRequest, IsolationLevel2, MAX_SANDBOX_SCOPES2, NetworkPolicy, Origin, ResourceLimits2,
     SandboxArtifact2, SandboxBackend, SandboxConfig2, SandboxConstraint2, SandboxDenial2,
     SandboxDeployment2, SandboxExecutor2, SandboxPlanRequest2, SandboxPlanResponse2, SandboxScope2,
-    SandboxSetting2, SourceTrust, SubjectScope, ToolCall, Verdict,
+    SandboxSetting2, SandboxSource2, SourceTrust, SubjectScope, ToolCall, Verdict,
 };
 use tinysecurity_policy::{PathPolicyRegistry, PathScope};
 #[derive(Clone)]
@@ -70,6 +70,16 @@ fn limits_within(request: &ResourceLimits2, ceiling: &ResourceLimits2) -> bool {
         && bounded(request.memory_bytes, ceiling.memory_bytes)
         && bounded(request.pids_max, ceiling.pids_max)
         && bounded(request.disk_bytes, ceiling.disk_bytes)
+}
+/// Whether the request's identities, sizes, lifetime and bounds are acceptable at all.
+fn well_formed(request: &SandboxPlanRequest2, facts: &SandboxScope2) -> bool {
+    id(&request.call_id)
+        && request.operation_json.len() <= 65_536
+        && request.grants.len() <= 128
+        && request.grants.iter().all(|g| g.path.len() <= 4096)
+        && request.ttl_ms != 0
+        && request.ttl_ms <= facts.max_ttl_ms
+        && valid_limits(&request.limits)
 }
 fn rank(network: &NetworkPolicy) -> u8 {
     match network {
@@ -155,8 +165,23 @@ fn pick<'a>(
     isolation: bool,
     process_level: bool,
 ) -> std::result::Result<&'a SandboxExecutor2, SandboxDenial2> {
-    let mut executors: Vec<_> = facts.executors.iter().collect();
-    executors.sort_by_key(|e| i32::from(e.backend != SandboxBackend::MicroVm));
+    let preferred = request.options.preferred_backend.as_ref();
+    let mut executors: Vec<_> = facts
+        .executors
+        .iter()
+        .filter(|e| {
+            !(request.options.require_preferred_backend
+                && preferred.is_some_and(|backend| &e.backend != backend))
+        })
+        .collect();
+    // A stable sort: the configured preference first, then a micro-VM, then the order the
+    // host declared its executors in.
+    executors.sort_by_key(|e| {
+        (
+            preferred.is_some_and(|backend| &e.backend != backend),
+            e.backend != SandboxBackend::MicroVm,
+        )
+    });
     executors
         .into_iter()
         .find(|e| {
@@ -347,8 +372,9 @@ impl Engine {
     ) -> Result<SandboxPlanResponse2> {
         let result = self.resolve(request, generation, now_ms);
         Ok(match result {
-            Ok(_)
+            Ok(ref artifact)
                 if request.network == NetworkPolicy::Host
+                    && !artifact.host_run
                     && !self.operator_host_network(request) =>
             {
                 denied(generation, SandboxDenial2::Approval)
@@ -401,20 +427,21 @@ impl Engine {
         if request.subject != facts.subject {
             return Err(SandboxDenial2::InvalidContext);
         }
-        if !id(&request.call_id)
-            || request.operation_json.len() > 65_536
-            || request.grants.len() > 128
-            || request.grants.iter().any(|g| g.path.len() > 4096)
-            || request.ttl_ms == 0
-            || request.ttl_ms > facts.max_ttl_ms
-            || !valid_limits(&request.limits)
-        {
+        if !well_formed(request, facts) {
             return Err(SandboxDenial2::InvalidRequest);
         }
         let operation: serde_json::Value = serde_json::from_str(&request.operation_json)
             .map_err(|_| SandboxDenial2::InvalidRequest)?;
         if !operation.is_object() {
             return Err(SandboxDenial2::InvalidRequest);
+        }
+        let mandatory = facts.deployment == SandboxDeployment2::Saas
+            || facts.origin == Origin::Saas
+            || source.trust != SourceTrust::TrustedHost;
+        if request.options.host_run {
+            return Self::host_run(
+                request, facts, source, mandatory, generation, now_ms, &operation,
+            );
         }
         if request.grants.iter().any(|g| g.write) && facts.tier == AccessTier::Read {
             return Err(SandboxDenial2::Ceiling);
@@ -428,10 +455,11 @@ impl Engine {
         if request.limits.cpu_time_ms.is_some() {
             return Err(SandboxDenial2::Unsupported);
         }
+        // A workspace-less plan has no writable root: a container with nothing mounted.
+        if request.options.no_workspace && request.grants.iter().any(|g| g.write) {
+            return Err(SandboxDenial2::Ceiling);
+        }
         let grants = grants::admit(facts, &scope.paths, &request.grants)?;
-        let mandatory = facts.deployment == SandboxDeployment2::Saas
-            || facts.origin == Origin::Saas
-            || source.trust != SourceTrust::TrustedHost;
         if request.accept_process_isolation && mandatory {
             return Err(SandboxDenial2::Floor);
         }
@@ -478,15 +506,62 @@ impl Engine {
             },
             limits: request.limits.clone(),
             constraints,
+            host_run: false,
+            no_workspace: request.options.no_workspace,
         };
-        let mut original = serde_json::to_value((request, &artifact))
-            .map_err(|_| SandboxDenial2::InvalidRequest)?;
-        original[0]["operation_json"] = operation;
-        original.sort_all_objects();
-        let mut hash = Sha256::new();
-        hash.update(b"tinysecurity/sandbox-plan/v2\0");
-        hash.update(serde_json::to_vec(&original).map_err(|_| SandboxDenial2::InvalidRequest)?);
-        artifact.fingerprint = format!("{:x}", hash.finalize());
+        seal(request, &mut artifact, operation)?;
+        Ok(artifact)
+    }
+    /// The artifact of a spawn the operator disabled the sandbox for (contract 1.22): the
+    /// host runs it without a jail. Only a trusted operator source of a local deployment and
+    /// origin, under a scope that carries the disabled `environment` setting, gets one.
+    fn host_run(
+        request: &SandboxPlanRequest2,
+        facts: &SandboxScope2,
+        source: &SandboxSource2,
+        mandatory: bool,
+        generation: u64,
+        now_ms: u64,
+        operation: &serde_json::Value,
+    ) -> std::result::Result<SandboxArtifact2, SandboxDenial2> {
+        if mandatory || facts.environment != SandboxSetting2::Disabled {
+            return Err(SandboxDenial2::Floor);
+        }
+        // Nothing is confined, so nothing may claim to be: no grants, no workspace
+        // option, and no resource bound that no executor would enforce.
+        if request.options.no_workspace || !request.grants.is_empty() {
+            return Err(SandboxDenial2::InvalidRequest);
+        }
+        let none = ResourceLimits2::default();
+        if request.limits != none || facts.limits != none || request.deny_subprocesses {
+            return Err(SandboxDenial2::Unsupported);
+        }
+        let mut artifact = SandboxArtifact2 {
+            minimum_isolation: IsolationLevel2::None,
+            approval_reservation_id: None,
+            plan_id: String::new(),
+            fingerprint: String::new(),
+            scope_id: request.scope_id.clone(),
+            subject: facts.subject.clone(),
+            source_id: source.source_id.clone(),
+            provenance: source.provenance.clone(),
+            call_id: request.call_id.clone(),
+            generation,
+            expires_at_ms: now_ms
+                .checked_add(u64::from(request.ttl_ms))
+                .ok_or(SandboxDenial2::InvalidRequest)?,
+            executor_id: HOST_EXECUTOR.into(),
+            capability_id: HOST_EXECUTOR.into(),
+            backend: SandboxBackend::Noop,
+            grants: Vec::new(),
+            network: NetworkPolicy::Host,
+            proxy_id: None,
+            limits: none,
+            constraints: Vec::new(),
+            host_run: true,
+            no_workspace: false,
+        };
+        seal(request, &mut artifact, operation.clone())?;
         Ok(artifact)
     }
     /// Compute a fully checked candidate and exact original for the module's human workflow.
@@ -656,6 +731,9 @@ impl Engine {
         generation: u64,
         now_ms: u64,
     ) -> Result<bool> {
+        if artifact.host_run {
+            return Ok(self.validate_host_run(request, artifact, generation, now_ms));
+        }
         // Cloned so no table lock is held across `validate`, which locks it again.
         let executor = self.table()?.get(&artifact.scope_id).and_then(|scope| {
             scope
@@ -669,6 +747,36 @@ impl Engine {
             return Ok(false);
         };
         self.validate(request, artifact, generation, now_ms, &executor)
+    }
+    /// Validate a planned run on the host: it names no executor, so only the issued
+    /// artifact, its live window and the exact re-derived plan are checked.
+    fn validate_host_run(
+        &self,
+        request: &SandboxPlanRequest2,
+        artifact: &SandboxArtifact2,
+        generation: u64,
+        now_ms: u64,
+    ) -> bool {
+        if !request.options.host_run
+            || self
+                .check_issued(artifact, &request.subject, generation, now_ms)
+                .is_err()
+            || artifact.generation != generation
+            || now_ms >= artifact.expires_at_ms
+        {
+            return false;
+        }
+        let Some(issued) = artifact
+            .expires_at_ms
+            .checked_sub(u64::from(request.ttl_ms))
+        else {
+            return false;
+        };
+        let expected = self.resolve(request, generation, issued).ok();
+        let mut normalized = artifact.clone();
+        normalized.plan_id.clear();
+        normalized.approval_reservation_id = None;
+        expected.as_ref() == Some(&normalized) && now_ms >= issued
     }
     /// Validate exact plan identity, live generation/time and executor revision before launch.
     /// This verifies the declarative artifact only; `TinyBox` must still recheck actual enforcement.
@@ -720,6 +828,24 @@ impl Engine {
         Ok(expected.as_ref() == Some(&normalized) && now_ms >= issued)
     }
 }
+/// The executor identity of a planned run on the host.
+const HOST_EXECUTOR: &str = "host";
+/// Bind the exact original request and plan into the artifact's fingerprint.
+fn seal(
+    request: &SandboxPlanRequest2,
+    artifact: &mut SandboxArtifact2,
+    operation: serde_json::Value,
+) -> std::result::Result<(), SandboxDenial2> {
+    let mut original =
+        serde_json::to_value((request, &*artifact)).map_err(|_| SandboxDenial2::InvalidRequest)?;
+    original[0]["operation_json"] = operation;
+    original.sort_all_objects();
+    let mut hash = Sha256::new();
+    hash.update(b"tinysecurity/sandbox-plan/v2\0");
+    hash.update(serde_json::to_vec(&original).map_err(|_| SandboxDenial2::InvalidRequest)?);
+    artifact.fingerprint = format!("{:x}", hash.finalize());
+    Ok(())
+}
 pub(crate) fn denied(generation: u64, reason: SandboxDenial2) -> SandboxPlanResponse2 {
     SandboxPlanResponse2 {
         decision: Decision {
@@ -742,6 +868,9 @@ pub(crate) fn denied(generation: u64, reason: SandboxDenial2) -> SandboxPlanResp
         audit: None,
     }
 }
+#[cfg(test)]
+#[path = "executor_choice_tests.rs"]
+mod executor_choice_tests;
 #[cfg(test)]
 #[path = "operator_options_tests.rs"]
 mod operator_options_tests;

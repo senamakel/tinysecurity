@@ -92,6 +92,7 @@ async fn legacy_plan_and_missing_registered_scope_never_authorize()
         limits: tinysecurity_bus::ResourceLimits2::default(),
         deny_subprocesses: false,
         accept_process_isolation: false,
+        options: tinysecurity_bus::SandboxPlanOptions2::default(),
         generation: 1,
         ttl_ms: 1000,
         audit: tinysecurity_bus::AuditCorrelation2 {
@@ -221,8 +222,14 @@ impl Drop for Harness {
     }
 }
 async fn harness() -> std::result::Result<Harness, Box<dyn std::error::Error>> {
+    harness_with(|_| {}).await
+}
+async fn harness_with(
+    adjust: impl FnOnce(&mut tinysecurity_bus::SandboxScope2),
+) -> std::result::Result<Harness, Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let facts = fixture::scope(root.path())?;
+    let mut facts = fixture::scope(root.path())?;
+    adjust(&mut facts);
     let bus = MemoryBus::new();
     let task = Broker::new().spawn(bus.clone());
     let host = Connection::connect(bus.connect().await?).await?;
@@ -639,3 +646,74 @@ async fn cancellation_during_plan_audit_reclaims_pending_artifact_capacity()
 
 #[path = "adapter_sandbox_scopes_tests.rs"]
 mod scopes;
+
+/// An operator's trusted source under a local deployment that disabled the sandbox.
+fn operator_with_sandbox_off(facts: &mut tinysecurity_bus::SandboxScope2) {
+    facts.approval_scope_id = None;
+    facts.deployment = tinysecurity_bus::SandboxDeployment2::Local;
+    facts.origin = tinysecurity_bus::Origin::Operator;
+    facts.sources[0].trust = tinysecurity_bus::SourceTrust::TrustedHost;
+}
+
+fn host_run_request(facts: &tinysecurity_bus::SandboxScope2, sequence: u64) -> SandboxPlanRequest2 {
+    let mut request = fixture::request(facts, sequence);
+    request.grants.clear();
+    request.options.host_run = true;
+    request
+}
+
+#[tokio::test]
+async fn a_planned_run_on_the_host_is_audited_and_admitted_once()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let h = harness_with(|facts| {
+        operator_with_sandbox_off(facts);
+        facts.environment = tinysecurity_bus::SandboxSetting2::Disabled;
+    })
+    .await?;
+    let request = host_run_request(&h.facts, 1);
+    let plan = h.service.plan2(request.clone()).await?;
+    assert_eq!(plan.decision.verdict, tinysecurity_bus::Verdict::Allow);
+    assert!(plan.audit.required()?.committed, "the plan must be audited");
+    let artifact = plan.artifact.required()?;
+    assert!(artifact.host_run);
+    let consume = ConsumeSandboxPlanRequest2 {
+        request,
+        artifact,
+        subject: h.facts.subject.clone(),
+        audit: fixture::audit(2),
+    };
+    assert!(
+        h.service
+            .consume_sandbox_plan2(consume.clone())
+            .await?
+            .permitted
+    );
+    let mut replay = consume;
+    replay.audit = fixture::audit(3);
+    assert!(!h.service.consume_sandbox_plan2(replay).await?.permitted);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_run_on_the_host_is_refused_for_an_untrusted_source_or_saas()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    for adjust in [
+        (|facts: &mut tinysecurity_bus::SandboxScope2| {
+            facts.sources[0].trust = tinysecurity_bus::SourceTrust::UntrustedSkill;
+        }) as fn(&mut tinysecurity_bus::SandboxScope2),
+        |facts| facts.deployment = tinysecurity_bus::SandboxDeployment2::Saas,
+        |facts| facts.origin = tinysecurity_bus::Origin::Saas,
+    ] {
+        let h = harness_with(|facts| {
+            operator_with_sandbox_off(facts);
+            facts.environment = tinysecurity_bus::SandboxSetting2::Disabled;
+            adjust(facts);
+        })
+        .await?;
+        let plan = h.service.plan2(host_run_request(&h.facts, 1)).await?;
+        assert_ne!(plan.decision.verdict, tinysecurity_bus::Verdict::Allow);
+        assert_eq!(plan.denial, Some(SandboxDenial2::Floor));
+        assert!(plan.artifact.is_none());
+    }
+    Ok(())
+}
