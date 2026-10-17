@@ -489,6 +489,41 @@ module, and a 1.21 host refuses a 1.20 module.
   sets the flag for an untrusted source or a mandatory-isolation (`SaaS`) scope is refused
   (`floor`), and an executor with no isolation or the `noop` backend is never accepted.
 
+## Executor choice, workspace-less plans and the operator's host run (contract 1.22)
+
+Additive: `SandboxPlanRequest2.options` (`SandboxPlanOptions2`) and two `SandboxArtifact2`
+flags (`host_run`, `no_workspace`) default to off and are absent from the wire when off, so
+a 1.21 host keeps its behaviour and its fingerprints against a 1.22 module. A 1.22 host
+refuses a 1.21 module, and a 1.21 module rejects a request that sets an option
+(`deny_unknown_fields`).
+
+- **Executor choice.** A scope declares every verified executor of the host; `Plan2` picks
+  one. With no option it is the first eligible one (a micro-VM first, then the host's
+  declaration order). `options.preferred_backend` moves that backend's eligible executors to
+  the front; with `options.require_preferred_backend` no other backend is planned and none
+  eligible is `unsupported`. A preference never makes an executor eligible: availability,
+  isolation, the exactly enforced constraints and the mediated proxy are all still required.
+  The host maps `artifact.backend` to the executor it drives.
+- **Workspace-less plan.** `options.no_workspace` is for a container with no workspace mount.
+  A writable grant in the request is refused (`ceiling`); the artifact records
+  `no_workspace` and carries only read-only grants.
+- **The operator's host run.** `options.host_run` asks for a run with no jail. The module
+  issues a `host_run` artifact (`backend` `noop`, `minimum_isolation` `none`, `executor_id`
+  `host`, network `host`, no grants and no constraints) only when all hold: the deployment
+  and origin are not `SaaS`, the source is `trusted_host`, and the scope carries
+  `environment: disabled` (the operator's setting). Anything else is refused (`floor`), so
+  an untrusted source (a hook, a scheduled job, a registry MCP server) and every `SaaS`
+  scope get a refusal, never a host run. A host run claims no confinement: a request with
+  grants or `no_workspace` is `invalid_request` and one with a resource bound or
+  `deny_subprocesses` is `unsupported`. The plan is audited, staged and admitted exactly once like any other, and
+  `ConsumeSandboxPlan2` re-derives it from the request, so a request that does not ask for
+  the host run cannot reuse it.
+
+Latency: all three are in-memory decisions inside the existing `Plan2` and
+`ConsumeSandboxPlan2` calls (no new member, no I/O besides the audit append those calls
+already make), so they keep the budget of those calls: p50 <= 1 ms, p99 <= 10 ms excluding
+the audit callback.
+
 ## Host-recorded audit events (contract 1.21)
 
 Additive. `Audit2` accepts only the module's init-time scope and stream, which a host that
