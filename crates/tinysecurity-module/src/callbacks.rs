@@ -110,6 +110,8 @@ pub(crate) struct AuditClient {
     config: tinysecurity_bus::AuditConfig2,
     redactor: std::sync::RwLock<tinysecurity::Redactor>,
     native: Option<std::sync::Arc<tinysecurity::audit::JsonlSink>>,
+    /// The stream each host-recorded subject is bound to (`RecordAudit2`).
+    pins: crate::stream_pins::StreamPins,
 }
 impl std::fmt::Debug for AuditClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -165,7 +167,66 @@ impl AuditClient {
             config,
             redactor: std::sync::RwLock::new(redactor),
             native,
+            pins: crate::stream_pins::StreamPins::default(),
         })
+    }
+    /// Append one host-recorded event to `request.subject`'s stream (`RecordAudit2`).
+    ///
+    /// The subject is bound to the first stream it is recorded under, the event is
+    /// sanitized with the policy's redactor and forwarded to the host sink exactly like
+    /// every other event, and the answer carries the same durable-receipt evidence. A
+    /// request the module refuses (module-only kind, malformed identity, a stream other
+    /// than the subject's, a stale policy generation) answers denied and uncommitted.
+    pub(crate) async fn record(
+        &self,
+        request: tinysecurity_bus::AuditRecordRequest2,
+        generation: u64,
+        redactor: tinysecurity::Redactor,
+    ) -> tinysecurity_bus::AuditResponse2 {
+        use tinysecurity_bus::{AuditEvent2, AuditHealth2, AuditResponse2, AuditSinkRequest2};
+        let denied = || AuditResponse2 {
+            permitted: false,
+            committed: false,
+            health: AuditHealth2::Denied,
+            receipt: None,
+        };
+        if request.validate().is_err()
+            || request.audit.generation != generation
+            || self.pins.pin(&request.subject, &request.stream_id).is_err()
+        {
+            return denied();
+        }
+        let mut config = self.config.clone();
+        config.scope = request.subject.clone();
+        config.stream_id = request.stream_id.clone();
+        // Subjects other than the init one always forward to the host sink.
+        config.native_path = None;
+        let Ok(client) = Self::new(
+            self.connection.clone(),
+            self.binding.clone(),
+            config,
+            redactor.clone(),
+        ) else {
+            return denied();
+        };
+        let Some(sequence) = request.audit.expected_tail.checked_add(1) else {
+            return denied();
+        };
+        let batch = AuditSinkRequest2 {
+            scope: request.subject,
+            stream_id: request.stream_id,
+            expected_tail: request.audit.expected_tail,
+            events: vec![AuditEvent2 {
+                sequence,
+                event_id: request.audit.event_id,
+                generation,
+                kind: request.kind,
+                attribution: request.attribution,
+                arguments_json: request.arguments_json,
+                rule_ids: request.rule_ids,
+            }],
+        };
+        client.append_with_registry(batch, Ok(redactor)).await
     }
     pub(crate) fn registry(&self) -> Result<tinysecurity::Redactor> {
         self.redactor

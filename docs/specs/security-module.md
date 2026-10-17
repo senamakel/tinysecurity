@@ -218,7 +218,9 @@ receipt (`AuditEventReceipt2` per event, `new_tail`) only after data and metadat
 sync. `EvaluateAudited2`/`CheckAudited2` (and the scoped variants) derive the
 pre-execution event from the original request and computed verdict, so the host
 never supplies the verdict. Terminal `RecordExecution2` events are a separate
-phase.
+phase. `RecordAudit2` (contract 1.21) lets the host append an `Execution` or
+`PolicyDecision` event to the stream of any subject it names, under the same
+sanitation, correlation and receipt rules as `Audit2`; see MODULE.md.
 
 Local files: Unix creates journal, lock and JSONL projections fd-relative with
 mode 0600 and verifies owner and mode on every open. Windows requires a

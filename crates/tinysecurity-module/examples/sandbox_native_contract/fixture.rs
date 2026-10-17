@@ -50,6 +50,7 @@ pub(super) fn scope(root: &Path) -> std::result::Result<SandboxScope2, Box<dyn s
             write: true,
         }],
         network_ceiling: NetworkPolicy::Host,
+        operator_host_network: false,
         limits: ResourceLimits2::default(),
         sources: vec![SandboxSource2 {
             source_id: "source".into(),
@@ -91,6 +92,7 @@ pub(super) fn request(scope: &SandboxScope2, sequence: u64) -> SandboxPlanReques
         network: NetworkPolicy::None,
         limits: ResourceLimits2::default(),
         deny_subprocesses: false,
+        accept_process_isolation: false,
         generation: 1,
         ttl_ms: 30_000,
         audit: audit(sequence),

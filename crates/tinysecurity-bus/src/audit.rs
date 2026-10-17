@@ -19,6 +19,20 @@ pub enum AuditKind2 {
     Execution,
     /// Sandbox decision.
     Sandbox,
+    /// A call the host let through without a prompt: `auto_approve_all`, approvals
+    /// switched off for the agent, or a match on the user's allowlist (contract 1.21).
+    PolicyDecision,
+}
+impl AuditKind2 {
+    /// Whether the host may append an event of this kind with `RecordAudit2`.
+    ///
+    /// The other kinds describe module decisions (policy activation, approvals,
+    /// judge verdicts, sandbox plans, native routines, permission checks); only the
+    /// module writes them, so a host record can never impersonate one.
+    #[must_use]
+    pub const fn host_recordable(&self) -> bool {
+        matches!(self, Self::Execution | Self::PolicyDecision)
+    }
 }
 /// One sanitized event with immutable retry identity.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +101,67 @@ pub struct AuditSinkResponse2 {
 impl std::fmt::Debug for AuditSinkResponse2 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("AuditSinkResponse2([REDACTED])")
+    }
+}
+/// Most bytes of structured arguments a host-recorded event may carry.
+pub const MAX_RECORD_ARGUMENTS_BYTES: usize = 64 * 1024;
+/// A host-recorded audit event for one subject's registered stream (contract 1.21).
+///
+/// `Audit2` only accepts the module's init-time scope and stream, which nothing is
+/// ever evaluated under in a multi-subject host. `RecordAudit2` appends one event to
+/// the stream of the subject the host names, with the exact correlation the host
+/// reserved. The module sanitizes the payload with its own redactor, appends it
+/// through the same sink callback as every other event, and answers with the same
+/// durable-receipt evidence as `Audit2`. A subject is bound to the first stream it
+/// is recorded under; any other stream for it is refused.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditRecordRequest2 {
+    /// The subject whose stream receives the event.
+    pub subject: SubjectScope,
+    /// The subject's persisted opaque stream.
+    pub stream_id: String,
+    /// Event category; only [`AuditKind2::host_recordable`] kinds are accepted.
+    pub kind: AuditKind2,
+    /// Actor attribution, sanitized by the module.
+    pub attribution: String,
+    /// Structured arguments, sanitized by the module.
+    pub arguments_json: String,
+    /// Content-free rule identifiers.
+    pub rule_ids: Vec<String>,
+    /// Exact stream correlation the host reserved.
+    pub audit: crate::AuditCorrelation2,
+}
+impl std::fmt::Debug for AuditRecordRequest2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AuditRecordRequest2([REDACTED])")
+    }
+}
+impl AuditRecordRequest2 {
+    /// Validate shape and bounds before any stream is touched.
+    ///
+    /// # Errors
+    /// Rejects module-only kinds, malformed identities and oversized payloads.
+    pub fn validate(&self) -> crate::Result<()> {
+        let identity = |value: &str| !value.is_empty() && value.len() <= 1024;
+        if !self.kind.host_recordable()
+            || !opaque(&self.stream_id)
+            || !opaque(&self.audit.event_id)
+            || ![
+                &self.subject.user,
+                &self.subject.workspace,
+                &self.subject.agent,
+            ]
+            .into_iter()
+            .all(|value| identity(value))
+            || self.attribution.len() > 1024
+            || self.arguments_json.len() > MAX_RECORD_ARGUMENTS_BYTES
+            || self.rule_ids.len() > 64
+            || self.audit.expected_tail.checked_add(1).is_none()
+        {
+            return Err(crate::Error::InvalidArguments);
+        }
+        Ok(())
     }
 }
 impl AuditSinkRequest2 {

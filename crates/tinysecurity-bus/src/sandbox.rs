@@ -159,6 +159,12 @@ pub struct SandboxScope2 {
     pub grant_ceiling: Vec<PathGrant>,
     /// Maximum admitted network reach.
     pub network_ceiling: NetworkPolicy,
+    /// The owner's configuration already grants the host's own network up to
+    /// `network_ceiling` (contract 1.21), so a plan for it needs no per-command human
+    /// approval. Ignored in a `SaaS` deployment or origin, where host networking always
+    /// needs an exact human approval. Absent means a human approval is required.
+    #[serde(default)]
+    pub operator_host_network: bool,
     /// Mandatory upper bounds; caller cannot remove or raise these.
     pub limits: ResourceLimits2,
     /// Immutable source provenance registry.
@@ -213,6 +219,13 @@ pub struct SandboxPlanRequest2 {
     pub limits: ResourceLimits2,
     /// Require child-process denial.
     pub deny_subprocesses: bool,
+    /// The command is an ordinary tool command of the scope's operator (contract 1.21),
+    /// so a process-level jail whose constraints are best effort (macOS Seatbelt) may run
+    /// it. Honoured only for a trusted host source outside `SaaS`; a plan for untrusted
+    /// code or mandatory isolation is refused when it sets this. Absent means the
+    /// executor must meet the kernel-isolation floor with exactly enforced constraints.
+    #[serde(default)]
+    pub accept_process_isolation: bool,
     /// Current policy generation.
     pub generation: u64,
     /// Requested artifact lifetime.
