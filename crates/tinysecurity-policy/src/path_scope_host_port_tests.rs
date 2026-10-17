@@ -95,7 +95,7 @@ fn host_supplied_forbidden_list_blocks_system_dirs_without_workspace_only() -> T
     open.forbidden_paths.push("~/.ssh".into());
     let scope = scope_of(open)?;
     for path in [
-        "/var/lib/docker/x",
+        "/opt/tool/x",
         "/etc/shadow",
         "/root/.bashrc",
         "/usr/bin/env",
@@ -388,9 +388,13 @@ fn disabled_policy_keeps_the_floor_and_nothing_discretionary() -> TestResult {
     let (_dir, base) = root()?;
     let mut off = policy(&base.join("ws"), &base.join("act"));
     off.enabled = false;
-    off.forbidden_paths = vec!["/somewhere".into()];
+    let elsewhere = base.join("somewhere");
+    off.forbidden_paths = vec![elsewhere.to_string_lossy().into_owned()];
     let scope = scope_of(off)?;
-    assert!(string_ok(&scope, "/somewhere/else/notes.md"));
+    assert!(string_ok(
+        &scope,
+        &elsewhere.join("else/notes.md").to_string_lossy()
+    ));
     for path in [
         "/home/u/.ssh/id_rsa",
         "/home/u/.gnupg/secring.gpg",
