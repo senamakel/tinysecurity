@@ -280,6 +280,8 @@ pub enum DenialReason {
     ScheduledReadOnly,
     /// The command class is prohibited by the scope's high-risk setting (contract 1.20).
     HighRisk,
+    /// The registered privacy mode refuses the transfer (contract 1.22).
+    Privacy,
 }
 /// Effective policy settings. Bootstrap intentionally exposes no unimplemented budgets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
