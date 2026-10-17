@@ -1,5 +1,3 @@
-//! Executor preference, workspace-less plans and the operator's run on the host
-//! (contract 1.22).
 use super::*;
 use crate::engine::tests::fixture;
 use tinysecurity_bus::{ConstraintSupport2, SandboxPlanOptions2};
@@ -149,7 +147,7 @@ fn a_workspace_less_plan_records_that_it_grants_no_workspace() -> Res {
     request.options = options(|o| o.no_workspace = true);
     let artifact = plan(scope, &request)?.artifact.ok_or("no artifact")?;
     assert!(artifact.no_workspace);
-    assert!(artifact.grants.is_empty());
+    assert_eq!(artifact.grants, []);
     Ok(())
 }
 
@@ -194,7 +192,7 @@ fn the_operator_with_the_sandbox_off_gets_a_planned_run_on_the_host() -> Res {
     assert_eq!(artifact.network, NetworkPolicy::Host);
     assert!(artifact.grants.is_empty() && artifact.constraints.is_empty());
     assert_eq!(artifact.approval_reservation_id, None);
-    assert!(!artifact.fingerprint.is_empty());
+    assert_ne!(artifact.fingerprint, "");
     Ok(())
 }
 
@@ -265,10 +263,16 @@ fn a_run_on_the_host_claims_no_confinement() -> Res {
         plan(scope.clone(), &workspace_less)?.denial,
         Some(SandboxDenial2::InvalidRequest)
     );
-    let mut bounded = request;
+    let mut bounded = request.clone();
     bounded.limits.memory_bytes = Some(1024);
     assert_eq!(
-        plan(scope, &bounded)?.denial,
+        plan(scope.clone(), &bounded)?.denial,
+        Some(SandboxDenial2::Unsupported)
+    );
+    let mut no_children = request;
+    no_children.deny_subprocesses = true;
+    assert_eq!(
+        plan(scope, &no_children)?.denial,
         Some(SandboxDenial2::Unsupported)
     );
     Ok(())

@@ -514,8 +514,8 @@ refuses a 1.21 module, and a 1.21 module rejects a request that sets an option
   `environment: disabled` (the operator's setting). Anything else is refused (`floor`), so
   an untrusted source (a hook, a scheduled job, a registry MCP server) and every `SaaS`
   scope get a refusal, never a host run. A host run claims no confinement: a request with
-  grants or `no_workspace` is `invalid_request` and one with a resource bound is
-  `unsupported`. The plan is audited, staged and admitted exactly once like any other, and
+  grants or `no_workspace` is `invalid_request` and one with a resource bound or
+  `deny_subprocesses` is `unsupported`. The plan is audited, staged and admitted exactly once like any other, and
   `ConsumeSandboxPlan2` re-derives it from the request, so a request that does not ask for
   the host run cannot reuse it.
 

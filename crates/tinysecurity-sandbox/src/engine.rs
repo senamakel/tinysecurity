@@ -533,7 +533,7 @@ impl Engine {
             return Err(SandboxDenial2::InvalidRequest);
         }
         let none = ResourceLimits2::default();
-        if request.limits != none || facts.limits != none {
+        if request.limits != none || facts.limits != none || request.deny_subprocesses {
             return Err(SandboxDenial2::Unsupported);
         }
         let mut artifact = SandboxArtifact2 {
