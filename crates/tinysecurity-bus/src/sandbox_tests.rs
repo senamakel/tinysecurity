@@ -335,7 +335,7 @@ fn private_pair() -> (SandboxPlanRequest2, SandboxArtifact2) {
 
 fn minimal_request() -> std::result::Result<serde_json::Value, Box<dyn std::error::Error>> {
     let (request, _) = private_pair();
-    Ok(serde_json::to_value(request).required()?)
+    serde_json::to_value(request).required()
 }
 
 #[test]
