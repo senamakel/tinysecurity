@@ -1,8 +1,9 @@
 //! The unconditional lexical path floor for callers that hold no registered scope
 //! (contract 1.22 `ProtectedPath2` / `ProtectedFloor2`).
 //!
-//! Purely lexical: no filesystem access, no canonicalization. The vocabulary is built
-//! from the very constants the matcher uses, so the two cannot drift.
+//! [`lexical_floor`] and [`floor_vocabulary`] are purely lexical and use the same
+//! constants. [`credential_roots`] separately resolves concrete native roots with
+//! filesystem canonicalization for hosts that must configure a jail deny list.
 use crate::path::{
     CREDENTIAL_COMPONENTS, CREDENTIAL_FILE_STORES, CREDENTIAL_PAIRS, CRITICAL_ROOTS,
     INSTALLATION_ROOTS, WINDOWS_SYSTEM_ROOTS, strip_native_namespace,
