@@ -48,7 +48,7 @@ scores meet local thresholds before durable `auto:jev` one-shot approval;
 all uncertain/error/budget paths keep the authenticated human flow. Required
 CAS/audit receipts and fresh policy floors still gate permission.
 
-Contract 1.10 adds [confidential injected master resolution](MODULE.md#confidential-injected-master-resolution) with opaque native aliases. Configured-secret reinit is conservatively denied pending a coherent owner transaction. This is an injected-store prerequisite, not production keyring or password migration.
+Contract 1.10 adds [confidential injected master resolution](docs/module-crypto.md#confidential-injected-master-resolution) with opaque native aliases. Configured-secret reinit is conservatively denied pending a coherent owner transaction. This is an injected-store prerequisite, not production keyring or password migration.
 
 Contract 1.9 adds [scoped declarative sandbox planning](crates/tinysecurity-sandbox/README.md).
 `Plan2` uses immutable host-registered source provenance, ceilings and executor
