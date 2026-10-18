@@ -142,7 +142,7 @@ frames and handles do not reach approval/audit payloads, errors, Debug or
 `PolicyInfo`.
 
 Explicit init bounds cover registrations, handles, concurrent reservations,
-per-scope rate, TTL, message bytes and retained bootstrap nonces. Reinit may
+per-scope control-operation rate, per-tunnel frame rate, TTL, message bytes and retained bootstrap nonces. `frames_per_minute` defaults to 12000 (200 frames/second) and is independently configurable up to 60000; older device configs receive that default. Reinit may
 change bounds without reimporting credentials or changing immutable subjects.
 It invalidates all old handles; successful new-generation receipts issue new
 handles. Revoke removes dependent tunnels; scoped Cancel fences pending work.
@@ -150,6 +150,13 @@ Bootstrap replay evidence survives alias issuance, Cancel and reinit and fails
 closed at capacity. Clock rollback/unavailability faults device authority for
 that process. Shutdown closes owned credentials even when an SDK observer
 retains the connection. See the [owned cleanup and replay limits](crates/tinysecurity-crypto/README.md#scoped-device-handles).
+
+Contract 1.23 adds confidential `DeviceFrame2` for streaming v2 frames. It
+accepts only a live tunnel handle returned by `ExecuteDevice2`; it cannot issue
+or extend a handle and checks scope, generation, TTL, revocation, per-tunnel
+frame rate and message bounds. Frame calls reuse the capability granted by the approved
+tunnel operation, so they need no new human receipt. Handshake and
+acknowledgement operations remain on the approved Device2 path.
 
 `device_native_contract` loads the hashed shared library and exercises actual
 confidential dispatch, verified approval/audit callback continuity, v2/v3/v4,

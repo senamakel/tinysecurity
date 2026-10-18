@@ -39,6 +39,7 @@ fn config() -> DeviceConfig2 {
         max_handles: 16,
         max_in_flight: 2,
         operations_per_minute: 100,
+        frames_per_minute: 12_000,
         max_ttl_ms: 100,
         max_message_bytes: 1000,
         max_bootstrap_nonces: 2,
@@ -593,6 +594,209 @@ fn both_native_tunnel_roles_preserve_direction_replay_and_reflection() -> TestRe
     );
     Ok(())
 }
+
+#[test]
+fn confidential_frames_reuse_only_a_live_approved_tunnel_capability() -> TestResult {
+    let reg = registry()?;
+    let (static_a, public_a) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (static_b, public_b) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (eph_a, epublic_a) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let (eph_b, epublic_b) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let client = tunnel(
+        &reg,
+        &static_a,
+        &eph_a,
+        &public_b,
+        &epublic_b,
+        DeviceRole2::Client,
+    )?;
+    let server = tunnel(
+        &reg,
+        &static_b,
+        &eph_b,
+        &public_a,
+        &epublic_a,
+        DeviceRole2::Server,
+    )?;
+    let sealed = reg.execute_frame(
+        &DeviceFrameRequest2 {
+            scope_id: "a".repeat(32),
+            handle: client,
+            call_id: "socket-send-1".into(),
+            operation: DeviceFrameOperation2::Seal {
+                plaintext: b"confidential socket frame".to_vec(),
+            },
+        },
+        1,
+        time(0),
+    )?;
+    let opened = reg.execute_frame(
+        &DeviceFrameRequest2 {
+            scope_id: "a".repeat(32),
+            handle: server.clone(),
+            call_id: "socket-receive-1".into(),
+            operation: DeviceFrameOperation2::Open {
+                frame: sealed.bytes.clone(),
+            },
+        },
+        1,
+        time(0),
+    )?;
+    assert_eq!(opened.bytes, b"confidential socket frame");
+    assert!(matches!(
+        reg.execute_frame(
+            &DeviceFrameRequest2 {
+                scope_id: "a".repeat(32),
+                handle: server.clone(),
+                call_id: "socket-receive-replay".into(),
+                operation: DeviceFrameOperation2::Open {
+                    frame: sealed.bytes.clone(),
+                },
+            },
+            1,
+            time(0),
+        ),
+        Err(Error::Replay)
+    ));
+    assert!(matches!(
+        reg.execute_frame(
+            &DeviceFrameRequest2 {
+                scope_id: "b".repeat(32),
+                handle: server.clone(),
+                call_id: "wrong-device".into(),
+                operation: DeviceFrameOperation2::Open {
+                    frame: sealed.bytes
+                },
+            },
+            1,
+            time(0),
+        ),
+        Err(Error::DeviceDenied)
+    ));
+    run(
+        &reg,
+        'a',
+        DeviceOperation2::Revoke {
+            handle: server.clone(),
+        },
+    )?;
+    assert!(
+        reg.execute_frame(
+            &DeviceFrameRequest2 {
+                scope_id: "a".repeat(32),
+                handle: server,
+                call_id: "after-revoke".into(),
+                operation: DeviceFrameOperation2::Seal { plaintext: vec![] },
+            },
+            1,
+            time(0),
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn confidential_frames_enforce_size_limits_expiry_and_replay() -> TestResult {
+    let mut cfg = config();
+    cfg.max_message_bytes = 4;
+    let reg = Registry::new(
+        cfg,
+        &[registration(&"a".repeat(32)), registration(&"b".repeat(32))],
+        ":1.1",
+        1,
+        time(0),
+    )?;
+    let (static_handle, _) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (ephemeral, _) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let external = KeyPair::from_secret(Zeroizing::new([9; 32]))?;
+    let remote_ephemeral = KeyPair::from_secret(Zeroizing::new([10; 32]))?;
+    let tunnel_handle = tunnel(
+        &reg,
+        &static_handle,
+        &ephemeral,
+        &external.public_key().encode(),
+        &remote_ephemeral.public_key().encode(),
+        DeviceRole2::Client,
+    )?;
+    let too_large = reg.execute_frame(
+        &DeviceFrameRequest2 {
+            scope_id: "a".repeat(32),
+            handle: tunnel_handle.clone(),
+            call_id: "oversized".into(),
+            operation: DeviceFrameOperation2::Seal {
+                plaintext: b"12345".to_vec(),
+            },
+        },
+        1,
+        time(0),
+    );
+    assert!(matches!(too_large, Err(Error::Limit)));
+    let expired_request = request(
+        'a',
+        DeviceOperation2::Seal {
+            handle: tunnel_handle.clone(),
+            plaintext: vec![],
+        },
+    );
+    assert!(
+        reg.execute_frame(
+            &DeviceFrameRequest2 {
+                scope_id: "a".repeat(32),
+                handle: tunnel_handle,
+                call_id: expired_request.call_id,
+                operation: DeviceFrameOperation2::Seal { plaintext: vec![] },
+            },
+            1,
+            time(101),
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn frame_budget_is_per_tunnel_and_independent_of_control_operations() -> TestResult {
+    let mut cfg = config();
+    cfg.frames_per_minute = 1;
+    cfg.operations_per_minute = 100;
+    let reg = Registry::new(
+        cfg,
+        &[registration(&"a".repeat(32)), registration(&"b".repeat(32))],
+        ":1.1",
+        1,
+        time(0),
+    )?;
+    let (static_handle, _) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (ephemeral, _) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let external = KeyPair::from_secret(Zeroizing::new([19; 32]))?;
+    let remote_ephemeral = KeyPair::from_secret(Zeroizing::new([20; 32]))?;
+    let handle = tunnel(
+        &reg,
+        &static_handle,
+        &ephemeral,
+        &external.public_key().encode(),
+        &remote_ephemeral.public_key().encode(),
+        DeviceRole2::Client,
+    )?;
+    let frame_request = |call_id: &str| DeviceFrameRequest2 {
+        scope_id: "a".repeat(32),
+        handle: handle.clone(),
+        call_id: call_id.into(),
+        operation: DeviceFrameOperation2::Seal {
+            plaintext: b"x".to_vec(),
+        },
+    };
+    reg.execute_frame(&frame_request("frame-1"), 1, time(0))?;
+    assert!(matches!(
+        reg.execute_frame(&frame_request("frame-2"), 1, time(0)),
+        Err(Error::DeviceRate)
+    ));
+    // The independent control plane remains available after a frame budget is exhausted.
+    key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    Ok(())
+}
+
 #[test]
 fn invalid_initialization_inputs_and_every_operation_shape_fail_closed() -> TestResult {
     let regs = [registration(&"a".repeat(32)), registration(&"b".repeat(32))];
@@ -605,7 +809,7 @@ fn invalid_initialization_inputs_and_every_operation_shape_fail_closed() -> Test
     let mut duplicate = config();
     duplicate.scopes.push(duplicate.scopes[0].clone());
     assert!(init(duplicate, &regs, ":1.1", 1).is_err());
-    for change in 0..7 {
+    for change in 0..9 {
         let mut cfg = config();
         match change {
             0 => cfg.scopes.clear(),
@@ -614,7 +818,9 @@ fn invalid_initialization_inputs_and_every_operation_shape_fail_closed() -> Test
             3 => cfg.operations_per_minute = 0,
             4 => cfg.max_ttl_ms = 300_001,
             5 => cfg.max_message_bytes = 1_048_577,
-            _ => cfg.max_bootstrap_nonces = 0,
+            6 => cfg.max_bootstrap_nonces = 0,
+            7 => cfg.frames_per_minute = 0,
+            _ => cfg.frames_per_minute = 60_001,
         }
         assert!(init(cfg, &regs, ":1.1", 1).is_err());
     }

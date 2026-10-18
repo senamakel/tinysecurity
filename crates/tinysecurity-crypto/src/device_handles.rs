@@ -10,8 +10,9 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 use tinysecurity_bus::{
-    ApprovalScope2, DeviceConfig2, DeviceKeyPurpose2, DeviceOperation2, DeviceRequest2,
-    DeviceResponse2, DeviceRole2,
+    ApprovalScope2, DeviceConfig2, DeviceFrameOperation2, DeviceFrameRequest2,
+    DeviceFrameResponse2, DeviceKeyPurpose2, DeviceOperation2, DeviceRequest2, DeviceResponse2,
+    DeviceRole2,
 };
 use zeroize::Zeroizing;
 /// Injected epoch and monotonic milliseconds; neither value comes from an invocation.
@@ -45,6 +46,7 @@ struct Entry {
     epoch: u64,
     expires_wall: u64,
     expires_monotonic: u64,
+    frame_rate: RateCounter,
     native: Native,
 }
 struct State {
@@ -293,6 +295,95 @@ impl Registry {
         check_operation(operation, state.limits.max_message_bytes)?;
         state.execute(work, operation)
     }
+    /// Seal or open a frame through a tunnel handle created by an approved device operation.
+    ///
+    /// The opaque tunnel handle is the capability. This fast path accepts no key material and
+    /// cannot create or extend a session; it checks the registered scope, live generation,
+    /// expiry, revocation epoch, message bound and the same per-scope operation budget as the
+    /// approval path. A revoked, expired or reconfigured handle is unusable immediately.
+    ///
+    /// # Errors
+    /// Rejects an unknown or stale tunnel, malformed frame, replay, oversized payload or limit.
+    pub fn execute_frame(
+        &self,
+        request: &DeviceFrameRequest2,
+        generation: u64,
+        now: Time,
+    ) -> Result<DeviceFrameResponse2> {
+        let mut state = self.lock()?;
+        state.check_time(now)?;
+        state.prune(now);
+        if generation != state.generation
+            || request.scope_id.is_empty()
+            || request.scope_id.len() > 128
+            || request.handle.is_empty()
+            || request.handle.len() > 64
+            || request.call_id.is_empty()
+            || request.call_id.len() > 128
+        {
+            return Err(Error::DeviceDenied);
+        }
+        let scope = state
+            .scopes
+            .get(&request.scope_id)
+            .ok_or(Error::DeviceDenied)?;
+        let entry = state
+            .handles
+            .get(&request.handle)
+            .filter(|entry| entry.scope == request.scope_id && entry.epoch == scope.epoch)
+            .ok_or(Error::DeviceDenied)?;
+        if !matches!(entry.native, Native::Tunnel(..)) {
+            return Err(Error::DeviceDenied);
+        }
+        match &request.operation {
+            DeviceFrameOperation2::Seal { plaintext } => {
+                if plaintext.len() > state.limits.max_message_bytes as usize {
+                    return Err(Error::Limit);
+                }
+            }
+            DeviceFrameOperation2::Open { frame } => {
+                if frame.len() > state.limits.max_message_bytes as usize + 41 {
+                    return Err(Error::Limit);
+                }
+            }
+        }
+        let max_in_flight = state.limits.max_in_flight;
+        let max_rate = state.limits.frames_per_minute;
+        let State {
+            budget, handles, ..
+        } = &mut *state;
+        let entry = handles
+            .get_mut(&request.handle)
+            .filter(|entry| entry.scope == request.scope_id)
+            .ok_or(Error::DeviceDenied)?;
+        budget
+            .reserve(
+                &mut entry.frame_rate,
+                now.monotonic,
+                max_in_flight,
+                max_rate,
+            )
+            .map_err(|error| match error {
+                BudgetError::Capacity => Error::DeviceCapacity,
+                BudgetError::Rate => Error::DeviceRate,
+            })?;
+        let result = (|| {
+            let entry = handles
+                .get_mut(&request.handle)
+                .filter(|entry| entry.scope == request.scope_id)
+                .ok_or(Error::DeviceDenied)?;
+            let Native::Tunnel(tunnel, _, _) = &mut entry.native else {
+                return Err(Error::DeviceDenied);
+            };
+            let bytes = match &request.operation {
+                DeviceFrameOperation2::Seal { plaintext } => tunnel.seal(plaintext)?,
+                DeviceFrameOperation2::Open { frame } => tunnel.open(frame)?.to_vec(),
+            };
+            Ok(DeviceFrameResponse2 { bytes })
+        })();
+        budget.release();
+        result
+    }
     /// Close native authority and drop all owned credentials even if observers remain.
     /// Cleanup recovers a poisoned lock only to destroy state; it never restores authority.
     pub fn close(&self) {
@@ -489,6 +580,7 @@ impl State {
                 epoch: work.epoch,
                 expires_wall: work.expires_wall,
                 expires_monotonic: work.expires_monotonic,
+                frame_rate: RateCounter::new(self.time.monotonic),
                 native,
             },
         );
@@ -680,6 +772,7 @@ fn validate_config(config: &DeviceConfig2) -> Result<()> {
         || !(1..=4096).contains(&config.max_handles)
         || !(1..=32).contains(&config.max_in_flight)
         || !(1..=4096).contains(&config.operations_per_minute)
+        || !(1..=60_000).contains(&config.frames_per_minute)
         || !(1..=300_000).contains(&config.max_ttl_ms)
         || !(1..=1_048_576).contains(&config.max_message_bytes)
         || !(1..=4096).contains(&config.max_bootstrap_nonces)

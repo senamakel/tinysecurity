@@ -4,6 +4,9 @@ TinySecurity supplies security policy through a native TinyBus module. Hosts
 compile the transport-free `tinysecurity-bus` contract and load the isolated
 `tinysecurity-module` artifact. The bootstrap implements `Evaluate`, batched
 `Check`, `PolicyInfo`, validated SDK configuration and policy generations.
+Contract 1.23 adds confidential per-frame `DeviceFrame2` calls over the live
+opaque tunnel capability issued by approved `ExecuteDevice2` work; see the
+[device contract](MODULE.md#confidential-device-handles).
 Contract 1.1 also supplies immutable native [filesystem scopes](docs/specs/immutable-path-scopes.md)
 through `RegisterPathPolicy`, `ValidatePath`, `ValidateParent` and `CheckPath`.
 Contract 1.3 adds native `Redact`, `ScanPrompt` and `ScanToolDefinition`, with a

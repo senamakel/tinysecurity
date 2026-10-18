@@ -42,6 +42,7 @@ pub(crate) fn device_config() -> DeviceConfig2 {
         max_handles: 32,
         max_in_flight: 4,
         operations_per_minute: 4096,
+        frames_per_minute: 12_000,
         max_ttl_ms: 300_000,
         max_message_bytes: 1024,
         max_bootstrap_nonces: 64,

@@ -5,8 +5,8 @@ use tinysecurity::crypto::device_handles::{
     ConfidentialConfig, ConfidentialRequest, Registry, Time,
 };
 use tinysecurity_bus::{
-    ApprovalChoice2, ApprovalLifecycle2, DeviceConfig2, DeviceResponse2, EvaluateDeviceRequest2,
-    ExecuteDeviceRequest2,
+    ApprovalChoice2, ApprovalLifecycle2, DeviceConfig2, DeviceFrameOperation2, DeviceFrameRequest2,
+    DeviceFrameResponse2, DeviceResponse2, EvaluateDeviceRequest2, ExecuteDeviceRequest2,
 };
 // A weak reinit lookup does not extend the lifetime of native credentials past shutdown.
 static DEVICE: OnceLock<Option<Weak<Registry>>> = OnceLock::new();
@@ -146,6 +146,45 @@ impl ConfidentialResponse {
         self.0.take().ok_or_else(denied)
     }
 }
+
+struct ConfidentialFrameRequest(DeviceFrameRequest2);
+impl ConfidentialFrameRequest {
+    fn new(request: DeviceFrameRequest2) -> Self {
+        Self(request)
+    }
+}
+impl Drop for ConfidentialFrameRequest {
+    fn drop(&mut self) {
+        match &mut self.0.operation {
+            DeviceFrameOperation2::Seal { plaintext } => {
+                use zeroize::Zeroize;
+                plaintext.zeroize();
+            }
+            DeviceFrameOperation2::Open { frame } => {
+                use zeroize::Zeroize;
+                frame.zeroize();
+            }
+        }
+    }
+}
+
+struct ConfidentialFrameResponse(Option<DeviceFrameResponse2>);
+impl ConfidentialFrameResponse {
+    fn new(response: DeviceFrameResponse2) -> Self {
+        Self(Some(response))
+    }
+    fn publish(mut self) -> BusResult<DeviceFrameResponse2> {
+        self.0.take().ok_or_else(denied)
+    }
+}
+impl Drop for ConfidentialFrameResponse {
+    fn drop(&mut self) {
+        if let Some(response) = &mut self.0 {
+            use zeroize::Zeroize;
+            response.bytes.zeroize();
+        }
+    }
+}
 impl Drop for ConfidentialResponse {
     fn drop(&mut self) {
         if let Some(response) = &mut self.0 {
@@ -267,6 +306,21 @@ impl PolicyService {
             }
         }
         response.publish()
+    }
+
+    /// Reuse only an opaque tunnel capability that the approved device path created.
+    /// Frame calls are synchronous and do not park for another human decision.
+    pub(super) fn device_frame(
+        &self,
+        request: DeviceFrameRequest2,
+    ) -> BusResult<DeviceFrameResponse2> {
+        let request = ConfidentialFrameRequest::new(request);
+        let registry = Arc::clone(self.device.as_ref().ok_or_else(denied)?);
+        let generation = self.read()?.info().generation;
+        let response = registry
+            .execute_frame(&request.0, generation, self.device_time()?)
+            .map_err(|_| denied())?;
+        ConfidentialFrameResponse::new(response).publish()
     }
 }
 #[cfg(test)]

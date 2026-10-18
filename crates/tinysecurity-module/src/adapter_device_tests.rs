@@ -41,9 +41,122 @@ async fn unconfigured_device_service_denies_before_creating_native_authority()
             .await
             .is_err()
     );
+    assert!(
+        service
+            .device_frame(tinysecurity_bus::DeviceFrameRequest2 {
+                scope_id: "a".repeat(32),
+                handle: "missing-tunnel".into(),
+                call_id: "frame-call".into(),
+                operation: tinysecurity_bus::DeviceFrameOperation2::Seal {
+                    plaintext: b"private frame".to_vec(),
+                },
+            })
+            .is_err()
+    );
     assert!(time(&FailedClock).is_err());
     Ok(())
 }
+
+#[test]
+fn module_frame_member_seals_only_through_a_live_tunnel_handle()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tinysecurity_bus::*;
+    let scope_id = "c".repeat(32);
+    let registered = ApprovalScope2 {
+        scope_id: scope_id.clone(),
+        subject: SubjectScope {
+            user: "user".into(),
+            workspace: "workspace".into(),
+            agent: "agent".into(),
+        },
+        policy_ref: "policy".into(),
+        generation: 1,
+        ceiling: AccessTier::Full,
+        require_approval: true,
+        auto_approve_all: false,
+    };
+    let registry = Arc::new(Registry::new(
+        DeviceConfig2 {
+            scopes: vec![DeviceScope2 {
+                scope_id: scope_id.clone(),
+                origin: Origin::Operator,
+                static_secret: Some([11; 32]),
+            }],
+            max_handles: 8,
+            max_in_flight: 2,
+            operations_per_minute: 100,
+            frames_per_minute: 12_000,
+            max_ttl_ms: 100,
+            max_message_bytes: 1024,
+            max_bootstrap_nonces: 8,
+        },
+        &[registered],
+        ":1.1",
+        1,
+        Time {
+            wall: 1000,
+            monotonic: 0,
+        },
+    )?);
+    let execute = |operation| -> std::result::Result<DeviceResponse2, tinysecurity::crypto::Error> {
+        let request = DeviceRequest2 {
+            scope_id: scope_id.clone(),
+            call_id: "approved-tunnel-setup".into(),
+            ttl_ms: 100,
+            operation,
+        };
+        let now = Time {
+            wall: 1000,
+            monotonic: 0,
+        };
+        let work = registry.reserve(&request, 1, now)?;
+        registry.execute(&work, &request.operation, 1, now)
+    };
+    let static_handle = execute(DeviceOperation2::Key {
+        purpose: DeviceKeyPurpose2::Static,
+    })?
+    .handle
+    .ok_or("missing static handle")?;
+    let ephemeral = execute(DeviceOperation2::Key {
+        purpose: DeviceKeyPurpose2::Ephemeral,
+    })?;
+    let remote_static =
+        tinysecurity::crypto::device::KeyPair::from_secret(zeroize::Zeroizing::new([12; 32]))?;
+    let remote_ephemeral =
+        tinysecurity::crypto::device::KeyPair::from_secret(zeroize::Zeroizing::new([13; 32]))?;
+    let tunnel = execute(DeviceOperation2::Tunnel {
+        key: static_handle,
+        ephemeral: ephemeral.handle.ok_or("missing ephemeral handle")?,
+        peer_static: remote_static.public_key().encode(),
+        peer_ephemeral: remote_ephemeral.public_key().encode(),
+        role: DeviceRole2::Client,
+    })?
+    .handle
+    .ok_or("missing tunnel handle")?;
+
+    let mut service = super::super::service_for(
+        Arc::new(std::sync::RwLock::new(tinysecurity::Policy::new(
+            ModuleConfig::default(),
+        )?)),
+        None,
+    );
+    service.device = Some(registry);
+    service.sandbox_clock = Arc::new(ToggleClock(std::sync::atomic::AtomicBool::new(false)));
+    assert_eq!(service.read()?.info().generation, 1);
+    assert_eq!(time(service.sandbox_clock.as_ref())?.wall, 1000);
+    let response = service.device_frame(DeviceFrameRequest2 {
+        scope_id,
+        handle: tunnel,
+        call_id: "socket-send".into(),
+        operation: DeviceFrameOperation2::Seal {
+            plaintext: b"socket frame".to_vec(),
+        },
+    })?;
+    assert_eq!(response.bytes.first(), Some(&2));
+    assert_eq!(format!("{response:?}"), "DeviceFrameResponse2([REDACTED])");
+    Ok(())
+}
+
 #[derive(Debug)]
 struct FailedClock;
 impl tinysecurity::approval::Clock for FailedClock {
@@ -92,6 +205,7 @@ fn clock_failure_invalidates_existing_device_authority_permanently()
         max_handles: 10,
         max_in_flight: 2,
         operations_per_minute: 100,
+        frames_per_minute: 12_000,
         max_ttl_ms: 100,
         max_message_bytes: 100,
         max_bootstrap_nonces: 10,
@@ -191,6 +305,7 @@ fn device_configuration() -> DeviceConfig2 {
         max_handles: 16,
         max_in_flight: 4,
         operations_per_minute: 4096,
+        frames_per_minute: 12_000,
         max_ttl_ms: 300_000,
         max_message_bytes: 1024,
         max_bootstrap_nonces: 64,
