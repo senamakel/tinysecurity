@@ -144,7 +144,7 @@ async fn credential_root_checks(
             CredentialRootsRequest2 { home: None },
         )
         .await?;
-    assert!(absent.roots.is_empty());
+    assert_eq!(absent.roots, Vec::<std::path::PathBuf>::new());
     Ok(())
 }
 async fn native_tunnel(
