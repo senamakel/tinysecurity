@@ -61,6 +61,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let proxy = host
         .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
         .with_timeout(Duration::from_secs(10));
+    credential_root_checks(&proxy).await?;
     routing_checks(&proxy, &bus, &module).await?;
     let mut sequence = 1;
     let (key, stale_tunnel) = native_protocols(&proxy, &store, &mut sequence).await?;
@@ -105,8 +106,45 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     task.abort();
     assert_eq!(hash, tinybus::module::sha256_file(&library)?);
     println!(
-        "native device: SHA256={hash}; verified peer + confidential DeviceFrame2 Seal/Open + no frame approval rows + cross-scope/replay/revoke/stale-generation denial + existing approved v2/v3/v4 flows + shutdown passed"
+        "native device: SHA256={hash}; verified CredentialRoots2 native resolution + home-none isolation + peer + confidential DeviceFrame2 Seal/Open + no frame approval rows + cross-scope/replay/revoke/stale-generation denial + existing approved v2/v3/v4 flows + shutdown passed"
     );
+    Ok(())
+}
+
+async fn credential_root_checks(
+    proxy: &tinybus::Proxy,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tinysecurity_bus::{CredentialRootsRequest2, CredentialRootsResponse2};
+
+    let home_variable = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    let home = std::env::var_os(home_variable)
+        .map(std::path::PathBuf::from)
+        .ok_or("native fixture home is unavailable")?;
+    let response: CredentialRootsResponse2 = proxy
+        .call(
+            names::methods::CREDENTIAL_ROOTS2,
+            CredentialRootsRequest2 {
+                home: Some(home.clone()),
+            },
+        )
+        .await?;
+    response.validate()?;
+    assert!(response.roots.contains(&home.join(".ssh")));
+    #[cfg(target_os = "macos")]
+    assert!(response.roots.contains(&home.join("Library/Keychains")));
+    #[cfg(windows)]
+    assert!(
+        response
+            .roots
+            .contains(&home.join("AppData/Roaming/Microsoft/Protect"))
+    );
+    let absent: CredentialRootsResponse2 = proxy
+        .call(
+            names::methods::CREDENTIAL_ROOTS2,
+            CredentialRootsRequest2 { home: None },
+        )
+        .await?;
+    assert!(absent.roots.is_empty());
     Ok(())
 }
 async fn native_tunnel(

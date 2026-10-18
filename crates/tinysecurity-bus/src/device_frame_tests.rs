@@ -42,5 +42,5 @@ fn frame_requests_and_responses_pin_the_confidential_wire_shape()
 #[test]
 fn frame_member_name_is_stable_and_contract_version_is_bumped() {
     assert_eq!(crate::names::methods::DEVICE_FRAME2, "DeviceFrame2");
-    assert_eq!(crate::CONTRACT_VERSION, (1, 23));
+    assert_eq!(crate::CONTRACT_VERSION, (1, 24));
 }
