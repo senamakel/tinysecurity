@@ -51,6 +51,7 @@ async fn unconfigured_device_service_denies_before_creating_native_authority()
                     plaintext: b"private frame".to_vec(),
                 },
             })
+            .await
             .is_err()
     );
     assert!(time(&FailedClock).is_err());
@@ -58,8 +59,56 @@ async fn unconfigured_device_service_denies_before_creating_native_authority()
 }
 
 #[test]
-fn module_frame_member_seals_only_through_a_live_tunnel_handle()
+fn module_frame_crypto_does_not_block_the_async_worker()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let (service, request) = module_frame_fixture()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .build()?;
+    runtime.block_on(async move {
+        let (blocker_started_tx, blocker_started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let blocker = tokio::task::spawn_blocking(move || {
+            let _ = blocker_started_tx.send(());
+            let _ = release_rx.recv();
+        });
+        blocker_started_rx.await?;
+
+        let (frame_started_tx, frame_started_rx) = tokio::sync::oneshot::channel();
+        let frame = tokio::spawn(async move {
+            let _ = frame_started_tx.send(());
+            service.device_frame(request).await
+        });
+        frame_started_rx.await?;
+
+        // The blocking pool is occupied, so offloaded frame work must remain pending while
+        // the single async worker continues to run unrelated tasks.
+        let (tick_tx, tick_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = tick_tx.send(());
+        });
+        tick_rx.await?;
+        let finished_before_release = frame.is_finished();
+        release_tx
+            .send(())
+            .map_err(|_| "blocking worker exited early")?;
+        blocker.await?;
+        let response = frame.await??;
+        assert_eq!(response.bytes.first(), Some(&2));
+        assert_eq!(format!("{response:?}"), "DeviceFrameResponse2([REDACTED])");
+        assert!(
+            !finished_before_release,
+            "frame AEAD must be queued off the async worker"
+        );
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })?;
+    Ok(())
+}
+
+fn module_frame_fixture() -> std::result::Result<
+    (PolicyService, tinysecurity_bus::DeviceFrameRequest2),
+    Box<dyn std::error::Error>,
+> {
     use tinysecurity_bus::*;
     let scope_id = "c".repeat(32);
     let registered = ApprovalScope2 {
@@ -133,7 +182,6 @@ fn module_frame_member_seals_only_through_a_live_tunnel_handle()
     })?
     .handle
     .ok_or("missing tunnel handle")?;
-
     let mut service = super::super::service_for(
         Arc::new(std::sync::RwLock::new(tinysecurity::Policy::new(
             ModuleConfig::default(),
@@ -144,17 +192,17 @@ fn module_frame_member_seals_only_through_a_live_tunnel_handle()
     service.sandbox_clock = Arc::new(ToggleClock(std::sync::atomic::AtomicBool::new(false)));
     assert_eq!(service.read()?.info().generation, 1);
     assert_eq!(time(service.sandbox_clock.as_ref())?.wall, 1000);
-    let response = service.device_frame(DeviceFrameRequest2 {
-        scope_id,
-        handle: tunnel,
-        call_id: "socket-send".into(),
-        operation: DeviceFrameOperation2::Seal {
-            plaintext: b"socket frame".to_vec(),
+    Ok((
+        service,
+        DeviceFrameRequest2 {
+            scope_id,
+            handle: tunnel,
+            call_id: "socket-send".into(),
+            operation: DeviceFrameOperation2::Seal {
+                plaintext: b"socket frame".to_vec(),
+            },
         },
-    })?;
-    assert_eq!(response.bytes.first(), Some(&2));
-    assert_eq!(format!("{response:?}"), "DeviceFrameResponse2([REDACTED])");
-    Ok(())
+    ))
 }
 
 #[derive(Debug)]

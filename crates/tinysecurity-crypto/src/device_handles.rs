@@ -32,7 +32,7 @@ struct Scope {
 }
 enum Native {
     Key(Arc<KeyPair>, DeviceKeyPurpose2),
-    Tunnel(Tunnel, String, String),
+    Tunnel(Arc<Mutex<Tunnel>>, String, String),
 }
 struct TunnelInput<'a> {
     key: &'a str,
@@ -288,6 +288,51 @@ impl Registry {
         if !Arc::ptr_eq(&self.0, &work.registry.0) {
             return Err(Error::DeviceDenied);
         }
+        if let DeviceOperation2::Seal { handle, plaintext } = operation {
+            let tunnel = {
+                let mut state = self.lock()?;
+                state.check_time(now)?;
+                state.live(work, generation, now)?;
+                state.prune(now);
+                check_operation(operation, state.limits.max_message_bytes)?;
+                match &state.entry(handle, work)?.native {
+                    Native::Tunnel(tunnel, _, _) => Arc::clone(tunnel),
+                    Native::Key(..) => return Err(Error::DeviceDenied),
+                }
+            };
+            let bytes = tunnel
+                .lock()
+                .map_err(|_| Error::DeviceDenied)?
+                .seal(plaintext)?;
+            return Ok(DeviceResponse2 {
+                handle: None,
+                public_key: None,
+                bytes,
+            });
+        }
+        if let DeviceOperation2::Open { handle, frame } = operation {
+            let tunnel = {
+                let mut state = self.lock()?;
+                state.check_time(now)?;
+                state.live(work, generation, now)?;
+                state.prune(now);
+                check_operation(operation, state.limits.max_message_bytes)?;
+                match &state.entry(handle, work)?.native {
+                    Native::Tunnel(tunnel, _, _) => Arc::clone(tunnel),
+                    Native::Key(..) => return Err(Error::DeviceDenied),
+                }
+            };
+            let bytes = tunnel
+                .lock()
+                .map_err(|_| Error::DeviceDenied)?
+                .open(frame)?
+                .to_vec();
+            return Ok(DeviceResponse2 {
+                handle: None,
+                public_key: None,
+                bytes,
+            });
+        }
         let mut state = self.lock()?;
         state.check_time(now)?;
         state.live(work, generation, now)?;
@@ -311,79 +356,111 @@ impl Registry {
         generation: u64,
         now: Time,
     ) -> Result<DeviceFrameResponse2> {
-        let mut state = self.lock()?;
-        state.check_time(now)?;
-        state.prune(now);
-        if generation != state.generation
-            || request.scope_id.is_empty()
-            || request.scope_id.len() > 128
-            || request.handle.is_empty()
-            || request.handle.len() > 64
-            || request.call_id.is_empty()
-            || request.call_id.len() > 128
-        {
-            return Err(Error::DeviceDenied);
-        }
-        let scope = state
-            .scopes
-            .get(&request.scope_id)
-            .ok_or(Error::DeviceDenied)?;
-        let entry = state
-            .handles
-            .get(&request.handle)
-            .filter(|entry| entry.scope == request.scope_id && entry.epoch == scope.epoch)
-            .ok_or(Error::DeviceDenied)?;
-        if !matches!(entry.native, Native::Tunnel(..)) {
-            return Err(Error::DeviceDenied);
-        }
-        match &request.operation {
-            DeviceFrameOperation2::Seal { plaintext } => {
-                if plaintext.len() > state.limits.max_message_bytes as usize {
-                    return Err(Error::Limit);
+        let tunnel = {
+            let mut state = self.lock()?;
+            state.check_time(now)?;
+            state.prune(now);
+            if generation != state.generation
+                || request.scope_id.is_empty()
+                || request.scope_id.len() > 128
+                || request.handle.is_empty()
+                || request.handle.len() > 64
+                || request.call_id.is_empty()
+                || request.call_id.len() > 128
+            {
+                return Err(Error::DeviceDenied);
+            }
+            let scope = state
+                .scopes
+                .get(&request.scope_id)
+                .ok_or(Error::DeviceDenied)?;
+            let entry = state
+                .handles
+                .get(&request.handle)
+                .filter(|entry| entry.scope == request.scope_id && entry.epoch == scope.epoch)
+                .ok_or(Error::DeviceDenied)?;
+            let Native::Tunnel(_, _, _) = &entry.native else {
+                return Err(Error::DeviceDenied);
+            };
+            match &request.operation {
+                DeviceFrameOperation2::Seal { plaintext } => {
+                    if plaintext.len() > state.limits.max_message_bytes as usize {
+                        return Err(Error::Limit);
+                    }
+                }
+                DeviceFrameOperation2::Open { frame } => {
+                    if frame.len() > state.limits.max_message_bytes as usize + 41 {
+                        return Err(Error::Limit);
+                    }
                 }
             }
-            DeviceFrameOperation2::Open { frame } => {
-                if frame.len() > state.limits.max_message_bytes as usize + 41 {
-                    return Err(Error::Limit);
-                }
-            }
-        }
-        let max_in_flight = state.limits.max_in_flight;
-        let max_rate = state.limits.frames_per_minute;
-        let State {
-            budget, handles, ..
-        } = &mut *state;
-        let entry = handles
-            .get_mut(&request.handle)
-            .filter(|entry| entry.scope == request.scope_id)
-            .ok_or(Error::DeviceDenied)?;
-        budget
-            .reserve(
-                &mut entry.frame_rate,
-                now.monotonic,
-                max_in_flight,
-                max_rate,
-            )
-            .map_err(|error| match error {
-                BudgetError::Capacity => Error::DeviceCapacity,
-                BudgetError::Rate => Error::DeviceRate,
-            })?;
-        let result = (|| {
+            let max_in_flight = state.limits.max_in_flight;
+            let max_rate = state.limits.frames_per_minute;
+            let State {
+                budget, handles, ..
+            } = &mut *state;
             let entry = handles
                 .get_mut(&request.handle)
                 .filter(|entry| entry.scope == request.scope_id)
                 .ok_or(Error::DeviceDenied)?;
-            let Native::Tunnel(tunnel, _, _) = &mut entry.native else {
+            budget
+                .reserve(
+                    &mut entry.frame_rate,
+                    now.monotonic,
+                    max_in_flight,
+                    max_rate,
+                )
+                .map_err(|error| match error {
+                    BudgetError::Capacity => Error::DeviceCapacity,
+                    BudgetError::Rate => Error::DeviceRate,
+                })?;
+            let Native::Tunnel(tunnel, _, _) = &entry.native else {
                 return Err(Error::DeviceDenied);
             };
-            let bytes = match &request.operation {
-                DeviceFrameOperation2::Seal { plaintext } => tunnel.seal(plaintext)?,
-                DeviceFrameOperation2::Open { frame } => tunnel.open(frame)?.to_vec(),
-            };
-            Ok(DeviceFrameResponse2 { bytes })
-        })();
-        budget.release();
+            Arc::clone(tunnel)
+        };
+        let result = tunnel
+            .lock()
+            .map_err(|_| Error::DeviceDenied)
+            .and_then(|mut tunnel| {
+                let bytes = match &request.operation {
+                    DeviceFrameOperation2::Seal { plaintext } => tunnel.seal(plaintext)?,
+                    DeviceFrameOperation2::Open { frame } => tunnel.open(frame)?.to_vec(),
+                };
+                Ok(DeviceFrameResponse2 { bytes })
+            });
+        self.lock()?.budget.release();
         result
+    }
+    /// Revalidate a completed confidential frame before publishing its bytes.
+    ///
+    /// This checks that the capability stayed live while frame crypto ran outside the module's
+    /// async worker. It does not spend another frame from the per-tunnel budget.
+    /// # Errors
+    /// Rejects changed generations, revoked or expired handles, and unavailable clocks.
+    pub fn validate_frame(
+        &self,
+        scope_id: &str,
+        handle: &str,
+        generation: u64,
+        now: Time,
+    ) -> Result<()> {
+        let mut state = self.lock()?;
+        state.check_time(now)?;
+        state.prune(now);
+        if generation != state.generation {
+            return Err(Error::DeviceDenied);
+        }
+        let scope = state.scopes.get(scope_id).ok_or(Error::DeviceDenied)?;
+        let entry = state
+            .handles
+            .get(handle)
+            .filter(|entry| entry.scope == scope_id && entry.epoch == scope.epoch)
+            .ok_or(Error::DeviceDenied)?;
+        if !matches!(entry.native, Native::Tunnel(..)) {
+            return Err(Error::DeviceDenied);
+        }
+        Ok(())
     }
     /// Close native authority and drop all owned credentials even if observers remain.
     /// Cleanup recovers a poisoned lock only to destroy state; it never restores authority.
@@ -656,7 +733,7 @@ impl State {
         self.insert(
             work,
             Native::Tunnel(
-                Tunnel::new(native_role, keys),
+                Arc::new(Mutex::new(Tunnel::new(native_role, keys))),
                 input.key.to_owned(),
                 input.ephemeral.to_owned(),
             ),
@@ -693,22 +770,8 @@ impl State {
                     },
                 )?);
             }
-            Op::Seal { handle, plaintext } => match &self.entry(handle, work)?.native {
-                Native::Tunnel(tunnel, _, _) => response.bytes = tunnel.seal(plaintext)?,
-                Native::Key(..) => return Err(Error::DeviceDenied),
-            },
-            Op::Open { handle, frame } => {
-                self.entry(handle, work)?;
-                match &mut self
-                    .handles
-                    .get_mut(handle)
-                    .ok_or(Error::DeviceDenied)?
-                    .native
-                {
-                    Native::Tunnel(tunnel, _, _) => response.bytes = tunnel.open(frame)?.to_vec(),
-                    Native::Key(..) => return Err(Error::DeviceDenied),
-                }
-            }
+            // Tunnel frame work is dispatched by Registry::execute outside the registry lock.
+            Op::Seal { .. } | Op::Open { .. } => return Err(Error::DeviceDenied),
             Op::SealHandshake {
                 handle,
                 peer,
