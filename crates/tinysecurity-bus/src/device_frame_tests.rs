@@ -40,6 +40,34 @@ fn frame_requests_and_responses_pin_the_confidential_wire_shape()
 }
 
 #[test]
+fn frame_operations_redact_both_payloads_without_changing_open_wire_shape()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let seal = DeviceFrameOperation2::Seal {
+        plaintext: b"private seal payload".to_vec(),
+    };
+    let open = DeviceFrameOperation2::Open {
+        frame: b"private open frame".to_vec(),
+    };
+
+    for operation in [&seal, &open] {
+        let debug = format!("{operation:?}");
+        assert_eq!(debug, "DeviceFrameOperation2([REDACTED])");
+        assert!(!debug.contains("private"));
+    }
+
+    let wire = serde_json::to_value(&open)?;
+    assert_eq!(
+        wire,
+        serde_json::json!({
+            "kind": "open",
+            "frame": b"private open frame"
+        })
+    );
+    assert_eq!(serde_json::from_value::<DeviceFrameOperation2>(wire)?, open);
+    Ok(())
+}
+
+#[test]
 fn frame_member_name_is_stable_and_contract_version_is_bumped() {
     assert_eq!(crate::names::methods::DEVICE_FRAME2, "DeviceFrame2");
     assert_eq!(crate::CONTRACT_VERSION, (1, 24));
