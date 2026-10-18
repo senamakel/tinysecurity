@@ -625,95 +625,27 @@ async fn sdk_setup_accepts_generation_and_rejects_invalid_reinit()
         .call(names::methods::REGISTER_PATH_POLICY, (policy,))
         .await?;
 
-    let scoped: RegisteredPolicy = RegisteredPolicy {
-        path_policy_id: id.clone(),
-        command_policy_id: command_id.clone(),
-        settings: PolicySettings {
-            policy: PolicyConfig {
-                enabled: true,
-                action_dir: root.path().display().to_string(),
-                workspace_dir: root.path().display().to_string(),
-                allowed_commands: vec![],
-                forbidden_paths: vec![],
-            },
-            privacy: PrivacyMode::Standard,
-            egress_hosts: vec![],
-            command_classes: vec![],
-            auto_origins: vec![],
-            judge_enabled: false,
-        },
-        tool_rules: vec![],
-        subject_scope: SubjectScope {
-            user: "reinit-test-user".into(),
-            workspace: "reinit-test-workspace".into(),
-            agent: "reinit-test-agent".into(),
-        },
-    };
-    let scoped_id: PolicyId = proxy
-        .call(names::methods::REGISTER_POLICY, (scoped,))
-        .await?;
-    let scoped_before: ScopedPolicyInfo = proxy
-        .call(names::methods::SCOPED_POLICY_INFO, (scoped_id.clone(),))
-        .await?;
-    let scoped_call = || ScopedEvaluateRequest {
-        policy_id: scoped_id.clone(),
-        caller: CallerContext {
-            agent: "reinit-test-agent".into(),
-            call_id: "reinit-test-call".into(),
-            tier: AccessTier::Full,
-            ..Default::default()
-        },
-        call: ToolCall {
-            tool: "local_diagnostic".into(),
-            arguments_json: "{}".into(),
-            checks: vec![Check::LocalDiagnostic {}],
-        },
-    };
-    let scoped_decision_before: ScopedDecision = proxy
-        .call(names::methods::EVALUATE_SCOPED, (scoped_call(),))
-        .await?;
-    assert_eq!(scoped_decision_before.decision.verdict, Verdict::Allow);
+    let (scoped_id, scoped_before, scoped_decision_before) =
+        register_reinit_scoped_policy(&proxy, root.path(), id.clone(), command_id.clone()).await?;
 
     assert_invalid_sdk_reinitializations(&server).await?;
-    let unchanged: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
-    // Other parallel adapter tests share the process-wide scoped registry;
-    // this test checks its own policy directly below instead of a racy total.
-    let mut unchanged_without_global_count = unchanged;
-    let mut before_without_global_count = before.clone();
-    unchanged_without_global_count.scoped_policies = 0;
-    before_without_global_count.scoped_policies = 0;
-    assert_eq!(unchanged_without_global_count, before_without_global_count);
-    let scoped_after: ScopedPolicyInfo = proxy
-        .call(names::methods::SCOPED_POLICY_INFO, (scoped_id.clone(),))
-        .await?;
-    assert_eq!(scoped_after, scoped_before);
-    let scoped_decision_after: ScopedDecision = proxy
-        .call(names::methods::EVALUATE_SCOPED, (scoped_call(),))
-        .await?;
-    assert_eq!(scoped_decision_after, scoped_decision_before);
-    assert!(
-        proxy
-            .call::<bool>(
-                names::methods::CONSUME_EGRESS_AUTHORIZATION,
-                (retained_egress,)
-            )
-            .await?
-    );
-    setup(server.clone(), ModuleConfig::default()).await?;
-    let after: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
-    assert_eq!(after.generation, before.generation + 1);
-    assert!(
-        !proxy
-            .call::<bool>(
-                names::methods::CONSUME_EGRESS_AUTHORIZATION,
-                (stale_egress,)
-            )
-            .await?
-    );
-    let exhausted: CommandDecision = proxy
-        .call(names::methods::CHECK_COMMAND, (command_request,))
-        .await?;
-    assert_eq!(exhausted.denial, Some(CommandDenial::RateLimit));
+    assert_reinit_policy_info_unchanged(&proxy, &before).await?;
+    assert_reinit_scoped_policy_unchanged(
+        &proxy,
+        &scoped_id,
+        &scoped_before,
+        &scoped_decision_before,
+    )
+    .await?;
+    assert_valid_reinit_after_invalid(
+        &server,
+        &proxy,
+        before.generation,
+        retained_egress,
+        stale_egress,
+        command_request,
+    )
+    .await?;
 
     let result: PathValidationResult = proxy
         .call(
@@ -745,6 +677,138 @@ async fn sdk_setup_accepts_generation_and_rejects_invalid_reinit()
     assert_eq!(decision.verdict, Verdict::Allow);
     task.abort();
     Ok(())
+}
+
+async fn assert_reinit_policy_info_unchanged(
+    proxy: &tinybus::Proxy,
+    before: &PolicyInfo,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let unchanged: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
+    // Other parallel adapter tests share the process-wide scoped registry;
+    // this test checks its own policy directly instead of a racy total.
+    let mut unchanged_without_global_count = unchanged;
+    let mut before_without_global_count = before.clone();
+    unchanged_without_global_count.scoped_policies = 0;
+    before_without_global_count.scoped_policies = 0;
+    assert_eq!(unchanged_without_global_count, before_without_global_count);
+    Ok(())
+}
+
+async fn assert_valid_reinit_after_invalid(
+    server: &Connection,
+    proxy: &tinybus::Proxy,
+    generation: u64,
+    retained_egress: ConsumeEgressAuthorizationRequest,
+    stale_egress: ConsumeEgressAuthorizationRequest,
+    command_request: CommandRequest,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    assert!(
+        proxy
+            .call::<bool>(
+                names::methods::CONSUME_EGRESS_AUTHORIZATION,
+                (retained_egress,),
+            )
+            .await?
+    );
+    setup(server.clone(), ModuleConfig::default()).await?;
+    let after: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
+    assert_eq!(after.generation, generation + 1);
+    assert!(
+        !proxy
+            .call::<bool>(
+                names::methods::CONSUME_EGRESS_AUTHORIZATION,
+                (stale_egress,),
+            )
+            .await?
+    );
+    let exhausted: CommandDecision = proxy
+        .call(names::methods::CHECK_COMMAND, (command_request,))
+        .await?;
+    assert_eq!(exhausted.denial, Some(CommandDenial::RateLimit));
+    Ok(())
+}
+
+async fn register_reinit_scoped_policy(
+    proxy: &tinybus::Proxy,
+    root: &std::path::Path,
+    path_policy_id: PathPolicyId,
+    command_policy_id: CommandPolicyId,
+) -> std::result::Result<(PolicyId, ScopedPolicyInfo, ScopedDecision), Box<dyn std::error::Error>> {
+    let registered = RegisteredPolicy {
+        path_policy_id,
+        command_policy_id,
+        settings: PolicySettings {
+            policy: PolicyConfig {
+                enabled: true,
+                action_dir: root.display().to_string(),
+                workspace_dir: root.display().to_string(),
+                allowed_commands: vec![],
+                forbidden_paths: vec![],
+            },
+            privacy: PrivacyMode::Standard,
+            egress_hosts: vec![],
+            command_classes: vec![],
+            auto_origins: vec![],
+            judge_enabled: false,
+        },
+        tool_rules: vec![],
+        subject_scope: SubjectScope {
+            user: "reinit-test-user".into(),
+            workspace: "reinit-test-workspace".into(),
+            agent: "reinit-test-agent".into(),
+        },
+    };
+    let policy_id: PolicyId = proxy
+        .call(names::methods::REGISTER_POLICY, (registered,))
+        .await?;
+    let info: ScopedPolicyInfo = proxy
+        .call(names::methods::SCOPED_POLICY_INFO, (policy_id.clone(),))
+        .await?;
+    let decision: ScopedDecision = proxy
+        .call(
+            names::methods::EVALUATE_SCOPED,
+            (reinit_scoped_call(&policy_id),),
+        )
+        .await?;
+    assert_eq!(decision.decision.verdict, Verdict::Allow);
+    Ok((policy_id, info, decision))
+}
+
+async fn assert_reinit_scoped_policy_unchanged(
+    proxy: &tinybus::Proxy,
+    policy_id: &PolicyId,
+    before: &ScopedPolicyInfo,
+    decision_before: &ScopedDecision,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let after: ScopedPolicyInfo = proxy
+        .call(names::methods::SCOPED_POLICY_INFO, (policy_id.clone(),))
+        .await?;
+    let decision_after: ScopedDecision = proxy
+        .call(
+            names::methods::EVALUATE_SCOPED,
+            (reinit_scoped_call(policy_id),),
+        )
+        .await?;
+    assert_eq!(&after, before);
+    assert_eq!(&decision_after, decision_before);
+    Ok(())
+}
+
+fn reinit_scoped_call(policy_id: &PolicyId) -> ScopedEvaluateRequest {
+    ScopedEvaluateRequest {
+        policy_id: policy_id.clone(),
+        caller: CallerContext {
+            agent: "reinit-test-agent".into(),
+            call_id: "reinit-test-call".into(),
+            tier: AccessTier::Full,
+            ..Default::default()
+        },
+        call: ToolCall {
+            tool: "local_diagnostic".into(),
+            arguments_json: "{}".into(),
+            checks: vec![Check::LocalDiagnostic {}],
+        },
+    }
 }
 
 async fn verify_invalid_registry_retains_redaction(
