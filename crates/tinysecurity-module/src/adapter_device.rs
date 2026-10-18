@@ -19,7 +19,14 @@ fn time(clock: &dyn tinysecurity::approval::Clock) -> BusResult<Time> {
         monotonic: clock.monotonic_ms(),
     })
 }
+fn clock_sample(clock: &dyn tinysecurity::approval::Clock) -> Option<Time> {
+    Some(Time {
+        wall: clock.wall_ms()?,
+        monotonic: clock.monotonic_ms(),
+    })
+}
 /// Read the native clock and permanently fail device authority closed if it is unavailable.
+#[cfg(test)]
 fn registry_time(
     registry: &Registry,
     clock: &dyn tinysecurity::approval::Clock,
@@ -237,9 +244,10 @@ impl PolicyService {
         let clock = Arc::clone(&self.sandbox_clock);
         let actual = Arc::clone(&registry);
         let (work, call) = tokio::task::spawn_blocking(move || {
-            let now = registry_time(&actual, clock.as_ref())?;
             let work = actual
-                .reserve(original.request(), generation, now)
+                .reserve_with_clock(original.request(), generation, || {
+                    clock_sample(clock.as_ref())
+                })
                 .map_err(|_| denied())?;
             let call = actual
                 .approval_call(original.request())
@@ -260,9 +268,8 @@ impl PolicyService {
             .map_err(approval_failure)?;
         let clock = Arc::clone(&self.sandbox_clock);
         tokio::task::spawn_blocking(move || {
-            let now = registry_time(&registry, clock.as_ref())?;
             registry
-                .validate(&work, generation, now)
+                .validate_with_clock(&work, generation, || clock_sample(clock.as_ref()))
                 .map_err(|_| denied())?;
             drop(work);
             Ok::<_, tinybus::Error>(())
@@ -282,9 +289,10 @@ impl PolicyService {
         let clock = Arc::clone(&self.sandbox_clock);
         let actual = Arc::clone(&registry);
         let (original, work, call) = tokio::task::spawn_blocking(move || {
-            let now = registry_time(&actual, clock.as_ref())?;
             let work = actual
-                .reserve(original.request(), generation, now)
+                .reserve_with_clock(original.request(), generation, || {
+                    clock_sample(clock.as_ref())
+                })
                 .map_err(|_| denied())?;
             let call = actual
                 .approval_call(original.request())
@@ -319,16 +327,17 @@ impl PolicyService {
         let actual = Arc::clone(&registry);
         let result = tokio::task::spawn_blocking(move || {
             let result = (|| {
-                let now = registry_time(&actual, clock.as_ref())?;
                 actual
-                    .validate(&work, generation, now)
+                    .validate_with_clock(&work, generation, || clock_sample(clock.as_ref()))
                     .map_err(|_| denied())?;
                 let response = actual
-                    .execute(&work, &original.request().operation, generation, now)
+                    .execute_with_clock(&work, &original.request().operation, generation, || {
+                        clock_sample(clock.as_ref())
+                    })
                     .map(ConfidentialResponse::new)
                     .map_err(|_| denied())?;
-                let now = registry_time(&actual, clock.as_ref())?;
-                match actual.validate(&work, generation, now) {
+                match actual.validate_with_clock(&work, generation, || clock_sample(clock.as_ref()))
+                {
                     Ok(()) => Ok(response),
                     Err(_) if cancellation => Ok(response),
                     Err(_) => Err(denied()),
@@ -363,20 +372,14 @@ impl PolicyService {
         let clock = Arc::clone(&self.sandbox_clock);
         let actual = Arc::clone(&registry);
         let response = tokio::task::spawn_blocking(move || {
-            let now = time(clock.as_ref()).map_err(|_| {
-                let _ = actual.fail_clock();
-                denied()
-            })?;
             let response = actual
-                .execute_frame(&request.0, generation, now)
+                .execute_frame_with_clock(&request.0, generation, || clock_sample(clock.as_ref()))
                 .map(ConfidentialFrameResponse::new)
                 .map_err(|_| denied())?;
-            let now = time(clock.as_ref()).map_err(|_| {
-                let _ = actual.fail_clock();
-                denied()
-            })?;
             actual
-                .validate_frame(&scope_id, &handle, generation, now)
+                .validate_frame_with_clock(&scope_id, &handle, generation, || {
+                    clock_sample(clock.as_ref())
+                })
                 .map_err(|_| denied())?;
             Ok::<_, tinybus::Error>(response)
         })

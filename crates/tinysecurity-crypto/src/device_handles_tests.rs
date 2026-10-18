@@ -1,5 +1,7 @@
 use super::*;
-use tinysecurity_bus::{AccessTier, DeviceScope2, SubjectScope};
+use tinysecurity_bus::{
+    AccessTier, DeviceFrameOperation2, DeviceFrameRequest2, DeviceScope2, SubjectScope,
+};
 type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
 fn time(n: u64) -> Time {
     Time {
@@ -1001,5 +1003,111 @@ fn epoch_exhaustion_rejects_reconfiguration_without_partial_mutation() -> TestRe
     assert_eq!(state.scopes[&"a".repeat(32)].epoch, 1);
     assert!(state.handles.contains_key(&handle));
     assert_eq!(state.limits, cfg);
+    Ok(())
+}
+
+#[test]
+fn clock_sampling_is_serialized_with_registry_state_transitions() -> TestResult {
+    use std::sync::mpsc;
+
+    let registry = registry()?;
+    let (sampled_tx, sampled_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let earlier_registry = registry.clone();
+    let earlier = std::thread::spawn(move || {
+        earlier_registry.execute_frame_with_clock(
+            &DeviceFrameRequest2 {
+                scope_id: "a".repeat(32),
+                handle: "missing-frame-handle".into(),
+                call_id: "earlier-clock-sample".into(),
+                operation: DeviceFrameOperation2::Seal {
+                    plaintext: b"frame".to_vec(),
+                },
+            },
+            1,
+            || {
+                sampled_tx.send(()).ok()?;
+                release_rx.recv().ok()?;
+                Some(time(1))
+            },
+        )
+    });
+    sampled_rx.recv()?;
+
+    // The old adapter sampled before entering the registry. Prove whether the first callback
+    // still owns the state lock while paused; if it does not, commit the later observation first
+    // to deterministically recreate the old out-of-order transition.
+    let sample_order_was_unlocked = match registry.0.try_lock() {
+        Ok(state) => {
+            drop(state);
+            assert!(matches!(
+                registry.execute_frame_with_clock(
+                    &DeviceFrameRequest2 {
+                        scope_id: "a".repeat(32),
+                        handle: "missing-frame-handle".into(),
+                        call_id: "later-clock-sample".into(),
+                        operation: DeviceFrameOperation2::Seal {
+                            plaintext: b"frame".to_vec(),
+                        },
+                    },
+                    1,
+                    || Some(time(2)),
+                ),
+                Err(Error::DeviceDenied)
+            ));
+            true
+        }
+        Err(std::sync::TryLockError::WouldBlock) => false,
+        Err(std::sync::TryLockError::Poisoned(_)) => return Err(Error::DeviceDenied.into()),
+    };
+    release_tx.send(())?;
+
+    let earlier_result = earlier.join().map_err(|_| Error::DeviceDenied)?;
+    assert!(matches!(earlier_result, Err(Error::DeviceDenied)));
+    assert!(
+        !sample_order_was_unlocked,
+        "clock callback ran outside registry lock"
+    );
+    assert!(matches!(
+        registry.execute_frame_with_clock(
+            &DeviceFrameRequest2 {
+                scope_id: "a".repeat(32),
+                handle: "still-missing".into(),
+                call_id: "after-concurrent-clock-samples".into(),
+                operation: DeviceFrameOperation2::Seal {
+                    plaintext: b"frame".to_vec(),
+                },
+            },
+            1,
+            || Some(time(3)),
+        ),
+        Err(Error::DeviceDenied)
+    ));
+    Ok(())
+}
+
+#[test]
+fn a_genuine_clock_rollback_still_faults_registry_authority() -> TestResult {
+    let registry = registry()?;
+    let request = DeviceFrameRequest2 {
+        scope_id: "a".repeat(32),
+        handle: "missing-frame-handle".into(),
+        call_id: "clock-rollback".into(),
+        operation: DeviceFrameOperation2::Seal {
+            plaintext: b"frame".to_vec(),
+        },
+    };
+    assert!(matches!(
+        registry.execute_frame_with_clock(&request, 1, || Some(time(2))),
+        Err(Error::DeviceDenied)
+    ));
+    assert!(matches!(
+        registry.execute_frame_with_clock(&request, 1, || Some(time(1))),
+        Err(Error::DeviceClock)
+    ));
+    assert!(matches!(
+        registry.execute_frame_with_clock(&request, 1, || Some(time(3))),
+        Err(Error::DeviceClock)
+    ));
     Ok(())
 }
