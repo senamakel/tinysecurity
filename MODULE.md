@@ -49,8 +49,11 @@ Path checks require the host's absolute operation-resolved target, resolve exist
 ancestors including symlinks, and enforce the
 credential/system/traversal floor on lexical and resolved forms even when
 policy is disabled. Traversal is any segment that starts with `..` and holds only dots and
-spaces (`..`, `.. `, `...`), on every OS, since Windows normalizes those to `..`; such a
-`forbidden_paths` entry is rejected at registration. Unknown native path dialects, broken symlinks and failed
+spaces (`..`, `.. `, `...`), on every OS. Windows treats exact `..` as a parent
+component; some Windows path APIs separately normalize trailing spaces or periods.
+The policy also rejects `...` as a conservative cross-platform rule, even though
+it can remain a distinct name on Windows. Such a `forbidden_paths` entry is rejected
+at registration. Unknown native path dialects, broken symlinks and failed
 resolution deny. Enabled action roots must resolve to existing directories;
 workspace and configured forbidden roots deny before approval. New files can
 be checked through their existing parent. Permission does not guarantee
