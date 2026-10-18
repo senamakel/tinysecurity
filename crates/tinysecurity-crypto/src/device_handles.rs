@@ -299,8 +299,9 @@ impl Registry {
     ///
     /// The opaque tunnel handle is the capability. This fast path accepts no key material and
     /// cannot create or extend a session; it checks the registered scope, live generation,
-    /// expiry, revocation epoch, message bound and the same per-scope operation budget as the
-    /// approval path. A revoked, expired or reconfigured handle is unusable immediately.
+    /// expiry, revocation epoch and message bound. Each tunnel has its own rolling frame
+    /// budget; it is independent of the per-scope control-operation budget. A revoked,
+    /// expired or reconfigured handle is unusable immediately.
     ///
     /// # Errors
     /// Rejects an unknown or stale tunnel, malformed frame, replay, oversized payload or limit.

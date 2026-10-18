@@ -13,8 +13,9 @@ pub struct DeviceConfig2 {
     pub max_in_flight: u32,
     /// Operations per scope per monotonic minute, in 1..=4096.
     pub operations_per_minute: u32,
-    /// Frames per live tunnel per monotonic minute; defaults to 12000 (200 frames/second).
-    /// This budget is independent of control-plane `operations_per_minute`.
+    /// Frames per live tunnel per monotonic minute, in 1..=60000; defaults to 12000
+    /// (200 frames/second). This budget is independent of control-plane
+    /// `operations_per_minute`.
     #[serde(default = "default_frames_per_minute")]
     pub frames_per_minute: u32,
     /// Maximum handle and operation lifetime, in 1..=300000 milliseconds.
