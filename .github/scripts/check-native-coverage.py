@@ -110,9 +110,11 @@ def production_source(name):
 
 
 def changed_lines(diff):
-    """Extract added/modified production line ranges from git's unified=0 diff."""
+    """Extract changed executable production lines from git's unified=0 diff."""
     files = {}
     current = None
+    new_line = None
+    remaining = 0
     for line in diff.splitlines():
         if line.startswith('+++ '):
             name = line[4:]
@@ -123,14 +125,29 @@ def changed_lines(diff):
                 raise ValueError('invalid git diff source path')
             if current is not None and not production_source(current):
                 current = None
+            new_line = None
+            remaining = 0
         elif current is not None and line.startswith('@@ '):
             match = re.match(r'@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@', line)
             if match is None:
                 raise ValueError('invalid git diff hunk')
-            first = int(match[1])
-            count = int(match[2]) if match[2] is not None else 1
-            if count:
-                files.setdefault(current, set()).update(range(first, first + count))
+            new_line = int(match[1])
+            remaining = int(match[2]) if match[2] is not None else 1
+        elif current is not None and new_line is not None and remaining:
+            if line.startswith('+') and not line.startswith('+++'):
+                source = line[1:].lstrip()
+                # Rustdoc comments do not compile to executable lines. In
+                # particular, documentation-only changes must not fail the
+                # changed-line gate for having no measured executable lines.
+                if not source.startswith(('///', '//!')):
+                    files.setdefault(current, set()).add(new_line)
+                new_line += 1
+                remaining -= 1
+            elif line.startswith('-') and not line.startswith('---'):
+                continue
+            elif line.startswith(' '):
+                new_line += 1
+                remaining -= 1
     return files
 
 

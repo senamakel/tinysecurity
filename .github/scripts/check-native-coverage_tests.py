@@ -83,6 +83,15 @@ class NativeCoverageAdmission(unittest.TestCase):
         self.assertIn('Changed executable lines: 1/1 (100.00%)', output.getvalue())
         self.assertNotIn('No changed production', output.getvalue())
 
+    def test_rustdoc_only_changes_skip_changed_executable_line_gate(self):
+        output = io.StringIO()
+        with self.git_coverage_fixture(b'/// updated documentation\n') as argv, \
+                mock.patch.object(sys, 'argv', argv), \
+                contextlib.redirect_stdout(output):
+            gate.main()
+        self.assertIn('No changed compiled executable sources', output.getvalue())
+        self.assertNotIn('Changed executable lines:', output.getvalue())
+
     def test_malformed_utf8_git_diff_is_rejected_instead_of_skipping_changes(self):
         output, errors = io.StringIO(), io.StringIO()
         with self.git_coverage_fixture(b'// invalid \xff\n') as argv, \
