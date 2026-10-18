@@ -5,7 +5,7 @@ fn concrete_credential_roots_keep_home_none_isolated_and_resolve_native_paths()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::fs;
 
-    assert!(credential_roots(None)?.is_empty());
+    assert_eq!(credential_roots(None)?, Vec::<PathBuf>::new());
     let home = tempfile::tempdir()?;
     let ssh = home.path().join(".ssh");
     fs::create_dir(&ssh)?;
