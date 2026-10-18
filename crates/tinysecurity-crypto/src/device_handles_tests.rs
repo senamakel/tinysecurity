@@ -621,7 +621,7 @@ fn confidential_frames_reuse_only_a_live_approved_tunnel_capability() -> TestRes
     let sealed = reg.execute_frame(
         &DeviceFrameRequest2 {
             scope_id: "a".repeat(32),
-            handle: client,
+            handle: client.clone(),
             call_id: "socket-send-1".into(),
             operation: DeviceFrameOperation2::Seal {
                 plaintext: b"confidential socket frame".to_vec(),
@@ -692,6 +692,48 @@ fn confidential_frames_reuse_only_a_live_approved_tunnel_capability() -> TestRes
             time(0),
         )
         .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn frame_revalidation_rejects_a_tunnel_after_generation_change() -> TestResult {
+    let reg = registry()?;
+    let (static_handle, _) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (ephemeral, _) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let remote = KeyPair::from_secret(Zeroizing::new([31; 32]))?;
+    let remote_ephemeral = KeyPair::from_secret(Zeroizing::new([32; 32]))?;
+    let handle = tunnel(
+        &reg,
+        &static_handle,
+        &ephemeral,
+        &remote.public_key().encode(),
+        &remote_ephemeral.public_key().encode(),
+        DeviceRole2::Client,
+    )?;
+    assert!(
+        reg.validate_frame(&"a".repeat(32), &handle, 1, time(0))
+            .is_ok()
+    );
+    run(
+        &reg,
+        'a',
+        DeviceOperation2::Revoke {
+            handle: handle.clone(),
+        },
+    )?;
+    assert!(
+        reg.validate_frame(&"a".repeat(32), &handle, 1, time(0))
+            .is_err()
+    );
+    let mut next = config();
+    for scope in &mut next.scopes {
+        scope.static_secret = None;
+    }
+    reg.reconfigure(next, 2)?;
+    assert!(
+        reg.validate_frame(&"a".repeat(32), &handle, 1, time(0))
+            .is_err()
     );
     Ok(())
 }

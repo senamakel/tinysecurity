@@ -19,6 +19,18 @@ fn time(clock: &dyn tinysecurity::approval::Clock) -> BusResult<Time> {
         monotonic: clock.monotonic_ms(),
     })
 }
+fn registry_time(
+    registry: &Registry,
+    clock: &dyn tinysecurity::approval::Clock,
+) -> BusResult<Time> {
+    match time(clock) {
+        Ok(now) => Ok(now),
+        Err(error) => {
+            registry.fail_clock().map_err(|_| denied())?;
+            Err(error)
+        }
+    }
+}
 type Configured = (Option<Arc<Registry>>, Option<DeviceConfig2>);
 struct Initialization<'a> {
     peer: Option<&'a str>,
@@ -155,13 +167,13 @@ impl ConfidentialFrameRequest {
 }
 impl Drop for ConfidentialFrameRequest {
     fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.0.handle.zeroize();
         match &mut self.0.operation {
             DeviceFrameOperation2::Seal { plaintext } => {
-                use zeroize::Zeroize;
                 plaintext.zeroize();
             }
             DeviceFrameOperation2::Open { frame } => {
-                use zeroize::Zeroize;
                 frame.zeroize();
             }
         }
@@ -198,44 +210,58 @@ impl Drop for ConfidentialResponse {
     }
 }
 impl PolicyService {
+    #[cfg(test)]
     fn device_time(&self) -> BusResult<Time> {
-        match time(self.sandbox_clock.as_ref()) {
-            Ok(now) => Ok(now),
-            Err(error) => {
-                if let Some(registry) = &self.device {
-                    registry.fail_clock().map_err(|_| denied())?;
-                }
-                Err(error)
-            }
-        }
+        let registry = self.device.as_ref().ok_or_else(denied)?;
+        registry_time(registry, self.sandbox_clock.as_ref())
     }
+
     pub(super) async fn device_approval(
         &self,
         request: EvaluateDeviceRequest2,
     ) -> BusResult<tinysecurity_bus::ApprovalRow2> {
         let audit = request.audit;
         let original = ConfidentialRequest::new(request.request);
-        let request = original.request();
-        let registry = self.device.as_ref().ok_or_else(denied)?;
+        let scope_id = original.request().scope_id.clone();
+        let registry = Arc::clone(self.device.as_ref().ok_or_else(denied)?);
         let approvals = self.approvals.as_ref().ok_or_else(denied)?;
         let generation = self.read()?.info().generation;
-        let work = registry
-            .reserve(request, generation, self.device_time()?)
-            .map_err(|_| denied())?;
-        let call = registry.approval_call(request).map_err(|_| denied())?;
+        let ttl_ms = original.request().ttl_ms;
+        let clock = Arc::clone(&self.sandbox_clock);
+        let actual = Arc::clone(&registry);
+        let (work, call) = tokio::task::spawn_blocking(move || {
+            let now = registry_time(&actual, clock.as_ref())?;
+            let work = actual
+                .reserve(original.request(), generation, now)
+                .map_err(|_| denied())?;
+            let call = actual
+                .approval_call(original.request())
+                .map_err(|_| denied())?;
+            Ok::<_, tinybus::Error>((work, call))
+        })
+        .await
+        .map_err(|_| denied())??;
         let row = approvals
             .begin(tinysecurity_bus::EvaluateApprovalRequest2 {
-                scope_id: request.scope_id.clone(),
+                scope_id,
                 request: call,
-                ttl_ms: Some(u64::from(request.ttl_ms)),
+                ttl_ms: Some(u64::from(ttl_ms)),
                 summary: "native device cryptographic operation".into(),
                 audit,
             })
             .await
             .map_err(approval_failure)?;
-        registry
-            .validate(&work, self.read()?.info().generation, self.device_time()?)
-            .map_err(|_| denied())?;
+        let clock = Arc::clone(&self.sandbox_clock);
+        tokio::task::spawn_blocking(move || {
+            let now = registry_time(&registry, clock.as_ref())?;
+            registry
+                .validate(&work, generation, now)
+                .map_err(|_| denied())?;
+            drop(work);
+            Ok::<_, tinybus::Error>(())
+        })
+        .await
+        .map_err(|_| denied())??;
         Ok(row)
     }
     pub(super) async fn device_execute(
@@ -246,12 +272,20 @@ impl PolicyService {
         let registry = Arc::clone(self.device.as_ref().ok_or_else(denied)?);
         let approvals = self.approvals.as_ref().ok_or_else(denied)?;
         let generation = self.read()?.info().generation;
-        let work = registry
-            .reserve(original.request(), generation, self.device_time()?)
-            .map_err(|_| denied())?;
-        let call = registry
-            .approval_call(original.request())
-            .map_err(|_| denied())?;
+        let clock = Arc::clone(&self.sandbox_clock);
+        let actual = Arc::clone(&registry);
+        let (original, work, call) = tokio::task::spawn_blocking(move || {
+            let now = registry_time(&actual, clock.as_ref())?;
+            let work = actual
+                .reserve(original.request(), generation, now)
+                .map_err(|_| denied())?;
+            let call = actual
+                .approval_call(original.request())
+                .map_err(|_| denied())?;
+            Ok::<_, tinybus::Error>((original, work, call))
+        })
+        .await
+        .map_err(|_| denied())??;
         let row = approvals
             .consume(tinysecurity_bus::ApprovalActionRequest2 {
                 scope_id: original.request().scope_id.clone(),
@@ -261,9 +295,6 @@ impl PolicyService {
             })
             .await
             .map_err(approval_failure)?;
-        registry
-            .validate(&work, self.read()?.info().generation, self.device_time()?)
-            .map_err(|_| denied())?;
         if row.state != ApprovalLifecycle2::Reserved
             || row.choice != Some(ApprovalChoice2::Once)
             || row.decision_ticket_sha256.is_none()
@@ -279,48 +310,74 @@ impl PolicyService {
         );
         let clock = Arc::clone(&self.sandbox_clock);
         let actual = Arc::clone(&registry);
-        let (work, result) = tokio::task::spawn_blocking(move || {
-            let result = time(clock.as_ref())
-                .map_err(|_| {
-                    let _ = actual.fail_clock();
-                    tinysecurity::crypto::Error::DeviceClock
-                })
-                .and_then(|now| {
-                    actual
-                        .execute(&work, &original.request().operation, generation, now)
-                        .map(ConfidentialResponse::new)
-                });
-            (work, result)
+        let result = tokio::task::spawn_blocking(move || {
+            let result = (|| {
+                let now = registry_time(&actual, clock.as_ref())?;
+                actual
+                    .validate(&work, generation, now)
+                    .map_err(|_| denied())?;
+                let response = actual
+                    .execute(&work, &original.request().operation, generation, now)
+                    .map(ConfidentialResponse::new)
+                    .map_err(|_| denied())?;
+                let now = registry_time(&actual, clock.as_ref())?;
+                match actual.validate(&work, generation, now) {
+                    Ok(()) => Ok(response),
+                    Err(_) if cancellation => Ok(response),
+                    Err(_) => Err(denied()),
+                }
+            })();
+            drop(work);
+            result
         })
         .await
         .map_err(|_| denied())?;
         let response = result.map_err(|_| denied())?;
-        if registry
-            .validate(&work, self.read()?.info().generation, self.device_time()?)
-            .is_err()
-        {
-            // Cancellation/revocation itself intentionally fences this work's epoch.
-            // Those operations return no authority; other stale results never leave the module.
-            if !cancellation {
-                return Err(denied());
-            }
+        // Cancellation/revocation may invalidate its own epoch, but a policy transition may not
+        // publish a response captured under the previous module generation.
+        if self.read()?.info().generation != generation {
+            return Err(denied());
         }
         response.publish()
     }
 
     /// Reuse only an opaque tunnel capability that the approved device path created.
-    /// Frame calls are synchronous and do not park for another human decision.
-    pub(super) fn device_frame(
+    /// Frame calls do not park for another human decision; bounded AEAD runs off-worker.
+    pub(super) async fn device_frame(
         &self,
         request: DeviceFrameRequest2,
     ) -> BusResult<DeviceFrameResponse2> {
         let request = ConfidentialFrameRequest::new(request);
         let registry = Arc::clone(self.device.as_ref().ok_or_else(denied)?);
         let generation = self.read()?.info().generation;
-        let response = registry
-            .execute_frame(&request.0, generation, self.device_time()?)
-            .map_err(|_| denied())?;
-        ConfidentialFrameResponse::new(response).publish()
+        let scope_id = zeroize::Zeroizing::new(request.0.scope_id.clone());
+        let handle = zeroize::Zeroizing::new(request.0.handle.clone());
+        let clock = Arc::clone(&self.sandbox_clock);
+        let actual = Arc::clone(&registry);
+        let response = tokio::task::spawn_blocking(move || {
+            let now = time(clock.as_ref()).map_err(|_| {
+                let _ = actual.fail_clock();
+                denied()
+            })?;
+            let response = actual
+                .execute_frame(&request.0, generation, now)
+                .map(ConfidentialFrameResponse::new)
+                .map_err(|_| denied())?;
+            let now = time(clock.as_ref()).map_err(|_| {
+                let _ = actual.fail_clock();
+                denied()
+            })?;
+            actual
+                .validate_frame(&scope_id, &handle, generation, now)
+                .map_err(|_| denied())?;
+            Ok::<_, tinybus::Error>(response)
+        })
+        .await
+        .map_err(|_| denied())??;
+        if self.read()?.info().generation != generation {
+            return Err(denied());
+        }
+        response.publish()
     }
 }
 #[cfg(test)]

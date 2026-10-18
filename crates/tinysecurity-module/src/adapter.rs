@@ -313,7 +313,7 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::DeviceFrameRequest2,
     ) -> BusResult<tinysecurity_bus::DeviceFrameResponse2> {
-        std::future::ready(self.device_frame(request)).await
+        self.device_frame(request).await
     }
     async fn plan(
         &self,
