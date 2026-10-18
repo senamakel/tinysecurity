@@ -509,8 +509,10 @@ cannot bind the call answers an error, never an allow. Latency budgets are per c
 - `ProtectedPath2` (`ProtectedPathRequest2` -> `ProtectedPathResponse2`): the unconditional
   lexical floor with no scope and no filesystem access: credential stores, system and
   installation roots, parent-directory traversal (`..` and any segment of two or more dots
-  followed only by dots and spaces, such as `.. ` or `...`, which Windows normalizes to `..`), NUL bytes and Windows roots and extended prefixes, on every
-  OS. At most 4096 paths. Budget: in memory, sub-millisecond.
+  followed only by dots and spaces, such as `.. ` or `...`), NUL bytes and Windows roots and
+  extended prefixes, on every OS. Exact `..` is a Windows parent component; trailing spaces
+  and periods are a separate API-specific normalization case, while `...` can remain a
+  distinct Windows name. At most 4096 paths. Budget: in memory, sub-millisecond.
 - `ProtectedFloor2` (no arguments): the floor's vocabulary (credential directories, single-file
   stores, segment pairs, lower-cased absolute prefixes), built from the constants the matcher
   uses, so a host handing it to a jail grant resolver cannot drift from `ProtectedPath2`.
