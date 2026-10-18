@@ -33,6 +33,7 @@ struct Scope {
 enum Native {
     Key(Arc<KeyPair>, DeviceKeyPurpose2),
     Tunnel(Arc<Mutex<Tunnel>>, String, String),
+    PairedTunnel(Arc<Mutex<Tunnel>>),
 }
 struct TunnelInput<'a> {
     key: &'a str,
@@ -63,6 +64,29 @@ struct State {
 /// Service-owned registry; dropping its last owner drops all private key material.
 #[derive(Clone)]
 pub struct Registry(Arc<Mutex<State>>);
+
+/// Module-owned tunnel capability and its authenticated lifetime binding.
+pub struct PairedTunnelRegistration<'a> {
+    /// Configured scope bound to the host request.
+    pub scope_id: &'a str,
+    /// Opaque module-minted frame handle.
+    pub handle: &'a str,
+    /// Confidential tunnel state, retained only by the registry.
+    pub tunnel: Arc<Mutex<Tunnel>>,
+    /// Owning module generation.
+    pub generation: u64,
+    /// Absolute authenticated session expiry.
+    pub expires_wall: u64,
+    /// Monotonic authenticated session expiry.
+    pub expires_monotonic: u64,
+    /// Current module clock reading.
+    pub now: Time,
+}
+impl std::fmt::Debug for PairedTunnelRegistration<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PairedTunnelRegistration([REDACTED])")
+    }
+}
 impl std::fmt::Debug for Registry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Registry([REDACTED])")
@@ -297,7 +321,7 @@ impl Registry {
                 check_operation(operation, state.limits.max_message_bytes)?;
                 match &state.entry(handle, work)?.native {
                     Native::Tunnel(tunnel, _, _) => Arc::clone(tunnel),
-                    Native::Key(..) => return Err(Error::DeviceDenied),
+                    Native::Key(..) | Native::PairedTunnel(..) => return Err(Error::DeviceDenied),
                 }
             };
             let bytes = tunnel
@@ -319,7 +343,7 @@ impl Registry {
                 check_operation(operation, state.limits.max_message_bytes)?;
                 match &state.entry(handle, work)?.native {
                     Native::Tunnel(tunnel, _, _) => Arc::clone(tunnel),
-                    Native::Key(..) => return Err(Error::DeviceDenied),
+                    Native::Key(..) | Native::PairedTunnel(..) => return Err(Error::DeviceDenied),
                 }
             };
             let bytes = tunnel
@@ -379,9 +403,9 @@ impl Registry {
                 .get(&request.handle)
                 .filter(|entry| entry.scope == request.scope_id && entry.epoch == scope.epoch)
                 .ok_or(Error::DeviceDenied)?;
-            let Native::Tunnel(_, _, _) = &entry.native else {
+            if !matches!(entry.native, Native::Tunnel(..) | Native::PairedTunnel(..)) {
                 return Err(Error::DeviceDenied);
-            };
+            }
             match &request.operation {
                 DeviceFrameOperation2::Seal { plaintext } => {
                     if plaintext.len() > state.limits.max_message_bytes as usize {
@@ -414,8 +438,9 @@ impl Registry {
                     BudgetError::Capacity => Error::DeviceCapacity,
                     BudgetError::Rate => Error::DeviceRate,
                 })?;
-            let Native::Tunnel(tunnel, _, _) = &entry.native else {
-                return Err(Error::DeviceDenied);
+            let tunnel = match &entry.native {
+                Native::Tunnel(tunnel, _, _) | Native::PairedTunnel(tunnel) => tunnel,
+                Native::Key(..) => return Err(Error::DeviceDenied),
             };
             Arc::clone(tunnel)
         };
@@ -451,15 +476,113 @@ impl Registry {
         if generation != state.generation {
             return Err(Error::DeviceDenied);
         }
-        let scope = state.scopes.get(scope_id).ok_or(Error::DeviceDenied)?;
+        let epoch = state.scopes.get(scope_id).ok_or(Error::DeviceDenied)?.epoch;
         let entry = state
             .handles
             .get(handle)
-            .filter(|entry| entry.scope == scope_id && entry.epoch == scope.epoch)
+            .filter(|entry| entry.scope == scope_id && entry.epoch == epoch)
             .ok_or(Error::DeviceDenied)?;
-        if !matches!(entry.native, Native::Tunnel(..)) {
+        if !matches!(entry.native, Native::Tunnel(..) | Native::PairedTunnel(..)) {
             return Err(Error::DeviceDenied);
         }
+        Ok(())
+    }
+    /// Register a module-verified paired session in the same opaque capability registry used by
+    /// `DeviceFrame2`. The supplied tunnel remains owned by the module and is never serialized.
+    /// # Errors
+    /// Rejects stale generation, unknown scope, duplicate handle, invalid expiry or capacity.
+    pub fn register_paired_tunnel(&self, registration: PairedTunnelRegistration<'_>) -> Result<()> {
+        let mut state = self.lock()?;
+        state.check_time(registration.now)?;
+        state.prune(registration.now);
+        let epoch = state
+            .scopes
+            .get(registration.scope_id)
+            .ok_or(Error::DeviceDenied)?
+            .epoch;
+        if registration.generation != state.generation
+            || registration.handle.len() != 32
+            || !registration
+                .handle
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+            || state.handles.len() >= state.limits.max_handles as usize
+            || state.handles.contains_key(registration.handle)
+            || registration.expires_wall <= registration.now.wall
+            || registration.expires_monotonic <= registration.now.monotonic
+            || registration.expires_wall - registration.now.wall > 604_800_000
+            || registration.expires_monotonic - registration.now.monotonic > 604_800_000
+        {
+            return Err(Error::DeviceDenied);
+        }
+        state.handles.insert(
+            registration.handle.to_owned(),
+            Entry {
+                scope: registration.scope_id.to_owned(),
+                epoch,
+                expires_wall: registration.expires_wall,
+                expires_monotonic: registration.expires_monotonic,
+                frame_rate: RateCounter::new(registration.now.monotonic),
+                native: Native::PairedTunnel(registration.tunnel),
+            },
+        );
+        Ok(())
+    }
+    /// Refresh a live paired-session entry without replacing its tunnel or frame budget.
+    /// # Errors
+    /// Rejects expired, stale-generation, wrong-scope or non-tunnel handles.
+    pub fn refresh_paired_tunnel(
+        &self,
+        scope_id: &str,
+        handle: &str,
+        generation: u64,
+        expires_wall: u64,
+        expires_monotonic: u64,
+        now: Time,
+    ) -> Result<()> {
+        let mut state = self.lock()?;
+        state.check_time(now)?;
+        state.prune(now);
+        if generation != state.generation
+            || expires_wall <= now.wall
+            || expires_monotonic <= now.monotonic
+            || expires_wall - now.wall > 604_800_000
+            || expires_monotonic - now.monotonic > 604_800_000
+        {
+            return Err(Error::DeviceDenied);
+        }
+        let epoch = state.scopes.get(scope_id).ok_or(Error::DeviceDenied)?.epoch;
+        let entry = state
+            .handles
+            .get_mut(handle)
+            .filter(|entry| entry.scope == scope_id && entry.epoch == epoch)
+            .ok_or(Error::DeviceDenied)?;
+        if !matches!(entry.native, Native::Tunnel(..) | Native::PairedTunnel(..))
+            || now.wall >= entry.expires_wall
+            || now.monotonic >= entry.expires_monotonic
+        {
+            return Err(Error::DeviceDenied);
+        }
+        entry.expires_wall = expires_wall;
+        entry.expires_monotonic = expires_monotonic;
+        Ok(())
+    }
+    /// Immediately invalidate one opaque tunnel handle, including pending response validation.
+    /// # Errors
+    /// Rejects an unavailable registry; an unknown handle is already retired.
+    pub fn retire_paired_tunnel(&self, handle: &str) -> Result<()> {
+        self.lock()?.handles.remove(handle);
+        Ok(())
+    }
+    /// Wipe all paired tunnel capabilities for one authenticated scope on logout.
+    /// In-flight frame responses fail their late registry validation after removal.
+    /// # Errors
+    /// Rejects a poisoned registry.
+    pub fn retire_paired_scope(&self, scope_id: &str) -> Result<()> {
+        let mut state = self.lock()?;
+        state.handles.retain(|_, entry| {
+            entry.scope != scope_id || !matches!(&entry.native, Native::PairedTunnel(_))
+        });
         Ok(())
     }
     /// Close native authority and drop all owned credentials even if observers remain.

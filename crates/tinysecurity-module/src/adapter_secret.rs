@@ -62,6 +62,15 @@ struct Alias {
     purpose: handles::Purpose,
     generation: u64,
 }
+struct DenyCipherDelivery;
+impl handles::cipher::NativeCipherConsumer for DenyCipherDelivery {
+    fn deliver<'a>(
+        &'a self,
+        _delivery: &'a handles::cipher::CipherDelivery,
+    ) -> handles::Verification<'a, handles::cipher::DeliveryAcknowledgement> {
+        Box::pin(async { Err(native_denied()) })
+    }
+}
 /// Strong process owner deliberately outlives all service trees; closed owners
 /// stay closed and uncertain resolvers cannot be replaced through init.
 pub(super) struct SecretState {
@@ -282,6 +291,51 @@ impl SecretState {
                 input: Zeroizing::new(std::mem::take(&mut request.input)),
                 ttl_ms: request.ttl_ms,
             })
+            .map_err(|_| denied())
+    }
+    pub(super) fn pairing_state_cipher(
+        &self,
+        registration: &str,
+        alias_id: &str,
+        generation: u64,
+        scope_id: &str,
+        backend_id: &str,
+    ) -> tinybus::Result<handles::cipher::DevicePairingStateCipher> {
+        let scope = self.cipher_scope(registration)?;
+        if scope.scope_id != scope_id {
+            return Err(denied());
+        }
+        let aliases = self.aliases.lock().map_err(|_| denied())?;
+        let alias = aliases.get(alias_id).ok_or_else(denied)?;
+        if alias.registration != registration
+            || alias.generation != generation
+            || alias.purpose != handles::Purpose::ConfigUserMaster
+        {
+            return Err(denied());
+        }
+        let owner = handles::cipher::CipherOwner::new(
+            self.registry.clone(),
+            handles::cipher::CipherConfig {
+                consumer: format!("device-pairing-state-{scope_id}"),
+                enabled: true,
+            },
+            Arc::new(DenyCipherDelivery),
+        )
+        .map_err(|_| denied())?;
+        let pending = owner
+            .prepare(handles::cipher::CipherRequest {
+                registration,
+                authenticated_peer: &self.peer,
+                generation,
+                call_id: "device-pairing-state-unlock",
+                master: &alias.handle,
+                kind: handles::cipher::CipherKind::Encrypt,
+                input: Zeroizing::new(b"device-pairing-state".to_vec()),
+                ttl_ms: self.config.limits.max_ttl_ms,
+            })
+            .map_err(|_| denied())?;
+        owner
+            .retain_device_pairing_state(pending, scope_id, backend_id)
             .map_err(|_| denied())
     }
     pub(super) fn validate_cipher_master(

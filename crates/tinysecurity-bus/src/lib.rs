@@ -12,6 +12,8 @@ mod device;
 pub use device::*;
 mod device_frame;
 pub use device_frame::*;
+mod device_pairing;
+pub use device_pairing::*;
 mod sandbox;
 pub use sandbox::*;
 mod sandbox_scopes;
@@ -61,7 +63,7 @@ pub use redact::RedactorConfig;
 pub use scoped_policy::*;
 pub mod names;
 /// Current wire vocabulary version, independent of the artifact version.
-pub const CONTRACT_VERSION: (u32, u32) = (1, 24);
+pub const CONTRACT_VERSION: (u32, u32) = (1, 25);
 /// Whether a remote module's advertised version supplies this host's vocabulary.
 ///
 /// `version` is the provider version received by the host, not a host requirement

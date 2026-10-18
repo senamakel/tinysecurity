@@ -48,12 +48,27 @@ human receipt; handshake and acknowledgement operations remain on the approved
 Device2 path. The actual native module example exercises this member through
 confidential TinyBus dispatch.
 
-This fast-path does not complete the host device migration. Key and tunnel setup
-still goes through exact-human Device2 approval, and configured handles may live
-for at most five minutes. A later module capability must bind the existing
-paired-device authorization to session setup and renewal while preserving the
-current pairing UX and v2/v3/v4 wire behavior. Device2's exact approval path
-remains fail-closed until that owning-module work is complete.
+Contract 1.25 adds confidential `DevicePairing2` for the paired-device lifecycle.
+The module retains the static private identity behind the configured HumanOnly
+master, persists only authenticated ciphertext through a fixed callback, and
+owns `Unlock`, `Begin`, `Handshake`, `Confirm`, `Renew`, `RefreshSession`,
+`EndSession`, `Revoke`, `Lock`, `ImportLegacy` and `Recover`. Enrollment is durable
+only after the first frame proves possession of the static device key. Renewal
+proves that same key on the fresh socket; refresh keeps live tunnel keys and
+replay counters. Session lifetime is bounded by both the authenticated
+host-channel expiry and configured maximum. Import preserves each available
+channel's legacy key inside the module; bounded revocation tombstones prevent
+stale host ciphertext from reviving a revoked device. Recover reconciles a
+durable pairing after a lost response and returns public metadata only. The
+module does not establish UI provenance: host callbacks must derive
+user-controller, socket and reconnect authority from trusted dispatcher/server
+state. See the [contract specification](specs/device-pairing-contract-1.25.md).
+
+The module capability is a prerequisite for host migration, not that migration
+itself. The host still owns credentials, backend pairing registration, QR/socket
+UX and consent presentation; it must wire the trusted callbacks and persistence
+backend to this contract and remove its parallel `secrets.enc` and tunnel-crypto
+ownership only after consuming a released artifact.
 
 `device_native_contract` loads the hashed shared library and exercises actual
 confidential dispatch, verified approval/audit callback continuity, v2/v3/v4,

@@ -739,6 +739,95 @@ fn frame_revalidation_rejects_a_tunnel_after_generation_change() -> TestResult {
 }
 
 #[test]
+fn paired_tunnel_uses_device_frame_registry_and_transient_retirement() -> TestResult {
+    let reg = registry()?;
+    let server_static = KeyPair::from_secret(Zeroizing::new([51; 32]))?;
+    let client_static = KeyPair::from_secret(Zeroizing::new([52; 32]))?;
+    let server_ephemeral = KeyPair::from_secret(Zeroizing::new([53; 32]))?;
+    let client_ephemeral = KeyPair::from_secret(Zeroizing::new([54; 32]))?;
+    let keys = server_static.session_keys(
+        client_static.public_key(),
+        &server_ephemeral,
+        client_ephemeral.public_key(),
+        client_ephemeral.public_key(),
+        server_ephemeral.public_key(),
+    )?;
+    let client_keys = client_static.session_keys(
+        server_static.public_key(),
+        &client_ephemeral,
+        server_ephemeral.public_key(),
+        client_ephemeral.public_key(),
+        server_ephemeral.public_key(),
+    )?;
+    let client = Tunnel::new(Role::Client, client_keys);
+    let server = Arc::new(Mutex::new(Tunnel::new(Role::Server, keys)));
+    let handle = "ab".repeat(16);
+    reg.register_paired_tunnel(PairedTunnelRegistration {
+        scope_id: &"a".repeat(32),
+        handle: &handle,
+        tunnel: server.clone(),
+        generation: 1,
+        expires_wall: 20_000,
+        expires_monotonic: 19_000,
+        now: time(0),
+    })?;
+    let sealed = client.seal(b"paired frame")?;
+    let opened = reg.execute_frame(
+        &DeviceFrameRequest2 {
+            scope_id: "a".repeat(32),
+            handle: handle.clone(),
+            call_id: "paired-frame".into(),
+            operation: DeviceFrameOperation2::Open {
+                frame: sealed.clone(),
+            },
+        },
+        1,
+        time(0),
+    )?;
+    assert_eq!(opened.bytes, b"paired frame");
+    reg.refresh_paired_tunnel(&"a".repeat(32), &handle, 1, 30_000, 29_000, time(1))?;
+    assert!(matches!(
+        reg.execute_frame(
+            &DeviceFrameRequest2 {
+                scope_id: "a".repeat(32),
+                handle: handle.clone(),
+                call_id: "paired-frame-replay".into(),
+                operation: DeviceFrameOperation2::Open { frame: sealed },
+            },
+            1,
+            time(1),
+        ),
+        Err(Error::Replay)
+    ));
+    assert!(
+        reg.validate_frame(&"a".repeat(32), &handle, 1, time(1))
+            .is_ok()
+    );
+    reg.retire_paired_tunnel(&handle)?;
+    assert!(
+        reg.validate_frame(&"a".repeat(32), &handle, 1, time(1))
+            .is_err()
+    );
+    assert!(reg.retire_paired_tunnel(&handle).is_ok());
+    let logout_handle = "cd".repeat(16);
+    reg.register_paired_tunnel(PairedTunnelRegistration {
+        scope_id: &"a".repeat(32),
+        handle: &logout_handle,
+        tunnel: server,
+        generation: 1,
+        expires_wall: 30_000,
+        expires_monotonic: 29_000,
+        now: time(1),
+    })?;
+    reg.retire_paired_scope(&"a".repeat(32))?;
+    assert!(
+        reg.validate_frame(&"a".repeat(32), &logout_handle, 1, time(1))
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn confidential_frames_enforce_size_limits_expiry_and_replay() -> TestResult {
     let mut cfg = config();
     cfg.max_message_bytes = 4;

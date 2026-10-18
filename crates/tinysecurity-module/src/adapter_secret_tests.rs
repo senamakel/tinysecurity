@@ -860,6 +860,19 @@ mod linked_fixture {
             1,
             clock.clone(),
         )?);
+        // The pairing persistence cipher is bound to the registration's signed
+        // scope. A caller cannot redirect it to another tenant's state slot.
+        assert!(
+            secret
+                .pairing_state_cipher(
+                    &"b".repeat(32),
+                    "untrusted-alias",
+                    1,
+                    &"f".repeat(32),
+                    &"c".repeat(32),
+                )
+                .is_err()
+        );
         *state.registry.lock().map_err(|_| denied())? = Some(secret.registry.clone());
         let (cipher, audit_client) = cipher_tests::configured_fixture(
             &connection,
