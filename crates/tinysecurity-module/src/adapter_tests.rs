@@ -610,7 +610,7 @@ async fn sdk_setup_accepts_generation_and_rejects_invalid_reinit()
         )
         .await?;
     let command_request = CommandRequest {
-        policy_id: command_id,
+        policy_id: command_id.clone(),
         command: "pwd".into(),
         declared_class: None,
     };
@@ -625,9 +625,72 @@ async fn sdk_setup_accepts_generation_and_rejects_invalid_reinit()
         .call(names::methods::REGISTER_PATH_POLICY, (policy,))
         .await?;
 
+    let scoped: RegisteredPolicy = RegisteredPolicy {
+        path_policy_id: id.clone(),
+        command_policy_id: command_id.clone(),
+        settings: PolicySettings {
+            policy: PolicyConfig {
+                enabled: true,
+                action_dir: root.path().display().to_string(),
+                workspace_dir: root.path().display().to_string(),
+                allowed_commands: vec![],
+                forbidden_paths: vec![],
+            },
+            privacy: PrivacyMode::Standard,
+            egress_hosts: vec![],
+            command_classes: vec![],
+            auto_origins: vec![],
+            judge_enabled: false,
+        },
+        tool_rules: vec![],
+        subject_scope: SubjectScope {
+            user: "reinit-test-user".into(),
+            workspace: "reinit-test-workspace".into(),
+            agent: "reinit-test-agent".into(),
+        },
+    };
+    let scoped_id: PolicyId = proxy
+        .call(names::methods::REGISTER_POLICY, (scoped,))
+        .await?;
+    let scoped_before: ScopedPolicyInfo = proxy
+        .call(names::methods::SCOPED_POLICY_INFO, (scoped_id.clone(),))
+        .await?;
+    let scoped_call = || ScopedEvaluateRequest {
+        policy_id: scoped_id.clone(),
+        caller: CallerContext {
+            agent: "reinit-test-agent".into(),
+            call_id: "reinit-test-call".into(),
+            tier: AccessTier::Full,
+            ..Default::default()
+        },
+        call: ToolCall {
+            tool: "local_diagnostic".into(),
+            arguments_json: "{}".into(),
+            checks: vec![Check::LocalDiagnostic {}],
+        },
+    };
+    let scoped_decision_before: ScopedDecision = proxy
+        .call(names::methods::EVALUATE_SCOPED, (scoped_call(),))
+        .await?;
+    assert_eq!(scoped_decision_before.decision.verdict, Verdict::Allow);
+
     assert_invalid_sdk_reinitializations(&server).await?;
     let unchanged: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
-    assert_eq!(unchanged, before);
+    // Other parallel adapter tests share the process-wide scoped registry;
+    // this test checks its own policy directly below instead of a racy total.
+    let mut unchanged_without_global_count = unchanged;
+    let mut before_without_global_count = before.clone();
+    unchanged_without_global_count.scoped_policies = 0;
+    before_without_global_count.scoped_policies = 0;
+    assert_eq!(unchanged_without_global_count, before_without_global_count);
+    let scoped_after: ScopedPolicyInfo = proxy
+        .call(names::methods::SCOPED_POLICY_INFO, (scoped_id.clone(),))
+        .await?;
+    assert_eq!(scoped_after, scoped_before);
+    let scoped_decision_after: ScopedDecision = proxy
+        .call(names::methods::EVALUATE_SCOPED, (scoped_call(),))
+        .await?;
+    assert_eq!(scoped_decision_after, scoped_decision_before);
     assert!(
         proxy
             .call::<bool>(
