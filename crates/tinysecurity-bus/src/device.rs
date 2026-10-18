@@ -25,6 +25,7 @@ pub struct DeviceConfig2 {
     /// Authenticated bootstrap nonces retained across the registry, in 1..=4096.
     pub max_bootstrap_nonces: u32,
 }
+/// Default independent tunnel-frame budget: 12,000 frames per monotonic minute.
 fn default_frames_per_minute() -> u32 {
     12_000
 }

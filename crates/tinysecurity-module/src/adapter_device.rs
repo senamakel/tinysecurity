@@ -19,6 +19,7 @@ fn time(clock: &dyn tinysecurity::approval::Clock) -> BusResult<Time> {
         monotonic: clock.monotonic_ms(),
     })
 }
+/// Read the native clock and permanently fail device authority closed if it is unavailable.
 fn registry_time(
     registry: &Registry,
     clock: &dyn tinysecurity::approval::Clock,
@@ -159,8 +160,10 @@ impl ConfidentialResponse {
     }
 }
 
+/// Own a frame request so cancellation or rejection zeroizes its handle and payload.
 struct ConfidentialFrameRequest(DeviceFrameRequest2);
 impl ConfidentialFrameRequest {
+    /// Wrap a request whose confidential fields must be cleared when dropped.
     fn new(request: DeviceFrameRequest2) -> Self {
         Self(request)
     }
@@ -180,16 +183,20 @@ impl Drop for ConfidentialFrameRequest {
     }
 }
 
+/// Retain response plaintext until all publication checks pass, then clear it on failure.
 struct ConfidentialFrameResponse(Option<DeviceFrameResponse2>);
 impl ConfidentialFrameResponse {
+    /// Keep worker output under zeroizing ownership until publication.
     fn new(response: DeviceFrameResponse2) -> Self {
         Self(Some(response))
     }
+    /// Transfer validated bytes to the bus response, leaving nothing for `Drop` to clear.
     fn publish(mut self) -> BusResult<DeviceFrameResponse2> {
         self.0.take().ok_or_else(denied)
     }
 }
 impl Drop for ConfidentialFrameResponse {
+    /// Clear plaintext when validation fails or the async caller is cancelled.
     fn drop(&mut self) {
         if let Some(response) = &mut self.0 {
             use zeroize::Zeroize;
@@ -341,8 +348,9 @@ impl PolicyService {
         response.publish()
     }
 
-    /// Reuse only an opaque tunnel capability that the approved device path created.
-    /// Frame calls do not park for another human decision; bounded AEAD runs off-worker.
+    /// Reuse only an opaque tunnel capability created by the approved device path.
+    /// Bounded AEAD runs off-worker, and tunnel authority is revalidated before publishing bytes.
+    /// Dropping the async call leaves its request and any unpublished plaintext zeroized.
     pub(super) async fn device_frame(
         &self,
         request: DeviceFrameRequest2,
