@@ -92,7 +92,8 @@ Use `.dylib` on macOS and `tinysecurity_module.dll` on Windows. The loader
 example proves allow/deny, malformed/unsupported invocation rejection,
 reconfiguration retention and generation, then prints real bus latency.
 
-See [module boundary](MODULE.md), [accepted specification](docs/specs/security-module.md),
+See [module boundary](MODULE.md), [confidential crypto members](docs/module-crypto.md),
+[registered subject policies](docs/module-subject-policies.md), [accepted specification](docs/specs/security-module.md),
 [implementation sequence](docs/plans/security-module.md), and [roadmap](ROADMAP.md).
 
 `ConsumeSandboxPlan2` carries the original typed `Plan2` envelope as well as the
