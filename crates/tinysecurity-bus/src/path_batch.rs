@@ -61,9 +61,12 @@ pub struct PathBatchResponse2 {
 /// Query the unconditional protected-path floor for paths outside any scope.
 ///
 /// The floor is lexical and needs no registered policy: credential stores, core
-/// system roots, parent-directory traversal (`..` and the forms Windows normalizes to it,
-/// such as `.. ` and `...`) and NUL bytes. It holds whether or not the host's
-/// discretionary policy is enabled.
+/// system roots, parent-directory traversal (`..` and conservative cross-platform
+/// forms such as `.. ` and `...`) and NUL bytes. Windows treats exact `..` as a
+/// parent component; some Windows path APIs separately normalize trailing spaces
+/// or periods, while `...` can remain a distinct name. The policy rejects these
+/// forms on every OS. The floor holds whether or not the host's discretionary
+/// policy is enabled.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProtectedPathRequest2 {

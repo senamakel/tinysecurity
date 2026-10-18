@@ -46,8 +46,10 @@ pub(super) const WINDOWS_SYSTEM_ROOTS: &[&str] = &[
     "program files (x86)",
     "programdata",
 ];
-/// A parent-directory segment, including the forms Windows normalizes to `..`
-/// (trailing spaces and dots, as in `.. ` or `...`). Checked lexically on every OS.
+/// A parent-directory segment, including conservative cross-platform forms with
+/// trailing spaces or dots (such as `.. ` or `...`). Windows treats exact `..`
+/// as a parent component; some Windows path APIs separately normalize trailing
+/// spaces or periods, while `...` can remain a distinct name. Checked on every OS.
 pub(super) fn parent_segment(segment: &str) -> bool {
     segment.starts_with("..") && segment.trim_end_matches([' ', '.']).is_empty()
 }

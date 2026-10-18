@@ -48,7 +48,7 @@ scores meet local thresholds before durable `auto:jev` one-shot approval;
 all uncertain/error/budget paths keep the authenticated human flow. Required
 CAS/audit receipts and fresh policy floors still gate permission.
 
-Contract 1.10 adds [confidential injected master resolution](MODULE.md#confidential-injected-master-resolution) with opaque native aliases. Configured-secret reinit is conservatively denied pending a coherent owner transaction. This is an injected-store prerequisite, not production keyring or password migration.
+Contract 1.10 adds [confidential injected master resolution](docs/module-crypto.md#confidential-injected-master-resolution) with opaque native aliases. Configured-secret reinit is conservatively denied pending a coherent owner transaction. This is an injected-store prerequisite, not production keyring or password migration.
 
 Contract 1.9 adds [scoped declarative sandbox planning](crates/tinysecurity-sandbox/README.md).
 `Plan2` uses immutable host-registered source provenance, ceilings and executor
@@ -89,7 +89,8 @@ Use `.dylib` on macOS and `tinysecurity_module.dll` on Windows. The loader
 example proves allow/deny, malformed/unsupported invocation rejection,
 reconfiguration retention and generation, then prints real bus latency.
 
-See [module boundary](MODULE.md), [accepted specification](docs/specs/security-module.md),
+See [module boundary](MODULE.md), [confidential crypto members](docs/module-crypto.md),
+[registered subject policies](docs/module-subject-policies.md), [accepted specification](docs/specs/security-module.md),
 [implementation sequence](docs/plans/security-module.md), and [roadmap](ROADMAP.md).
 
 `ConsumeSandboxPlan2` carries the original typed `Plan2` envelope as well as the
