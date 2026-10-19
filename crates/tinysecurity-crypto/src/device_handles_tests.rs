@@ -1211,3 +1211,22 @@ fn a_genuine_clock_rollback_still_faults_registry_authority() -> TestResult {
     ));
     Ok(())
 }
+
+#[test]
+fn frame_admission_is_released_during_crypto_unwind() -> TestResult {
+    let reg = registry()?;
+    let mut state = reg.lock()?;
+    let State { budget, scopes, .. } = &mut *state;
+    let scope = scopes.get_mut(&"a".repeat(32)).ok_or(Error::DeviceDenied)?;
+    assert!(budget.reserve(&mut scope.rate, 0, 1, 12_000).is_ok());
+    drop(state);
+
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = reg.with_frame_reservation(|| -> Result<()> {
+            std::panic::resume_unwind(Box::new("crypto unwind"));
+        });
+    }));
+    assert!(unwind.is_err());
+    assert!(!reg.lock()?.budget.full(1));
+    Ok(())
+}
