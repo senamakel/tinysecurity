@@ -353,13 +353,6 @@ impl Callback {
                             "fixture-channel-2",
                             "fixture-nonce-2",
                         )
-                    } else if request.host_event_id == "socket-event-confirm-race" {
-                        (
-                            DevicePairingSource2::RegisteredSocket,
-                            None,
-                            "fixture-channel-1",
-                            "fixture-nonce-1",
-                        )
                     } else {
                         (
                             DevicePairingSource2::RegisteredSocket,

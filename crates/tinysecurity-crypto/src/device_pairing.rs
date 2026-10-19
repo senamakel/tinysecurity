@@ -88,6 +88,14 @@ struct Pending {
     handshake: Option<Handshake>,
     confirming: bool,
 }
+struct PendingRequest {
+    binding: Binding,
+    expected_key: Option<String>,
+    pairing_id: Option<String>,
+    identity_id: String,
+    ttl: u32,
+    context_expiry: u64,
+}
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Snapshot {
     version: u8,
@@ -132,6 +140,88 @@ pub struct ImportedDevicePairing {
     pub device_public_key: String,
     /// Preserved old core identity for the unchanged wire handshake.
     pub core_public_key: String,
+}
+
+#[derive(Default)]
+struct LegacyImportBatch {
+    seen_channels: BTreeSet<String>,
+    identities: BTreeMap<String, Identity>,
+    records: BTreeMap<String, Record>,
+    imported: Vec<ImportedDevicePairing>,
+}
+impl LegacyImportBatch {
+    fn stage(
+        &mut self,
+        owner: &DevicePairingOwner,
+        binding: &Binding,
+        row: LegacyDeviceIdentity,
+    ) -> Result<()> {
+        if row.revoked
+            || !valid_channel(&row.channel_id)
+            || !self.seen_channels.insert(row.channel_id.clone())
+            || owner.revocations.contains(&Revocation {
+                scope: binding.scope.clone(),
+                user: binding.user.clone(),
+                channel: row.channel_id.clone(),
+            })
+        {
+            return Err(Error::DeviceDenied);
+        }
+        PublicKey::decode(&row.device_public_key)?;
+        let secret = row.core_private_key;
+        let key = KeyPair::from_secret(Zeroizing::new(*secret))?;
+        let core_public_key = key.public_key().encode();
+        if let Some(existing) = owner
+            .records
+            .values()
+            .find(|record| record.channel == row.channel_id)
+        {
+            let existing_identity = owner
+                .identities
+                .get(&existing.identity_id)
+                .ok_or(Error::DeviceDenied)?;
+            if existing.scope != binding.scope
+                || existing.user != binding.user
+                || existing.device_key != row.device_public_key
+                || existing_identity.key.public_key().encode() != core_public_key
+            {
+                return Err(Error::DeviceDenied);
+            }
+            self.imported.push(ImportedDevicePairing {
+                channel_id: existing.channel.clone(),
+                pairing_id: existing.id.clone(),
+                device_public_key: existing.device_key.clone(),
+                core_public_key,
+            });
+            return Ok(());
+        }
+        let id = random_id()?;
+        let identity_id = format!("legacy:{id}");
+        let record = Record {
+            id: id.clone(),
+            scope: binding.scope.clone(),
+            user: binding.user.clone(),
+            device_key: row.device_public_key.clone(),
+            channel: row.channel_id.clone(),
+            nonce: "legacy-imported".into(),
+            identity_id: identity_id.clone(),
+        };
+        if self
+            .identities
+            .insert(identity_id, Identity { secret, key })
+            .is_some()
+            || self.records.insert(id.clone(), record).is_some()
+        {
+            return Err(Error::DeviceDenied);
+        }
+        self.imported.push(ImportedDevicePairing {
+            channel_id: row.channel_id,
+            pairing_id: id,
+            device_public_key: row.device_public_key,
+            core_public_key,
+        });
+        Ok(())
+    }
 }
 
 /// Public metadata recovered for a known channel.
@@ -318,7 +408,35 @@ impl DevicePairingOwner {
                 .identities
                 .insert(identity_id, Identity { secret, key });
         }
-        for record in std::mem::take(&mut snapshot.pairings) {
+        Self::restore_records(
+            &mut owner,
+            std::mem::take(&mut snapshot.pairings),
+            old_scope_layout,
+        )?;
+        Self::restore_revocations(&mut owner, std::mem::take(&mut snapshot.revocations))?;
+        if owner.records.values().any(|record| {
+            owner.revocations.iter().any(|revocation| {
+                revocation.scope == record.scope
+                    && revocation.user == record.user
+                    && revocation.channel == record.channel
+            })
+        }) {
+            return Err(Error::DeviceDenied);
+        }
+        if owner.records.len().saturating_add(owner.revocations.len())
+            > owner.config.max_pairings as usize
+        {
+            return Err(Error::DeviceDenied);
+        }
+        Ok(owner)
+    }
+
+    fn restore_records(
+        owner: &mut Self,
+        records: Vec<Record>,
+        old_scope_layout: bool,
+    ) -> Result<()> {
+        for record in records {
             let mut record = record;
             if record.identity_id.is_empty() && old_scope_layout {
                 record.identity_id = scope_identity_id(&record.scope);
@@ -340,10 +458,14 @@ impl DevicePairingOwner {
                 return Err(Error::DeviceDenied);
             }
         }
-        if snapshot.revocations.len() > owner.config.max_pairings as usize {
+        Ok(())
+    }
+
+    fn restore_revocations(owner: &mut Self, revocations: Vec<Revocation>) -> Result<()> {
+        if revocations.len() > owner.config.max_pairings as usize {
             return Err(Error::DeviceDenied);
         }
-        for revocation in std::mem::take(&mut snapshot.revocations) {
+        for revocation in revocations {
             if !owner.scope_identities.contains_key(&revocation.scope)
                 || revocation.user.is_empty()
                 || !valid_channel(&revocation.channel)
@@ -356,21 +478,7 @@ impl DevicePairingOwner {
             }
             owner.revocations.insert(revocation);
         }
-        if owner.records.values().any(|record| {
-            owner.revocations.iter().any(|revocation| {
-                revocation.scope == record.scope
-                    && revocation.user == record.user
-                    && revocation.channel == record.channel
-            })
-        }) {
-            return Err(Error::DeviceDenied);
-        }
-        if owner.records.len().saturating_add(owner.revocations.len())
-            > owner.config.max_pairings as usize
-        {
-            return Err(Error::DeviceDenied);
-        }
-        Ok(owner)
+        Ok(())
     }
 
     /// Return the stable core public key for a configured scope.
@@ -425,82 +533,17 @@ impl DevicePairingOwner {
         if rows.len() > self.config.max_pairings as usize {
             return Err(Error::DeviceDenied);
         }
-        let mut seen = BTreeSet::new();
-        let mut new_identities = BTreeMap::new();
-        let mut new_records = BTreeMap::new();
-        let mut imported = Vec::with_capacity(rows.len());
+        let mut batch = LegacyImportBatch {
+            imported: Vec::with_capacity(rows.len()),
+            ..LegacyImportBatch::default()
+        };
         for row in rows {
-            if row.revoked
-                || !valid_channel(&row.channel_id)
-                || !seen.insert(row.channel_id.clone())
-            {
-                return Err(Error::DeviceDenied);
-            }
-            // Module revocation is authoritative even if the host's stale legacy
-            // ciphertext still claims that the old channel is active.
-            if self.revocations.contains(&Revocation {
-                scope: binding.scope.clone(),
-                user: binding.user.clone(),
-                channel: row.channel_id.clone(),
-            }) {
-                return Err(Error::DeviceDenied);
-            }
-            PublicKey::decode(&row.device_public_key)?;
-            let secret = row.core_private_key;
-            let key = KeyPair::from_secret(Zeroizing::new(*secret))?;
-            let core_public_key = key.public_key().encode();
-            if let Some(existing) = self
-                .records
-                .values()
-                .find(|record| record.channel == row.channel_id)
-            {
-                let existing_identity = self
-                    .identities
-                    .get(&existing.identity_id)
-                    .ok_or(Error::DeviceDenied)?;
-                if existing.scope != binding.scope
-                    || existing.user != binding.user
-                    || existing.device_key != row.device_public_key
-                    || existing_identity.key.public_key().encode() != core_public_key
-                {
-                    return Err(Error::DeviceDenied);
-                }
-                imported.push(ImportedDevicePairing {
-                    channel_id: existing.channel.clone(),
-                    pairing_id: existing.id.clone(),
-                    device_public_key: existing.device_key.clone(),
-                    core_public_key,
-                });
-                continue;
-            }
-            let id = random_id()?;
-            let identity_id = format!("legacy:{id}");
-            let identity = Identity { secret, key };
-            let record = Record {
-                id: id.clone(),
-                scope: binding.scope.clone(),
-                user: binding.user.clone(),
-                device_key: row.device_public_key.clone(),
-                channel: row.channel_id.clone(),
-                nonce: "legacy-imported".into(),
-                identity_id: identity_id.clone(),
-            };
-            if new_identities.insert(identity_id, identity).is_some()
-                || new_records.insert(id.clone(), record).is_some()
-            {
-                return Err(Error::DeviceDenied);
-            }
-            imported.push(ImportedDevicePairing {
-                channel_id: row.channel_id,
-                pairing_id: id,
-                device_public_key: row.device_public_key,
-                core_public_key,
-            });
+            batch.stage(self, &binding, row)?;
         }
         if self
             .records
             .len()
-            .saturating_add(new_records.len())
+            .saturating_add(batch.records.len())
             .saturating_add(self.revocations.len())
             .saturating_add(
                 self.pending
@@ -518,12 +561,13 @@ impl DevicePairingOwner {
             .map(|(id, identity)| (id.clone(), *identity.secret))
             .collect::<BTreeMap<_, _>>();
         candidate_identities.extend(
-            new_identities
+            batch
+                .identities
                 .iter()
                 .map(|(id, identity)| (id.clone(), *identity.secret)),
         );
         let mut candidate_records = self.records.clone();
-        candidate_records.extend(new_records.clone());
+        candidate_records.extend(batch.records.clone());
         let candidate = Snapshot {
             version: 2,
             identities: candidate_identities,
@@ -537,11 +581,11 @@ impl DevicePairingOwner {
             return Err(Error::DeviceDenied);
         }
         drop(candidate);
-        new_identities.into_iter().for_each(|(id, identity)| {
+        for (id, identity) in batch.identities {
             self.identities.insert(id, identity);
-        });
-        self.records.extend(new_records);
-        Ok(imported)
+        }
+        self.records.extend(batch.records);
+        Ok(batch.imported)
     }
 
     /// Merge the latest authenticated persistence snapshot without discarding live tunnels.
@@ -561,10 +605,10 @@ impl DevicePairingOwner {
             return Err(Error::DeviceDenied);
         }
         for (identity_id, identity) in &durable.identities {
-            if let Some(current) = self.identities.get(identity_id) {
-                if current.key.public_key() != identity.key.public_key() {
-                    return Err(Error::DeviceDenied);
-                }
+            if let Some(current) = self.identities.get(identity_id)
+                && current.key.public_key() != identity.key.public_key()
+            {
+                return Err(Error::DeviceDenied);
             }
         }
         for record in durable.records.values() {
@@ -714,12 +758,14 @@ impl DevicePairingOwner {
             .cloned()
             .ok_or(Error::DeviceDenied)?;
         self.new_pending(
-            binding,
-            None,
-            None,
-            identity_id,
-            ttl_ms,
-            context.expires_at_ms,
+            PendingRequest {
+                binding,
+                expected_key: None,
+                pairing_id: None,
+                identity_id,
+                ttl: ttl_ms,
+                context_expiry: context.expires_at_ms,
+            },
             now,
         )
     }
@@ -754,12 +800,14 @@ impl DevicePairingOwner {
         let identity_id = record.identity_id.clone();
         let pairing_id = record.id.clone();
         self.new_pending(
-            binding,
-            Some(expected_key),
-            Some(pairing_id),
-            identity_id,
-            ttl_ms,
-            context.expires_at_ms,
+            PendingRequest {
+                binding,
+                expected_key: Some(expected_key),
+                pairing_id: Some(pairing_id),
+                identity_id,
+                ttl: ttl_ms,
+                context_expiry: context.expires_at_ms,
+            },
             now,
         )
     }
@@ -1203,30 +1251,21 @@ impl DevicePairingOwner {
         }
         Ok(Binding::from(context))
     }
-    fn new_pending(
-        &mut self,
-        binding: Binding,
-        expected_key: Option<String>,
-        pairing_id: Option<String>,
-        identity_id: String,
-        ttl: u32,
-        context_expiry: u64,
-        now: Time,
-    ) -> Result<(String, String, u64)> {
+    fn new_pending(&mut self, request: PendingRequest, now: Time) -> Result<(String, String, u64)> {
         if self.pending.len() >= self.config.max_pending as usize
-            || ttl == 0
-            || ttl > self.config.max_pending_ttl_ms
+            || request.ttl == 0
+            || request.ttl > self.config.max_pending_ttl_ms
         {
             return Err(Error::DeviceDenied);
         }
         let expires_wall = now
             .wall
-            .checked_add(u64::from(ttl))
+            .checked_add(u64::from(request.ttl))
             .ok_or(Error::DeviceDenied)?
-            .min(context_expiry);
+            .min(request.context_expiry);
         let expires_mono = now
             .monotonic
-            .checked_add(u64::from(ttl))
+            .checked_add(u64::from(request.ttl))
             .ok_or(Error::DeviceDenied)?;
         if expires_wall <= now.wall {
             return Err(Error::DeviceDenied);
@@ -1237,7 +1276,7 @@ impl DevicePairingOwner {
         }
         let public = self
             .identities
-            .get(&identity_id)
+            .get(&request.identity_id)
             .ok_or(Error::DeviceDenied)?
             .key
             .public_key()
@@ -1245,10 +1284,10 @@ impl DevicePairingOwner {
         self.pending.insert(
             receipt.clone(),
             Pending {
-                binding,
-                expected_key,
-                pairing_id,
-                identity_id,
+                binding: request.binding,
+                expected_key: request.expected_key,
+                pairing_id: request.pairing_id,
+                identity_id: request.identity_id,
                 expires_wall,
                 expires_mono,
                 handshake: None,

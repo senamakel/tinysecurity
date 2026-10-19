@@ -799,32 +799,38 @@ async fn serve_callbacks(
     Ok(())
 }
 mod linked_fixture {
+    use super::*;
+
+    fn approval_and_audit() -> (ApprovalConfig2, AuditConfig2) {
+        (
+            ApprovalConfig2 {
+                timeout_ms: 1000,
+                scopes: vec![scope()],
+            },
+            AuditConfig2 {
+                scope: scope().subject,
+                stream_id: "a".repeat(32),
+                timeout_ms: 1000,
+                required: true,
+                native_path: None,
+                max_bytes: 10000,
+                max_archives: 3,
+                journal_max_bytes: 100_000,
+                journal_max_events: 1000,
+            },
+        )
+    }
     async fn setup(
         connection: tinybus::Connection,
         fixture_config: serde_json::Value,
     ) -> tinybus::Result<()> {
-        use super::*;
         let mode = u32::try_from(fixture_config["mode"].as_u64().ok_or_else(denied)?)
             .map_err(|_| denied())?;
         let peer = connection.unique_name().ok_or_else(denied)?;
         let binding = crate::callbacks::PeerBinding::new(Some(peer.as_str()))?;
         let state = Arc::new(Backend::new(mode));
         serve_callbacks(&connection, &state, &binding).await?;
-        let approvals = ApprovalConfig2 {
-            timeout_ms: 1000,
-            scopes: vec![scope()],
-        };
-        let audit = AuditConfig2 {
-            scope: scope().subject,
-            stream_id: "a".repeat(32),
-            timeout_ms: 1000,
-            required: true,
-            native_path: None,
-            max_bytes: 10000,
-            max_archives: 3,
-            journal_max_bytes: 100_000,
-            journal_max_events: 1000,
-        };
+        let (approvals, audit) = approval_and_audit();
         let redactor =
             tinysecurity::Redactor::new(&RedactorConfig::default()).map_err(|_| denied())?;
         let clock = Arc::new(FixedClock(std::sync::atomic::AtomicU64::new(1000)));

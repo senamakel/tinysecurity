@@ -192,7 +192,7 @@ pub struct DevicePairingContextResponse2 {
     /// This module-issued alias is validated against `secret_registration_id` and generation;
     /// it is never accepted from the pairing request.
     pub secret_master_handle: Option<String>,
-    /// One-shot host-issued capability returned only for a LegacyImport lookup.
+    /// One-shot host-issued capability returned only for a `LegacyImport` lookup.
     pub legacy_import_handle: Option<String>,
     /// Registered backend channel, empty for user-controller operations.
     pub channel_id: String,
@@ -271,7 +271,7 @@ pub struct DevicePairingLegacyRecord2 {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DevicePairingLegacyLoadRequest2 {
-    /// Opaque host capability issued by the one-shot LegacyImport context lookup.
+    /// Opaque host capability issued by the one-shot `LegacyImport` context lookup.
     pub handle: String,
 }
 

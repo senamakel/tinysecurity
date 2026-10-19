@@ -566,6 +566,9 @@ impl Registry {
     }
     /// Register a paired session while sampling trusted time under the registry lock.
     /// The registration's `now` field is ignored by this method.
+    /// # Errors
+    /// Rejects an unavailable or rolled-back clock and the same invalid registrations as
+    /// [`Self::register_paired_tunnel`].
     pub fn register_paired_tunnel_with_clock<F>(
         &self,
         registration: PairedTunnelRegistration<'_>,
@@ -632,6 +635,9 @@ impl Registry {
         )
     }
     /// Refresh a paired-session entry while sampling trusted time under the registry lock.
+    /// # Errors
+    /// Rejects an unavailable or rolled-back clock and the same invalid sessions as
+    /// [`Self::refresh_paired_tunnel`].
     pub fn refresh_paired_tunnel_with_clock<F>(
         &self,
         scope_id: &str,

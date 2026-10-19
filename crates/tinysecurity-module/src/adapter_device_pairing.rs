@@ -894,8 +894,8 @@ impl PairingState {
                 return Err(error);
             }
         };
-        if let Some(alias) = loaded.pending_master_aliases.get(&receipt) {
-            if self
+        if let Some(alias) = loaded.pending_master_aliases.get(&receipt)
+            && self
                 .secret
                 .validate_cipher_master(
                     &scope.secret_registration_id,
@@ -904,11 +904,10 @@ impl PairingState {
                     context.expires_at_ms,
                 )
                 .is_err()
-            {
-                loaded.owner.fail_persistence();
-                loaded.pending_master_aliases.clear();
-                return Err(denied());
-            }
+        {
+            loaded.owner.fail_persistence();
+            loaded.pending_master_aliases.clear();
+            return Err(denied());
         }
         self.validate_live_scope(&loaded, &context)?;
         loaded.revision = revision;
@@ -923,19 +922,24 @@ impl PairingState {
             .owner
             .commit_confirmation(prepared, time(self.clock.as_ref())?)
             .map_err(|_| denied())?;
+        let generation = loaded.generation;
+        self.publish_confirmed_session(&mut loaded, generation, &context, result)
+    }
+
+    fn publish_confirmed_session(
+        &self,
+        loaded: &mut LoadedScope,
+        generation: u64,
+        context: &DevicePairingContextResponse2,
+        result: tinysecurity::crypto::device_pairing::PairingResult,
+    ) -> tinybus::Result<DevicePairingResponse2> {
+        let now = time(self.clock.as_ref())?;
         let (scope_id, tunnel, expires_wall, expires_monotonic) = loaded
             .owner
-            .session_tunnel(&result.session_id, time(self.clock.as_ref())?)
+            .session_tunnel(&result.session_id, now)
             .map_err(|_| denied())?;
-        let now = time(self.clock.as_ref())?;
         let scopes = self.scopes.lock().map_err(|_| denied())?;
-        self.validate_scope_epoch(
-            &scopes,
-            &scope_id,
-            loaded.epoch,
-            loaded.generation,
-            &context,
-        )?;
+        self.validate_scope_epoch(&scopes, &scope_id, loaded.epoch, generation, context)?;
         if self
             .registry
             .register_paired_tunnel_with_clock(
@@ -943,7 +947,7 @@ impl PairingState {
                     scope_id: &scope_id,
                     handle: &result.session_id,
                     tunnel,
-                    generation: loaded.generation,
+                    generation,
                     expires_wall,
                     expires_monotonic,
                     now: tinysecurity::crypto::device_handles::Time {

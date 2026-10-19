@@ -568,6 +568,7 @@ fn restore_preserves_public_identity_and_rejects_corrupt_or_foreign_state() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn imported_channel_identities_survive_reload_and_select_the_original_wire_key() {
     let mut owner = owner();
     let first_secret = Zeroizing::new([0x51; 32]);
@@ -634,56 +635,72 @@ fn imported_channel_identities_survive_reload_and_select_the_original_wire_key()
         second_public
     );
     for (ordinal, imported, device, expected_public) in [
-        (0, first, &first_device, &first_public),
-        (1, second, &second_device, &second_public),
+        (0_u64, first, &first_device, &first_public),
+        (1_u64, second, &second_device, &second_public),
     ] {
-        let channel = format!("legacy-renewal-{ordinal}");
-        let nonce = format!("legacy-nonce-{ordinal}");
-        let start = 1_030 + ordinal as u64 * 10;
-        let (receipt, core_public, _) = restored
-            .renew(
-                &imported.pairing_id,
-                &context(
-                    DevicePairingSource2::BackendReconnect,
-                    &channel,
-                    &nonce,
-                    30_000,
-                ),
-                5_000,
-                time(start),
-            )
-            .unwrap();
-        assert_eq!(&core_public, expected_public);
-        let client = start_handshake_with_core(
+        assert_legacy_wire_renewal(
             &mut restored,
-            &receipt,
-            expected_public,
-            &channel,
-            &nonce,
+            imported,
             device,
-            start + 1,
+            expected_public,
+            1_030 + ordinal * 10,
         );
-        let proof = client.seal(b"legacy device possession").unwrap();
-        let prepared = restored
-            .prepare_confirmation(
-                &receipt,
-                &context(
-                    DevicePairingSource2::RegisteredSocket,
-                    &channel,
-                    &nonce,
-                    30_000,
-                ),
-                &proof,
-                time(start + 2),
-            )
-            .unwrap();
-        restored
-            .commit_confirmation(prepared, time(start + 3))
-            .unwrap();
     }
 }
 
+fn assert_legacy_wire_renewal(
+    owner: &mut DevicePairingOwner,
+    imported: &ImportedDevicePairing,
+    device: &KeyPair,
+    expected_public: &str,
+    start: u64,
+) {
+    let channel = format!("legacy-renewal-{start}");
+    let nonce = format!("legacy-nonce-{start}");
+    let (receipt, core_public, _) = owner
+        .renew(
+            &imported.pairing_id,
+            &context(
+                DevicePairingSource2::BackendReconnect,
+                &channel,
+                &nonce,
+                30_000,
+            ),
+            5_000,
+            time(start),
+        )
+        .unwrap();
+    assert_eq!(core_public, expected_public);
+    let client = start_handshake_with_core(
+        owner,
+        &receipt,
+        expected_public,
+        &channel,
+        &nonce,
+        device,
+        start + 1,
+    );
+    let proof = client.seal(b"legacy device possession").unwrap();
+    let prepared = owner
+        .prepare_confirmation(
+            &receipt,
+            &context(
+                DevicePairingSource2::RegisteredSocket,
+                &channel,
+                &nonce,
+                30_000,
+            ),
+            &proof,
+            time(start + 2),
+        )
+        .unwrap();
+    owner
+        .commit_confirmation(prepared, time(start + 3))
+        .unwrap();
+}
+
 #[test]
+#[allow(clippy::too_many_lines)]
 fn legacy_import_is_atomic_idempotent_and_channel_recovery_is_user_scoped() {
     let mut owner = owner();
     let secret = Zeroizing::new([0x73; 32]);
