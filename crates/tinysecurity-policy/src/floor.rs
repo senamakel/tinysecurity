@@ -80,6 +80,12 @@ pub fn credential_roots(home: Option<&Path>) -> tinysecurity_bus::Result<Vec<std
     }
     let canonical_home =
         fs::canonicalize(home).map_err(|_| tinysecurity_bus::Error::InvalidArguments)?;
+    if !fs::metadata(&canonical_home)
+        .map_err(|_| tinysecurity_bus::Error::InvalidArguments)?
+        .is_dir()
+    {
+        return Err(tinysecurity_bus::Error::InvalidArguments);
+    }
     let mut candidates = Vec::new();
     for root in [home.to_path_buf(), canonical_home] {
         for component in CREDENTIAL_COMPONENTS {
