@@ -7,21 +7,6 @@ all-features = true
 [advisories]
 # Fail on any crate with a security advisory or an unmaintained warning.
 # Add an entry here only with a comment explaining the exposure and the plan.
-ignore = [
-    # RUSTSEC-2026-0367/-0368/-0369 all concern `zip`'s bulk extraction APIs
-    # (`ZipArchive::extract`, `ZipStreamReader::extract`), which preserve SUID/SGID
-    # bits and follow attacker-chosen symlink targets. The only `zip` in this
-    # graph is `zip 2.x`, pulled in by `vendor/tinybus` (feature `modules`) and
-    # pinned there as `zip = "2"`. tinybus never calls either extraction API:
-    # `module::github::extract` iterates `by_index`, takes `enclosed_name()`
-    # (rejecting unsafe paths), creates directories and regular files only, and
-    # copies bytes, so no symlink entry is materialised and no mode bits are
-    # applied. tinysecurity itself has no `zip` dependency. Plan: drop these
-    # entries once tinybus moves to zip >= 9 and the gitlink is bumped.
-    { id = "RUSTSEC-2026-0367", reason = "zip extract() APIs unreachable: tinybus extracts entries by hand, no mode bits applied" },
-    { id = "RUSTSEC-2026-0368", reason = "zip extract() APIs unreachable: tinybus never creates symlinks from archive entries" },
-    { id = "RUSTSEC-2026-0369", reason = "zip extract() APIs unreachable: tinybus never applies archive permissions through symlinks" },
-]
 
 [licenses]
 # Licenses accepted for this crate and its dependencies. Keep GPL-3.0-only for

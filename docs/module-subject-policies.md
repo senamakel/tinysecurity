@@ -12,7 +12,7 @@ references, not credentials, and registration is a trusted-host operation.
 
 `EvaluateScoped` and `CheckScoped` take a `PolicyId`, the verified
 `CallerContext` and the original call or checks. The caller's agent must equal
-the registered subject, so one tenant cannot use another's id. Decisions carry
+the registered subject, so one subject cannot use another's id. Decisions carry
 the module generation, the policy's lineage generation and a SHA-256 call
 fingerprint over the policy id, caller (excluding only the call instance) and
 the original call. The fingerprint correlates and binds a decision to its call;

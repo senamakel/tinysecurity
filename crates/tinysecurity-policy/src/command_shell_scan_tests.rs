@@ -343,6 +343,33 @@ fn mixed_heredocs_follow_lexical_order_without_parsing_body_operators() {
 }
 
 #[test]
+fn queued_heredocs_do_not_hide_an_intervening_live_command() {
+    let command = "cat <<'A'\none\nA\necho DANGER &\ncat <<'B'\ntwo\nB";
+    assert_eq!(
+        strip_quoted_heredoc_bodies(command),
+        "cat <<'A'\n\nA\necho DANGER &\ncat <<'B'\n\nB"
+    );
+}
+
+#[test]
+fn heredoc_header_ends_at_a_shell_operator() {
+    let command = "cat <<'EOF'; echo okay\nbody\nEOF\necho DANGER &";
+    assert_eq!(
+        strip_quoted_heredoc_bodies(command),
+        "cat <<'EOF'; echo okay\n\nEOF\necho DANGER &"
+    );
+}
+
+#[test]
+fn double_quoted_heredoc_delimiters_preserve_non_special_backslashes() {
+    let command = "cat << \"E\\OF\"\nbody > data\nE\\OF\nprintf done > out\n";
+    assert_eq!(
+        strip_quoted_heredoc_bodies(command),
+        "cat << \"E\\OF\"\n\nE\\OF\nprintf done > out\n"
+    );
+}
+
+#[test]
 fn comments_never_declare_heredocs() {
     for command in [
         "echo ok # <<'EOF'\ntouch review-proof",

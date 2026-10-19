@@ -121,6 +121,9 @@ the [security architecture page](https://github.com/tinyhumansai/openhuman/blob/
 ## Confidential device handles
 Full details: [`Confidential device handles`](docs/module-crypto.md#confidential-device-handles).
 
+## Confidential injected master resolution
+Full details: [`Confidential injected master resolution`](docs/module-crypto.md#confidential-injected-master-resolution).
+
 ## Registered subject policies (contract 1.12, extended in 1.13)
 Full details: [`Registered subject policies (contract 1.12, extended in 1.13)`](docs/module-subject-policies.md#registered-subject-policies-contract-112-extended-in-113).
 

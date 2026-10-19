@@ -1,5 +1,7 @@
 use super::*;
-use tinysecurity_bus::{AccessTier, DeviceScope2, SubjectScope};
+use tinysecurity_bus::{
+    AccessTier, DeviceFrameOperation2, DeviceFrameRequest2, DeviceScope2, SubjectScope,
+};
 type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
 fn time(n: u64) -> Time {
     Time {
@@ -621,7 +623,7 @@ fn confidential_frames_reuse_only_a_live_approved_tunnel_capability() -> TestRes
     let sealed = reg.execute_frame(
         &DeviceFrameRequest2 {
             scope_id: "a".repeat(32),
-            handle: client,
+            handle: client.clone(),
             call_id: "socket-send-1".into(),
             operation: DeviceFrameOperation2::Seal {
                 plaintext: b"confidential socket frame".to_vec(),
@@ -692,6 +694,48 @@ fn confidential_frames_reuse_only_a_live_approved_tunnel_capability() -> TestRes
             time(0),
         )
         .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn frame_revalidation_rejects_a_tunnel_after_generation_change() -> TestResult {
+    let reg = registry()?;
+    let (static_handle, _) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (ephemeral, _) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let remote = KeyPair::from_secret(Zeroizing::new([31; 32]))?;
+    let remote_ephemeral = KeyPair::from_secret(Zeroizing::new([32; 32]))?;
+    let handle = tunnel(
+        &reg,
+        &static_handle,
+        &ephemeral,
+        &remote.public_key().encode(),
+        &remote_ephemeral.public_key().encode(),
+        DeviceRole2::Client,
+    )?;
+    assert!(
+        reg.validate_frame(&"a".repeat(32), &handle, 1, time(0))
+            .is_ok()
+    );
+    run(
+        &reg,
+        'a',
+        DeviceOperation2::Revoke {
+            handle: handle.clone(),
+        },
+    )?;
+    assert!(
+        reg.validate_frame(&"a".repeat(32), &handle, 1, time(0))
+            .is_err()
+    );
+    let mut next = config();
+    for scope in &mut next.scopes {
+        scope.static_secret = None;
+    }
+    reg.reconfigure(next, 2)?;
+    assert!(
+        reg.validate_frame(&"a".repeat(32), &handle, 1, time(0))
+            .is_err()
     );
     Ok(())
 }
@@ -959,5 +1003,130 @@ fn epoch_exhaustion_rejects_reconfiguration_without_partial_mutation() -> TestRe
     assert_eq!(state.scopes[&"a".repeat(32)].epoch, 1);
     assert!(state.handles.contains_key(&handle));
     assert_eq!(state.limits, cfg);
+    Ok(())
+}
+
+#[test]
+fn clock_sampling_is_serialized_with_registry_state_transitions() -> TestResult {
+    use std::sync::mpsc;
+
+    let registry = registry()?;
+    let (sampled_tx, sampled_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let earlier_registry = registry.clone();
+    let earlier = std::thread::spawn(move || {
+        earlier_registry.execute_frame_with_clock(
+            &DeviceFrameRequest2 {
+                scope_id: "a".repeat(32),
+                handle: "missing-frame-handle".into(),
+                call_id: "earlier-clock-sample".into(),
+                operation: DeviceFrameOperation2::Seal {
+                    plaintext: b"frame".to_vec(),
+                },
+            },
+            1,
+            || {
+                sampled_tx.send(()).ok()?;
+                release_rx.recv().ok()?;
+                Some(time(1))
+            },
+        )
+    });
+    sampled_rx.recv()?;
+
+    // The old adapter sampled before entering the registry. Prove whether the first callback
+    // still owns the state lock while paused; if it does not, commit the later observation first
+    // to deterministically recreate the old out-of-order transition.
+    let sample_order_was_unlocked = match registry.0.try_lock() {
+        Ok(state) => {
+            drop(state);
+            assert!(matches!(
+                registry.execute_frame_with_clock(
+                    &DeviceFrameRequest2 {
+                        scope_id: "a".repeat(32),
+                        handle: "missing-frame-handle".into(),
+                        call_id: "later-clock-sample".into(),
+                        operation: DeviceFrameOperation2::Seal {
+                            plaintext: b"frame".to_vec(),
+                        },
+                    },
+                    1,
+                    || Some(time(2)),
+                ),
+                Err(Error::DeviceDenied)
+            ));
+            true
+        }
+        Err(std::sync::TryLockError::WouldBlock) => false,
+        Err(std::sync::TryLockError::Poisoned(_)) => return Err(Error::DeviceDenied.into()),
+    };
+    release_tx.send(())?;
+
+    let earlier_result = earlier.join().map_err(|_| Error::DeviceDenied)?;
+    assert!(matches!(earlier_result, Err(Error::DeviceDenied)));
+    assert!(
+        !sample_order_was_unlocked,
+        "clock callback ran outside registry lock"
+    );
+    assert!(matches!(
+        registry.execute_frame_with_clock(
+            &DeviceFrameRequest2 {
+                scope_id: "a".repeat(32),
+                handle: "still-missing".into(),
+                call_id: "after-concurrent-clock-samples".into(),
+                operation: DeviceFrameOperation2::Seal {
+                    plaintext: b"frame".to_vec(),
+                },
+            },
+            1,
+            || Some(time(3)),
+        ),
+        Err(Error::DeviceDenied)
+    ));
+    Ok(())
+}
+
+#[test]
+fn a_genuine_clock_rollback_still_faults_registry_authority() -> TestResult {
+    let registry = registry()?;
+    let request = DeviceFrameRequest2 {
+        scope_id: "a".repeat(32),
+        handle: "missing-frame-handle".into(),
+        call_id: "clock-rollback".into(),
+        operation: DeviceFrameOperation2::Seal {
+            plaintext: b"frame".to_vec(),
+        },
+    };
+    assert!(matches!(
+        registry.execute_frame_with_clock(&request, 1, || Some(time(2))),
+        Err(Error::DeviceDenied)
+    ));
+    assert!(matches!(
+        registry.execute_frame_with_clock(&request, 1, || Some(time(1))),
+        Err(Error::DeviceClock)
+    ));
+    assert!(matches!(
+        registry.execute_frame_with_clock(&request, 1, || Some(time(3))),
+        Err(Error::DeviceClock)
+    ));
+    Ok(())
+}
+
+#[test]
+fn frame_admission_is_released_during_crypto_unwind() -> TestResult {
+    let reg = registry()?;
+    let mut state = reg.lock()?;
+    let State { budget, scopes, .. } = &mut *state;
+    let scope = scopes.get_mut(&"a".repeat(32)).ok_or(Error::DeviceDenied)?;
+    assert!(budget.reserve(&mut scope.rate, 0, 1, 12_000).is_ok());
+    drop(state);
+
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = reg.with_frame_reservation(|| -> Result<()> {
+            std::panic::resume_unwind(Box::new("crypto unwind"));
+        });
+    }));
+    assert!(unwind.is_err());
+    assert!(!reg.lock()?.budget.full(1));
     Ok(())
 }
