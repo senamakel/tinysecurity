@@ -69,6 +69,27 @@ fn credential_roots_reject_relative_and_non_directory_homes()
     assert!(credential_roots(Some(file.path())).is_err());
     Ok(())
 }
+
+#[test]
+fn windows_credential_candidates_preserve_native_casing_and_match_floor_pairs() {
+    let root = Path::new("C:/Users/fixture");
+    let candidates = super::windows_credential_candidates(root);
+    let stores = ["Protect", "Credentials", "Crypto", "Vault", "Ngc"];
+    for app_data in ["AppData/Roaming", "AppData/Local"] {
+        for store in stores {
+            assert!(
+                candidates.contains(&root.join(app_data).join("Microsoft").join(store)),
+                "missing native path for {app_data}/Microsoft/{store}"
+            );
+            assert!(
+                CREDENTIAL_PAIRS.iter().any(|&(parent, child)| {
+                    parent == "microsoft" && child == store.to_ascii_lowercase()
+                }),
+                "{store} has no lowercased floor pair"
+            );
+        }
+    }
+}
 use std::path::PathBuf;
 
 fn floor(path: &str) -> bool {

@@ -104,13 +104,7 @@ pub fn credential_roots(home: Option<&Path>) -> tinysecurity_bus::Result<Vec<std
         #[cfg(target_os = "macos")]
         candidates.push(root.join("Library/Keychains"));
         #[cfg(windows)]
-        for app_data in ["AppData/Roaming", "AppData/Local"] {
-            for &(parent, child) in CREDENTIAL_PAIRS {
-                if parent == "microsoft" {
-                    candidates.push(root.join(app_data).join(parent).join(child));
-                }
-            }
-        }
+        candidates.extend(windows_credential_candidates(&root));
     }
 
     let mut roots = BTreeSet::new();
@@ -126,6 +120,18 @@ pub fn credential_roots(home: Option<&Path>) -> tinysecurity_bus::Result<Vec<std
     };
     response.validate()?;
     Ok(response.roots)
+}
+
+/// Build Windows credential-store candidates with the filesystem's native casing.
+#[cfg(any(windows, test))]
+fn windows_credential_candidates(root: &Path) -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    for app_data in ["AppData/Roaming", "AppData/Local"] {
+        for child in ["Protect", "Credentials", "Crypto", "Vault", "Ngc"] {
+            candidates.push(root.join(app_data).join("Microsoft").join(child));
+        }
+    }
+    candidates
 }
 
 /// Canonicalize an existing target or its nearest existing ancestor, then append

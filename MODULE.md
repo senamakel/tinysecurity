@@ -307,9 +307,6 @@ cannot bind the call answers an error, never an allow. Latency budgets are per c
   stores, segment pairs, lower-cased absolute prefixes), built from the constants the matcher
   uses, so a host handing it to a jail grant resolver cannot drift from `ProtectedPath2`.
   Budget: in memory, sub-millisecond.
-- `CredentialRoots2` (`CredentialRootsRequest2` -> `CredentialRootsResponse2`): resolves bounded
-  native credential-store denial roots from the host's optional operator home; see
-  [credential roots](docs/module-credential-roots.md).
 - `SpendAction2` and `PeekBudget2` (`BudgetRequest2` -> `BudgetDecision2`): the registered
   command scope's hourly ledger, the one `CheckCommand` and `Check::HostAction` spend. For an
   enabled scope, a read-only tier answers `read_only_mode` before anything is spent; otherwise
@@ -329,6 +326,13 @@ cannot bind the call answers an error, never an allow. Latency budgets are per c
   phone, ssn, card) and refuses an unassessed payload. A refusal is
   `Verdict::Deny { reason: DenialReason::Privacy }`, `cacheable: false`, stamped with the live
   policy generation. Budget: a pure in-memory decision. Refused with required audit.
+
+## Native credential-store roots (contract 1.24)
+
+- `CredentialRoots2` (`CredentialRootsRequest2` -> `CredentialRootsResponse2`): resolves bounded
+  native credential-store denial roots from the host's optional operator home; see
+  [credential roots](docs/module-credential-roots.md). Filesystem canonicalization runs on a
+  blocking worker so the module's async bus executor remains responsive.
 
 ## Approval origin classes, durable flow trust and scored prompt screening (contract 1.22)
 

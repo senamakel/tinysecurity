@@ -550,8 +550,12 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::CredentialRootsRequest2,
     ) -> BusResult<tinysecurity_bus::CredentialRootsResponse2> {
-        let roots = tinysecurity::credential_roots(request.home.as_deref())
-            .map_err(|error| failure(&error))?;
+        let roots = tokio::task::spawn_blocking(move || {
+            tinysecurity::credential_roots(request.home.as_deref())
+        })
+        .await
+        .map_err(|_| tinybus::Error::failed("credential root resolution unavailable"))?
+        .map_err(|error| failure(&error))?;
         let response = tinysecurity_bus::CredentialRootsResponse2 { roots };
         response.validate().map_err(|error| failure(&error))?;
         std::future::ready(Ok(response)).await
