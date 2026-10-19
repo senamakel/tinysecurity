@@ -23,6 +23,10 @@ pub mod methods {
     pub const EVALUATE_DEVICE2: &str = "EvaluateDevice2";
     /// Execute exact reviewed confidential work using scoped opaque handles.
     pub const EXECUTE_DEVICE2: &str = "ExecuteDevice2";
+    /// Seal or open a frame through a live tunnel handle created by approved device work.
+    pub const DEVICE_FRAME2: &str = "DeviceFrame2";
+    /// Host-attested pairing, renewal and revocation of device tunnel identities (contract 1.25).
+    pub const DEVICE_PAIRING2: &str = "DevicePairing2";
     /// Trusted legacy history migration without broad grant revival.
     pub const IMPORT_APPROVAL_HISTORY2: &str = "ImportApprovalHistory2";
     /// Durable exact approval evaluation.
@@ -73,6 +77,8 @@ pub mod methods {
     pub const PROTECTED_PATH2: &str = "ProtectedPath2";
     /// The floor's component, file, pair and prefix vocabulary (contract 1.22).
     pub const PROTECTED_FLOOR2: &str = "ProtectedFloor2";
+    /// Resolves concrete native credential-store roots for a host-provided home.
+    pub const CREDENTIAL_ROOTS2: &str = "CredentialRoots2";
     /// Reserve one action from a registered command scope's hourly ledger (contract 1.22).
     pub const SPEND_ACTION2: &str = "SpendAction2";
     /// Read a registered command scope's hourly ledger without spending (contract 1.22).
@@ -169,6 +175,8 @@ pub const METHODS: &[&str] = &[
     methods::PAIRING_CONTROL2,
     methods::EVALUATE_DEVICE2,
     methods::EXECUTE_DEVICE2,
+    methods::DEVICE_PAIRING2,
+    methods::DEVICE_FRAME2,
     methods::PLAN,
     methods::EVALUATE_SANDBOX_APPROVAL2,
     methods::CONSUME_SANDBOX_PLAN2,
@@ -184,6 +192,7 @@ pub const METHODS: &[&str] = &[
     methods::CHECK_PATHS2,
     methods::PROTECTED_PATH2,
     methods::PROTECTED_FLOOR2,
+    methods::CREDENTIAL_ROOTS2,
     methods::SPEND_ACTION2,
     methods::PEEK_BUDGET2,
     methods::CLASSIFY_HOST_ACTION2,

@@ -70,8 +70,17 @@ impl<T: Interface> Interface for Authenticated<T> {
             tinysecurity_bus::names::methods::PASSWORD_CRYPT2
                 | tinysecurity_bus::names::methods::KEYRING_ACCESS2
                 | tinysecurity_bus::names::methods::PAIRING_CONTROL2
+                | tinysecurity_bus::names::methods::DEVICE_PAIRING2
         ) {
-            return result.map_err(|_| tinybus::Error::failed("crypto authority denied"));
+            return result.map_err(|_| {
+                tinybus::Error::failed(
+                    if member.as_str() == tinysecurity_bus::names::methods::DEVICE_PAIRING2 {
+                        "device pairing authority denied"
+                    } else {
+                        "crypto authority denied"
+                    },
+                )
+            });
         }
         if matches!(
             member.as_str(),

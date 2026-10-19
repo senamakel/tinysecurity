@@ -121,6 +121,9 @@ the [security architecture page](https://github.com/tinyhumansai/openhuman/blob/
 ## Confidential device handles
 Full details: [`Confidential device handles`](docs/module-crypto.md#confidential-device-handles).
 
+## Confidential paired-device lifecycle (contract 1.25)
+Full details: [paired-device lifecycle specification](docs/specs/device-pairing-contract-1.25.md).
+
 ## Confidential injected master resolution
 Full details: [`Confidential injected master resolution`](docs/module-crypto.md#confidential-injected-master-resolution).
 
@@ -307,6 +310,9 @@ cannot bind the call answers an error, never an allow. Latency budgets are per c
   stores, segment pairs, lower-cased absolute prefixes), built from the constants the matcher
   uses, so a host handing it to a jail grant resolver cannot drift from `ProtectedPath2`.
   Budget: in memory, sub-millisecond.
+- `CredentialRoots2` (`CredentialRootsRequest2` -> `CredentialRootsResponse2`): resolves bounded
+  native credential-store denial roots from the host's optional operator home; see
+  [credential roots](docs/module-credential-roots.md).
 - `SpendAction2` and `PeekBudget2` (`BudgetRequest2` -> `BudgetDecision2`): the registered
   command scope's hourly ledger, the one `CheckCommand` and `Check::HostAction` spend. For an
   enabled scope, a read-only tier answers `read_only_mode` before anything is spent; otherwise

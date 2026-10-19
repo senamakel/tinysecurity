@@ -32,16 +32,39 @@ pub(crate) fn registration() -> ApprovalScope2 {
         auto_approve_all: false,
     }
 }
+pub(crate) fn other_registration() -> ApprovalScope2 {
+    ApprovalScope2 {
+        scope_id: "b".repeat(32),
+        subject: SubjectScope {
+            user: "fixture-other-user".into(),
+            workspace: "fixture-other-workspace".into(),
+            agent: "fixture-other-agent".into(),
+        },
+        policy_ref: "immutable-other-device-fixture".into(),
+        generation: 1,
+        ceiling: AccessTier::Full,
+        require_approval: true,
+        auto_approve_all: false,
+    }
+}
 pub(crate) fn device_config() -> DeviceConfig2 {
     DeviceConfig2 {
-        scopes: vec![DeviceScope2 {
-            scope_id: "a".repeat(32),
-            origin: Origin::Operator,
-            static_secret: Some([7; 32]),
-        }],
+        scopes: vec![
+            DeviceScope2 {
+                scope_id: "a".repeat(32),
+                origin: Origin::Operator,
+                static_secret: Some([7; 32]),
+            },
+            DeviceScope2 {
+                scope_id: "b".repeat(32),
+                origin: Origin::Operator,
+                static_secret: Some([8; 32]),
+            },
+        ],
         max_handles: 32,
         max_in_flight: 4,
         operations_per_minute: 4096,
+        frames_per_minute: 12_000,
         max_ttl_ms: 300_000,
         max_message_bytes: 1024,
         max_bootstrap_nonces: 64,

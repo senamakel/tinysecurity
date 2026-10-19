@@ -27,14 +27,48 @@ frames and handles do not reach approval/audit payloads, errors, Debug or
 `PolicyInfo`.
 
 Explicit init bounds cover registrations, handles, concurrent reservations,
-per-scope rate, TTL, message bytes and retained bootstrap nonces. Reinit may
-change bounds without reimporting credentials or changing immutable subjects.
+per-scope control-operation rate, per-tunnel frame rate, TTL, message bytes and
+retained bootstrap nonces. `frames_per_minute` defaults to 12000 (200 frames per
+second), independently of `operations_per_minute`, and accepts 1 through 60000.
+Older device configs receive the default. Reinit may change bounds without
+reimporting credentials or changing immutable subjects.
 It invalidates all old handles; successful new-generation receipts issue new
 handles. Revoke removes dependent tunnels; scoped Cancel fences pending work.
 Bootstrap replay evidence survives alias issuance, Cancel and reinit and fails
 closed at capacity. Clock rollback/unavailability faults device authority for
 that process. Shutdown closes owned credentials even when an SDK observer
 retains the connection. See the [owned cleanup and replay limits](../crates/tinysecurity-crypto/README.md#scoped-device-handles).
+
+Contract 1.23 adds confidential `DeviceFrame2` for streaming v2 frames. It
+accepts only a live tunnel handle returned by `ExecuteDevice2`; it cannot issue
+or extend a handle and checks scope, generation, TTL, revocation, per-tunnel
+frame rate and message bounds. It reuses the native v2 codec and direction-bound
+tunnel keys. Frame calls reuse the approved tunnel capability and need no new
+human receipt; handshake and acknowledgement operations remain on the approved
+Device2 path. The actual native module example exercises this member through
+confidential TinyBus dispatch.
+
+Contract 1.25 adds confidential `DevicePairing2` for the paired-device lifecycle.
+The module retains the static private identity behind the configured HumanOnly
+master, persists only authenticated ciphertext through a fixed callback, and
+owns `Unlock`, `Begin`, `Handshake`, `Confirm`, `Renew`, `RefreshSession`,
+`EndSession`, `Revoke`, `Lock`, `ImportLegacy` and `Recover`. Enrollment is durable
+only after the first frame proves possession of the static device key. Renewal
+proves that same key on the fresh socket; refresh keeps live tunnel keys and
+replay counters. Session lifetime is bounded by both the authenticated
+host-channel expiry and configured maximum. Import preserves each available
+channel's legacy key inside the module; bounded revocation tombstones prevent
+stale host ciphertext from reviving a revoked device. Recover reconciles a
+durable pairing after a lost response and returns public metadata only. The
+module does not establish UI provenance: host callbacks must derive
+user-controller, socket and reconnect authority from trusted dispatcher/server
+state. See the [contract specification](specs/device-pairing-contract-1.25.md).
+
+The module capability is a prerequisite for host migration, not that migration
+itself. The host still owns credentials, backend pairing registration, QR/socket
+UX and consent presentation; it must wire the trusted callbacks and persistence
+backend to this contract and remove its parallel `secrets.enc` and tunnel-crypto
+ownership only after consuming a released artifact.
 
 `device_native_contract` loads the hashed shared library and exercises actual
 confidential dispatch, verified approval/audit callback continuity, v2/v3/v4,

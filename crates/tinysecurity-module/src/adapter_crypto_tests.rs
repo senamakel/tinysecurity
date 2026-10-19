@@ -473,6 +473,7 @@ async fn members_require_confidential_transport_and_the_authenticated_peer()
         names::methods::PASSWORD_CRYPT2,
         names::methods::KEYRING_ACCESS2,
         names::methods::PAIRING_CONTROL2,
+        names::methods::DEVICE_FRAME2,
     ] {
         let member: tinybus::MemberName = name.parse()?;
         assert!(fixture.service.requires_confidential(&member));

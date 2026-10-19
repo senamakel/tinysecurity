@@ -52,6 +52,7 @@ fn member_names_are_stable_and_advertised() {
         (crate::names::methods::CHECK_PATHS2, "CheckPaths2"),
         (crate::names::methods::PROTECTED_PATH2, "ProtectedPath2"),
         (crate::names::methods::PROTECTED_FLOOR2, "ProtectedFloor2"),
+        (crate::names::methods::CREDENTIAL_ROOTS2, "CredentialRoots2"),
     ] {
         assert_eq!(name, wire);
         assert!(crate::names::METHODS.contains(&name));

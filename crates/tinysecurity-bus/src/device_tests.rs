@@ -205,17 +205,34 @@ fn device_configuration_and_scopes_pin_bounds_origin_and_optional_secret()
                 max_handles: 101,
                 max_in_flight: 7,
                 operations_per_minute: 103,
+                frames_per_minute: 104,
                 max_ttl_ms: 104,
                 max_message_bytes: 105,
                 max_bootstrap_nonces: 106,
             },
             json!({
                 "scopes":[scope_wire],"max_handles":101,"max_in_flight":7,
-                "operations_per_minute":103,"max_ttl_ms":104,"max_message_bytes":105,
+                "operations_per_minute":103,"frames_per_minute":104,"max_ttl_ms":104,"max_message_bytes":105,
                 "max_bootstrap_nonces":106,
             }),
         )?;
     }
+    Ok(())
+}
+
+#[test]
+fn older_device_config_defaults_the_independent_frame_budget()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let config: DeviceConfig2 = serde_json::from_value(serde_json::json!({
+        "scopes": [{"scope_id":"registered-scope","origin":"operator","static_secret":null}],
+        "max_handles": 8,
+        "max_in_flight": 2,
+        "operations_per_minute": 600,
+        "max_ttl_ms": 300_000,
+        "max_message_bytes": 1024,
+        "max_bootstrap_nonces": 8
+    }))?;
+    assert_eq!(config.frames_per_minute, 12_000);
     Ok(())
 }
 

@@ -308,6 +308,21 @@ impl PolicyService {
     ) -> BusResult<tinysecurity_bus::DeviceResponse2> {
         self.device_execute(request).await
     }
+    #[tinybus(confidential)]
+    async fn device_pairing2(
+        &self,
+        request: tinysecurity_bus::DevicePairingRequest2,
+    ) -> BusResult<tinysecurity_bus::DevicePairingResponse2> {
+        device_pairing::invoke(request).await
+    }
+    #[tinybus(confidential)]
+    /// Dispatch the no-human-prompt frame member; the adapter rechecks authority after crypto.
+    async fn device_frame2(
+        &self,
+        request: tinysecurity_bus::DeviceFrameRequest2,
+    ) -> BusResult<tinysecurity_bus::DeviceFrameResponse2> {
+        self.device_frame(request).await
+    }
     async fn plan(
         &self,
         _request: tinysecurity_bus::SandboxPlanRequest,
@@ -537,6 +552,16 @@ impl PolicyService {
     }
     async fn protected_floor2(&self) -> BusResult<tinysecurity_bus::ProtectedFloor2> {
         std::future::ready(Ok(tinysecurity::floor_vocabulary())).await
+    }
+    async fn credential_roots2(
+        &self,
+        request: tinysecurity_bus::CredentialRootsRequest2,
+    ) -> BusResult<tinysecurity_bus::CredentialRootsResponse2> {
+        let roots = tinysecurity::credential_roots(request.home.as_deref())
+            .map_err(|error| failure(&error))?;
+        let response = tinysecurity_bus::CredentialRootsResponse2 { roots };
+        response.validate().map_err(|error| failure(&error))?;
+        std::future::ready(Ok(response)).await
     }
     async fn spend_action2(
         &self,
@@ -1713,6 +1738,7 @@ struct ConfidentialConfigs {
     secret: Option<tinysecurity_bus::SecretConfig2>,
     cipher: Option<tinysecurity_bus::SecretCipherConfig2>,
     crypto: Option<tinysecurity_bus::CryptoConfig2>,
+    device_pairing: Option<tinysecurity_bus::DevicePairingConfig2>,
 }
 impl ConfidentialConfigs {
     fn take(config: &mut ModuleConfig) -> Self {
@@ -1720,6 +1746,7 @@ impl ConfidentialConfigs {
             secret: config.secret.take(),
             cipher: config.secret_cipher.take(),
             crypto: config.crypto.take(),
+            device_pairing: config.device_pairing.take(),
         }
     }
 }
@@ -1740,12 +1767,14 @@ struct ConfidentialAuthorities {
     secret: Option<Arc<secret::SecretState>>,
     secret_cipher: Option<Arc<cipher::CipherState>>,
     crypto: Option<Arc<crypto::CryptoState>>,
+    device_pairing: Option<Arc<device_pairing::PairingState>>,
 }
 /// Build the init-only confidential authorities that sit above the approval engine.
 fn configured_confidential(
     connection: &Connection,
     configs: ConfidentialConfigs,
     context: &ConfidentialContext<'_>,
+    device: Option<&Arc<tinysecurity::crypto::device_handles::Registry>>,
 ) -> BusResult<ConfidentialAuthorities> {
     let secret = secret::configured(
         configs.secret,
@@ -1776,12 +1805,23 @@ fn configured_confidential(
             clock: Arc::clone(context.clock),
         },
     )?;
+    let device_pairing = device_pairing::configured(
+        configs.device_pairing,
+        connection,
+        context.peer,
+        secret.as_ref(),
+        device,
+        Arc::clone(context.clock),
+        context.generation,
+    )?;
     Ok(ConfidentialAuthorities {
         secret,
         secret_cipher,
         crypto,
+        device_pairing,
     })
 }
+#[allow(clippy::too_many_lines)] // Setup validates and atomically wires the module's authorities.
 async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()> {
     // Validate before activation. The SDK serializes reinitializations and
     // preserves a fault latch; this adapter never provides retry RPCs.
@@ -1824,6 +1864,7 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
         secret,
         secret_cipher,
         crypto,
+        device_pairing,
     } = configured_confidential(
         &connection,
         confidential_configs,
@@ -1836,31 +1877,34 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
             generation: candidate.info().generation,
             clock: &device_clock,
         },
+        device.as_ref(),
     )?;
     let judge = configured_automatic(judge_config, approvals.as_ref().map(|(_, e)| e))?;
     if let Some(active) = ACTIVE.get() {
-        let mut guard = active
-            .write()
-            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
-
         let generation = candidate.info().generation;
-        activate_authorities(
-            device.as_ref(),
-            device_limits,
-            secret.as_ref(),
-            generation,
-            || {
-                publish_policy_generation(
-                    &connection,
-                    &candidate,
-                    audit.as_ref(),
-                    approvals.as_ref().map(|(_, engine)| engine),
-                    judge.clone(),
-                )?;
-                Ok(())
-            },
-        )?;
-        *guard = candidate;
+        {
+            let mut guard = active
+                .write()
+                .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?;
+            activate_authorities(
+                device.as_ref(),
+                device_limits,
+                secret.as_ref(),
+                generation,
+                || {
+                    publish_policy_generation(
+                        &connection,
+                        &candidate,
+                        audit.as_ref(),
+                        approvals.as_ref().map(|(_, engine)| engine),
+                        judge.clone(),
+                    )?;
+                    Ok(())
+                },
+            )?;
+            *guard = candidate;
+        }
+        device_pairing::transition(device_pairing.as_ref(), generation).await?;
         return Ok(());
     }
     let policy = Arc::new(RwLock::new(candidate));
@@ -1881,7 +1925,13 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
         engine.replace_automatic(judge).map_err(approval_failure)?;
     }
     serve_policy(&connection, service, binding.clone()).await?;
-    activate_confidential(device.as_ref(), crypto.as_ref(), secret, secret_cipher)?;
+    activate_confidential(
+        device.as_ref(),
+        crypto.as_ref(),
+        secret,
+        secret_cipher,
+        device_pairing,
+    )?;
     activate_policy(policy, audit, binding, sandbox, approvals)
 }
 fn activate_confidential(
@@ -1889,11 +1939,13 @@ fn activate_confidential(
     crypto: Option<&Arc<crypto::CryptoState>>,
     secret: Option<Arc<secret::SecretState>>,
     secret_cipher: Option<Arc<cipher::CipherState>>,
+    device_pairing: Option<Arc<device_pairing::PairingState>>,
 ) -> BusResult<()> {
     device::activate(device)?;
     crypto::activate(crypto)?;
     secret::activate(secret)?;
-    cipher::activate(secret_cipher)
+    cipher::activate(secret_cipher)?;
+    device_pairing::activate(device_pairing)
 }
 async fn serve_policy(
     connection: &Connection,
@@ -1944,10 +1996,10 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "GrantFlowTool2", "RevokeFlowTool2", "ListFlowTrust2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "RegisterSandboxScope2", "RetireSandboxScope2", "Audit2", "RecordAudit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "CheckPaths2", "ProtectedPath2", "ProtectedFloor2", "SpendAction2", "PeekBudget2", "ClassifyHostAction2", "PrivacyCheck2", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanPrompt2", "ScanToolDefinition"],
+    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "DeviceFrame2", "DevicePairing2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "GrantFlowTool2", "RevokeFlowTool2", "ListFlowTrust2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "RegisterSandboxScope2", "RetireSandboxScope2", "Audit2", "RecordAudit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "CheckPaths2", "ProtectedPath2", "ProtectedFloor2", "CredentialRoots2", "SpendAction2", "PeekBudget2", "ClassifyHostAction2", "PrivacyCheck2", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanPrompt2", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
-    optional = ["ai.tinyhumans.tinysecurity.KeyringConsent2", "ai.tinyhumans.tinysecurity.SecretCipherConsumer2", "ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],
+    optional = ["ai.tinyhumans.tinysecurity.KeyringConsent2", "ai.tinyhumans.tinysecurity.SecretCipherConsumer2", "ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.DevicePairingHost2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],
     lazy = false,
 }
 #[cfg(test)]
@@ -1962,6 +2014,9 @@ use sandbox::sandbox_configured;
 
 #[path = "adapter_device.rs"]
 mod device;
+
+#[path = "adapter_device_pairing.rs"]
+mod device_pairing;
 
 #[path = "adapter_crypto.rs"]
 mod crypto;

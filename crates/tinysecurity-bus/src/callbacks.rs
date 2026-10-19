@@ -137,6 +137,14 @@ impl ApprovalCasRequest2 {
 }
 /// Fixed new callback identities; incompatible semantics never reuse legacy interfaces.
 pub mod callback_names2 {
+    /// Fixed trusted-host pairing context and encrypted-state callback.
+    pub const DEVICE_PAIRING_HOST: &str = "ai.tinyhumans.tinysecurity.DevicePairingHost2";
+    /// Resolve one server-owned pairing/socket event against authenticated host state.
+    pub const RESOLVE_PAIRING_EVENT: &str = "ResolvePairingEvent";
+    /// Load or compare-and-swap ciphertext for the fixed module-owned identity record.
+    pub const PERSIST_DEVICE_PAIRING: &str = "PersistDevicePairing";
+    /// Consume a one-shot import handle and load bounded legacy device ciphertext.
+    pub const LOAD_LEGACY_DEVICE_IDENTITIES: &str = "LoadLegacyDeviceIdentities";
     /// Fixed init-bound response-controlled confidential native output slots.
     pub const SECRET_CIPHER_CONSUMER: &str = "ai.tinyhumans.tinysecurity.SecretCipherConsumer2";
     /// Stage exact bound output privately until successful owner response.

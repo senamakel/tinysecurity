@@ -21,10 +21,12 @@ tinysecurity-bus = { workspace = true }
 tinybus = { workspace = true }
 tinybus-module = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
 # Wipe unpublished native output on every error or canceled worker join.
 zeroize.workspace = true
 # Independent opaque aliases and operation correlations; no key export.
 getrandom.workspace = true
+base64.workspace = true
 # Stable module-derived original-content correlation for redacted audit retries.
 sha2.workspace = true
 # Filesystem policy runs on blocking workers without blocking the module runtime.

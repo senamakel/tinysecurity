@@ -35,6 +35,7 @@ pub(super) const CREDENTIAL_PAIRS: &[(&str, &str)] = &[
     ("microsoft", "credentials"),
     ("microsoft", "crypto"),
     ("microsoft", "vault"),
+    ("microsoft", "ngc"),
     (".docker", "config.json"),
     (".cargo", "credentials.toml"),
 ];
