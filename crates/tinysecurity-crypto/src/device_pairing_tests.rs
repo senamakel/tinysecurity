@@ -794,10 +794,9 @@ fn legacy_import_is_atomic_idempotent_and_channel_recovery_is_user_scoped() {
     let tombstone = owner
         .revoke(&imported[0].pairing_id, &authorized, time(1_015))
         .unwrap();
-    assert!(
-        owner
-            .pending_for_pairing(&imported[0].pairing_id)
-            .is_empty()
+    assert_eq!(
+        owner.pending_for_pairing(&imported[0].pairing_id),
+        Vec::<String>::new()
     );
     assert!(
         owner
@@ -874,9 +873,8 @@ fn legacy_import_is_atomic_idempotent_and_channel_recovery_is_user_scoped() {
     );
     assert!(reloaded.records.is_empty());
     assert_eq!(reloaded.revocations.len(), 1);
-    assert!(
-        reloaded
-            .pending_for_pairing(&imported[0].pairing_id)
-            .is_empty()
+    assert_eq!(
+        reloaded.pending_for_pairing(&imported[0].pairing_id),
+        Vec::<String>::new()
     );
 }
