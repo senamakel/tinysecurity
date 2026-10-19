@@ -31,6 +31,14 @@ fn time(clock: &dyn tinysecurity::approval::Clock) -> tinybus::Result<Time> {
         monotonic: clock.monotonic_ms(),
     })
 }
+fn registry_clock_sample(
+    clock: &dyn tinysecurity::approval::Clock,
+) -> Option<tinysecurity::crypto::device_handles::Time> {
+    Some(tinysecurity::crypto::device_handles::Time {
+        wall: clock.wall_ms()?,
+        monotonic: clock.monotonic_ms(),
+    })
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -930,18 +938,21 @@ impl PairingState {
         )?;
         if self
             .registry
-            .register_paired_tunnel(PairedTunnelRegistration {
-                scope_id: &scope_id,
-                handle: &result.session_id,
-                tunnel,
-                generation: loaded.generation,
-                expires_wall,
-                expires_monotonic,
-                now: tinysecurity::crypto::device_handles::Time {
-                    wall: now.wall,
-                    monotonic: now.monotonic,
+            .register_paired_tunnel_with_clock(
+                PairedTunnelRegistration {
+                    scope_id: &scope_id,
+                    handle: &result.session_id,
+                    tunnel,
+                    generation: loaded.generation,
+                    expires_wall,
+                    expires_monotonic,
+                    now: tinysecurity::crypto::device_handles::Time {
+                        wall: now.wall,
+                        monotonic: now.monotonic,
+                    },
                 },
-            })
+                || registry_clock_sample(self.clock.as_ref()),
+            )
             .is_err()
         {
             loaded.owner.retire_session(&result.session_id);
@@ -972,19 +983,15 @@ impl PairingState {
             .owner
             .refresh_session(&session_id, &context, time(self.clock.as_ref())?)
             .map_err(|_| denied())?;
-        let now = time(self.clock.as_ref())?;
         if self
             .registry
-            .refresh_paired_tunnel(
+            .refresh_paired_tunnel_with_clock(
                 &context.scope_id,
                 &session_id,
                 loaded.generation,
                 expiry.0,
                 expiry.1,
-                tinysecurity::crypto::device_handles::Time {
-                    wall: now.wall,
-                    monotonic: now.monotonic,
-                },
+                || registry_clock_sample(self.clock.as_ref()),
             )
             .is_err()
         {

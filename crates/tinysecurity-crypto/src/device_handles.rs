@@ -79,7 +79,8 @@ pub struct PairedTunnelRegistration<'a> {
     pub expires_wall: u64,
     /// Monotonic authenticated session expiry.
     pub expires_monotonic: u64,
-    /// Current module clock reading.
+    /// Fallback clock reading for [`Registry::register_paired_tunnel`]. The
+    /// clock-closure variant ignores this value and samples while holding the registry lock.
     pub now: Time,
 }
 impl std::fmt::Debug for PairedTunnelRegistration<'_> {
@@ -184,6 +185,17 @@ impl Registry {
     fn lock(&self) -> Result<MutexGuard<'_, State>> {
         self.0.lock().map_err(|_| Error::DeviceDenied)
     }
+    fn with_clock_sample<F>(state: &mut State, sample: F) -> Result<Time>
+    where
+        F: FnOnce() -> Option<Time>,
+    {
+        let Some(now) = sample() else {
+            state.fail_clock();
+            return Err(Error::DeviceClock);
+        };
+        state.check_time(now)?;
+        Ok(now)
+    }
     /// Validate and reserve rate/work capacity before any callback or cryptographic work.
     /// # Errors
     /// Denies unknown scope, stale generation, rollback, expiry or exhausted bounds.
@@ -193,8 +205,25 @@ impl Registry {
         generation: u64,
         now: Time,
     ) -> Result<Reservation> {
+        self.reserve_with_clock(request, generation, || Some(now))
+    }
+    /// Sample the clock while holding the registry lock, then reserve bounded work.
+    ///
+    /// Production adapters pass their trusted clock through this closure so a concurrently
+    /// sampled older value cannot arrive after a later registry transition.
+    /// # Errors
+    /// Denies unavailable or rolled-back clocks and the same invalid requests as [`Self::reserve`].
+    pub fn reserve_with_clock<F>(
+        &self,
+        request: &DeviceRequest2,
+        generation: u64,
+        sample: F,
+    ) -> Result<Reservation>
+    where
+        F: FnOnce() -> Option<Time>,
+    {
         let mut state = self.lock()?;
-        state.check_time(now)?;
+        let now = Self::with_clock_sample(&mut state, sample)?;
         state.prune(now);
         if generation != state.generation
             || request.ttl_ms == 0
@@ -255,11 +284,25 @@ impl Registry {
     /// # Errors
     /// Rejects cancelled, revoked, expired, stale or rollback-observed work.
     pub fn validate(&self, work: &Reservation, generation: u64, now: Time) -> Result<()> {
+        self.validate_with_clock(work, generation, || Some(now))
+    }
+    /// Revalidate a reservation using a clock sampled under the registry lock.
+    /// # Errors
+    /// Rejects cancelled, revoked, expired, stale, unavailable-clock or rollback-observed work.
+    pub fn validate_with_clock<F>(
+        &self,
+        work: &Reservation,
+        generation: u64,
+        sample: F,
+    ) -> Result<()>
+    where
+        F: FnOnce() -> Option<Time>,
+    {
         if !Arc::ptr_eq(&self.0, &work.registry.0) {
             return Err(Error::DeviceDenied);
         }
         let mut state = self.lock()?;
-        state.check_time(now)?;
+        let now = Self::with_clock_sample(&mut state, sample)?;
         state.live(work, generation, now)
     }
     /// Construct the canonical, content-free approval call from immutable registration.
@@ -309,60 +352,55 @@ impl Registry {
         generation: u64,
         now: Time,
     ) -> Result<DeviceResponse2> {
+        self.execute_with_clock(work, operation, generation, || Some(now))
+    }
+    /// Execute admitted work after sampling time under the registry lock.
+    ///
+    /// Tunnel crypto still runs after the lock is released.
+    /// # Errors
+    /// Rejects stale, expired, revoked, unavailable-clock or rolled-back work.
+    pub fn execute_with_clock<F>(
+        &self,
+        work: &Reservation,
+        operation: &DeviceOperation2,
+        generation: u64,
+        sample: F,
+    ) -> Result<DeviceResponse2>
+    where
+        F: FnOnce() -> Option<Time>,
+    {
         if !Arc::ptr_eq(&self.0, &work.registry.0) {
             return Err(Error::DeviceDenied);
         }
-        if let DeviceOperation2::Seal { handle, plaintext } = operation {
-            let tunnel = {
-                let mut state = self.lock()?;
-                state.check_time(now)?;
-                state.live(work, generation, now)?;
-                state.prune(now);
-                check_operation(operation, state.limits.max_message_bytes)?;
-                match &state.entry(handle, work)?.native {
-                    Native::Tunnel(tunnel, _, _) => Arc::clone(tunnel),
-                    Native::Key(..) | Native::PairedTunnel(..) => return Err(Error::DeviceDenied),
-                }
-            };
-            let bytes = tunnel
-                .lock()
-                .map_err(|_| Error::DeviceDenied)?
-                .seal(plaintext)?;
-            return Ok(DeviceResponse2 {
-                handle: None,
-                public_key: None,
-                bytes,
-            });
-        }
-        if let DeviceOperation2::Open { handle, frame } = operation {
-            let tunnel = {
-                let mut state = self.lock()?;
-                state.check_time(now)?;
-                state.live(work, generation, now)?;
-                state.prune(now);
-                check_operation(operation, state.limits.max_message_bytes)?;
-                match &state.entry(handle, work)?.native {
-                    Native::Tunnel(tunnel, _, _) => Arc::clone(tunnel),
-                    Native::Key(..) | Native::PairedTunnel(..) => return Err(Error::DeviceDenied),
-                }
-            };
-            let bytes = tunnel
-                .lock()
-                .map_err(|_| Error::DeviceDenied)?
-                .open(frame)?
-                .to_vec();
-            return Ok(DeviceResponse2 {
-                handle: None,
-                public_key: None,
-                bytes,
-            });
-        }
         let mut state = self.lock()?;
-        state.check_time(now)?;
+        let now = Self::with_clock_sample(&mut state, sample)?;
         state.live(work, generation, now)?;
         state.prune(now);
         check_operation(operation, state.limits.max_message_bytes)?;
-        state.execute(work, operation)
+        let tunnel = match operation {
+            DeviceOperation2::Seal { handle, .. } | DeviceOperation2::Open { handle, .. } => {
+                match &state.entry(handle, work)?.native {
+                    Native::Tunnel(tunnel, _, _) => Some(Arc::clone(tunnel)),
+                    Native::Key(..) | Native::PairedTunnel(..) => {
+                        return Err(Error::DeviceDenied);
+                    }
+                }
+            }
+            _ => return state.execute(work, operation),
+        };
+        drop(state);
+        let tunnel = tunnel.ok_or(Error::DeviceDenied)?;
+        let mut tunnel = tunnel.lock().map_err(|_| Error::DeviceDenied)?;
+        let bytes = match operation {
+            DeviceOperation2::Seal { plaintext, .. } => tunnel.seal(plaintext)?,
+            DeviceOperation2::Open { frame, .. } => tunnel.open(frame)?.to_vec(),
+            _ => return Err(Error::DeviceDenied),
+        };
+        Ok(DeviceResponse2 {
+            handle: None,
+            public_key: None,
+            bytes,
+        })
     }
     /// Seal or open a frame through a tunnel handle created by an approved device operation.
     ///
@@ -380,9 +418,25 @@ impl Registry {
         generation: u64,
         now: Time,
     ) -> Result<DeviceFrameResponse2> {
+        self.execute_frame_with_clock(request, generation, || Some(now))
+    }
+    /// Execute one frame after sampling time under the registry lock.
+    ///
+    /// The lock is released before tunnel AEAD and replay processing.
+    /// # Errors
+    /// Rejects an unavailable or rolled-back clock as well as invalid frame authority.
+    pub fn execute_frame_with_clock<F>(
+        &self,
+        request: &DeviceFrameRequest2,
+        generation: u64,
+        sample: F,
+    ) -> Result<DeviceFrameResponse2>
+    where
+        F: FnOnce() -> Option<Time>,
+    {
         let tunnel = {
             let mut state = self.lock()?;
-            state.check_time(now)?;
+            let now = Self::with_clock_sample(&mut state, sample)?;
             state.prune(now);
             if generation != state.generation
                 || request.scope_id.is_empty()
@@ -470,8 +524,23 @@ impl Registry {
         generation: u64,
         now: Time,
     ) -> Result<()> {
+        self.validate_frame_with_clock(scope_id, handle, generation, || Some(now))
+    }
+    /// Revalidate a completed frame using time sampled while holding the registry lock.
+    /// # Errors
+    /// Rejects an unavailable or rolled-back clock and changed or revoked tunnel authority.
+    pub fn validate_frame_with_clock<F>(
+        &self,
+        scope_id: &str,
+        handle: &str,
+        generation: u64,
+        sample: F,
+    ) -> Result<()>
+    where
+        F: FnOnce() -> Option<Time>,
+    {
         let mut state = self.lock()?;
-        state.check_time(now)?;
+        let now = Self::with_clock_sample(&mut state, sample)?;
         state.prune(now);
         if generation != state.generation {
             return Err(Error::DeviceDenied);
@@ -492,9 +561,22 @@ impl Registry {
     /// # Errors
     /// Rejects stale generation, unknown scope, duplicate handle, invalid expiry or capacity.
     pub fn register_paired_tunnel(&self, registration: PairedTunnelRegistration<'_>) -> Result<()> {
+        let now = registration.now;
+        self.register_paired_tunnel_with_clock(registration, || Some(now))
+    }
+    /// Register a paired session while sampling trusted time under the registry lock.
+    /// The registration's `now` field is ignored by this method.
+    pub fn register_paired_tunnel_with_clock<F>(
+        &self,
+        registration: PairedTunnelRegistration<'_>,
+        sample: F,
+    ) -> Result<()>
+    where
+        F: FnOnce() -> Option<Time>,
+    {
         let mut state = self.lock()?;
-        state.check_time(registration.now)?;
-        state.prune(registration.now);
+        let now = Self::with_clock_sample(&mut state, sample)?;
+        state.prune(now);
         let epoch = state
             .scopes
             .get(registration.scope_id)
@@ -508,10 +590,10 @@ impl Registry {
                 .all(|byte| byte.is_ascii_hexdigit())
             || state.handles.len() >= state.limits.max_handles as usize
             || state.handles.contains_key(registration.handle)
-            || registration.expires_wall <= registration.now.wall
-            || registration.expires_monotonic <= registration.now.monotonic
-            || registration.expires_wall - registration.now.wall > 604_800_000
-            || registration.expires_monotonic - registration.now.monotonic > 604_800_000
+            || registration.expires_wall <= now.wall
+            || registration.expires_monotonic <= now.monotonic
+            || registration.expires_wall - now.wall > 604_800_000
+            || registration.expires_monotonic - now.monotonic > 604_800_000
         {
             return Err(Error::DeviceDenied);
         }
@@ -522,7 +604,7 @@ impl Registry {
                 epoch,
                 expires_wall: registration.expires_wall,
                 expires_monotonic: registration.expires_monotonic,
-                frame_rate: RateCounter::new(registration.now.monotonic),
+                frame_rate: RateCounter::new(now.monotonic),
                 native: Native::PairedTunnel(registration.tunnel),
             },
         );
@@ -540,8 +622,30 @@ impl Registry {
         expires_monotonic: u64,
         now: Time,
     ) -> Result<()> {
+        self.refresh_paired_tunnel_with_clock(
+            scope_id,
+            handle,
+            generation,
+            expires_wall,
+            expires_monotonic,
+            || Some(now),
+        )
+    }
+    /// Refresh a paired-session entry while sampling trusted time under the registry lock.
+    pub fn refresh_paired_tunnel_with_clock<F>(
+        &self,
+        scope_id: &str,
+        handle: &str,
+        generation: u64,
+        expires_wall: u64,
+        expires_monotonic: u64,
+        sample: F,
+    ) -> Result<()>
+    where
+        F: FnOnce() -> Option<Time>,
+    {
         let mut state = self.lock()?;
-        state.check_time(now)?;
+        let now = Self::with_clock_sample(&mut state, sample)?;
         state.prune(now);
         if generation != state.generation
             || expires_wall <= now.wall
@@ -557,7 +661,7 @@ impl Registry {
             .get_mut(handle)
             .filter(|entry| entry.scope == scope_id && entry.epoch == epoch)
             .ok_or(Error::DeviceDenied)?;
-        if !matches!(entry.native, Native::Tunnel(..) | Native::PairedTunnel(..))
+        if !matches!(entry.native, Native::PairedTunnel(..))
             || now.wall >= entry.expires_wall
             || now.monotonic >= entry.expires_monotonic
         {
@@ -602,8 +706,7 @@ impl Registry {
     /// Rejects a poisoned registry; it cannot authorize any further work.
     pub fn fail_clock(&self) -> Result<()> {
         let mut state = self.lock()?;
-        state.faulted = true;
-        state.handles.clear();
+        state.fail_clock();
         Ok(())
     }
     /// Return init registrations and current limits without retaining credential inputs.
@@ -696,11 +799,14 @@ impl PreparedReconfiguration<'_> {
     }
 }
 impl State {
+    fn fail_clock(&mut self) {
+        self.faulted = true;
+        self.handles.clear();
+        self.bootstrap.clear();
+    }
     fn check_time(&mut self, now: Time) -> Result<()> {
         if now.wall < self.time.wall || now.monotonic < self.time.monotonic {
-            self.faulted = true;
-            self.handles.clear();
-            self.bootstrap.clear();
+            self.fail_clock();
         }
         self.time = now;
         if self.faulted {

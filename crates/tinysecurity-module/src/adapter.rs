@@ -316,6 +316,7 @@ impl PolicyService {
         device_pairing::invoke(request).await
     }
     #[tinybus(confidential)]
+    /// Dispatch the no-human-prompt frame member; the adapter rechecks authority after crypto.
     async fn device_frame2(
         &self,
         request: tinysecurity_bus::DeviceFrameRequest2,
