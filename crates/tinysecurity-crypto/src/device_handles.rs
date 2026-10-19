@@ -84,9 +84,18 @@ impl std::fmt::Debug for Reservation {
 }
 impl Drop for Reservation {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.registry.0.lock() {
-            state.budget.release();
-        }
+        release_budget(&self.registry);
+    }
+}
+struct InFlightGuard(Registry);
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        release_budget(&self.0);
+    }
+}
+fn release_budget(registry: &Registry) {
+    if let Ok(mut state) = registry.0.lock() {
+        state.budget.release();
     }
 }
 impl Registry {
@@ -430,8 +439,9 @@ impl Registry {
                 .get(&request.handle)
                 .filter(|entry| entry.scope == request.scope_id && entry.epoch == scope.epoch)
                 .ok_or(Error::DeviceDenied)?;
-            let Native::Tunnel(_, _, _) = &entry.native else {
-                return Err(Error::DeviceDenied);
+            let tunnel = match &entry.native {
+                Native::Tunnel(tunnel, _, _) => Arc::clone(tunnel),
+                Native::Key(..) => return Err(Error::DeviceDenied),
             };
             match &request.operation {
                 DeviceFrameOperation2::Seal { plaintext } => {
@@ -465,23 +475,24 @@ impl Registry {
                     BudgetError::Capacity => Error::DeviceCapacity,
                     BudgetError::Rate => Error::DeviceRate,
                 })?;
-            let Native::Tunnel(tunnel, _, _) = &entry.native else {
-                return Err(Error::DeviceDenied);
-            };
-            Arc::clone(tunnel)
+            tunnel
         };
-        let result = tunnel
-            .lock()
-            .map_err(|_| Error::DeviceDenied)
-            .and_then(|mut tunnel| {
-                let bytes = match &request.operation {
-                    DeviceFrameOperation2::Seal { plaintext } => tunnel.seal(plaintext)?,
-                    DeviceFrameOperation2::Open { frame } => tunnel.open(frame)?.to_vec(),
-                };
-                Ok(DeviceFrameResponse2 { bytes })
-            });
-        self.lock()?.budget.release();
-        result
+        self.with_frame_reservation(|| {
+            tunnel
+                .lock()
+                .map_err(|_| Error::DeviceDenied)
+                .and_then(|mut tunnel| {
+                    let bytes = match &request.operation {
+                        DeviceFrameOperation2::Seal { plaintext } => tunnel.seal(plaintext)?,
+                        DeviceFrameOperation2::Open { frame } => tunnel.open(frame)?.to_vec(),
+                    };
+                    Ok(DeviceFrameResponse2 { bytes })
+                })
+        })
+    }
+    fn with_frame_reservation<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+        let _guard = InFlightGuard(self.clone());
+        operation()
     }
     /// Revalidate a completed confidential frame before publishing its bytes.
     ///
