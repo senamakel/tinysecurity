@@ -9,8 +9,9 @@ use std::{
 };
 use tinybus::{Connection, broker::Broker, module::ModuleHost, transport::memory::MemoryBus};
 use tinysecurity_bus::{
-    ApprovalConfig2, ApprovalRow2, DeviceKeyPurpose2, DeviceOperation2, DeviceResponse2,
-    DeviceRole2, EvaluateDeviceRequest2, ExecuteDeviceRequest2, ModuleConfig, PolicyInfo, names,
+    ApprovalConfig2, ApprovalRow2, DeviceFrameOperation2, DeviceFrameRequest2,
+    DeviceFrameResponse2, DeviceKeyPurpose2, DeviceOperation2, DeviceResponse2, DeviceRole2,
+    EvaluateDeviceRequest2, ExecuteDeviceRequest2, ModuleConfig, PolicyInfo, names,
 };
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -43,7 +44,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         trusted_host: host.unique_name().map(|n| n.to_string()),
         approvals: Some(ApprovalConfig2 {
             timeout_ms: 30_000,
-            scopes: vec![fixture::registration()],
+            scopes: vec![fixture::registration(), fixture::other_registration()],
         }),
         audit: Some(fixture::audit_config(Some(
             root.join("audit").to_str().ok_or("fixture path")?.into(),
@@ -62,7 +63,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .with_timeout(Duration::from_secs(10));
     routing_checks(&proxy, &bus, &module).await?;
     let mut sequence = 1;
-    let key = native_protocols(&proxy, &store, &mut sequence).await?;
+    let (key, stale_tunnel) = native_protocols(&proxy, &store, &mut sequence).await?;
     let observer = generation_boundary(
         &lifecycle,
         &loaded.name,
@@ -70,7 +71,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         &proxy,
         &store,
         &mut sequence,
-        key,
+        (key, stale_tunnel),
     )
     .await?;
     let after: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
@@ -104,7 +105,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     task.abort();
     assert_eq!(hash, tinybus::module::sha256_file(&library)?);
     println!(
-        "native device: SHA256={hash}; verified peer + confidential RPCs + exact human/audit receipts + v2/v3/v4 + replay/revoke/reinit/shutdown passed"
+        "native device: SHA256={hash}; verified peer + confidential DeviceFrame2 Seal/Open + no frame approval rows + cross-scope/replay/revoke/stale-generation denial + existing approved v2/v3/v4 flows + shutdown passed"
     );
     Ok(())
 }
@@ -114,7 +115,7 @@ async fn native_tunnel(
     sequence: &mut u64,
     own: &str,
     public: &str,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
+) -> std::result::Result<String, Box<dyn std::error::Error>> {
     use tinysecurity::crypto::device::{KeyPair, PublicKey, Role, Tunnel};
     let ephemeral = fixture::run(
         proxy,
@@ -184,12 +185,158 @@ async fn native_tunnel(
             store,
             sequence,
             DeviceOperation2::Open {
-                handle: tunnel,
+                handle: tunnel.clone(),
                 frame: incoming
             }
         )
         .await
         .is_err()
+    );
+    verify_frame_dispatch(proxy, store, &tunnel, &mut peer_tunnel).await?;
+    verify_revoked_tunnel(proxy, store, sequence, own).await?;
+    Ok(tunnel)
+}
+
+async fn verify_frame_dispatch(
+    proxy: &tinybus::Proxy,
+    store: &Arc<Mutex<fixture::store::DiskStore>>,
+    tunnel: &str,
+    peer_tunnel: &mut tinysecurity::crypto::device::Tunnel,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let before = {
+        let store = store
+            .lock()
+            .map_err(|_| tinybus::Error::failed("fixture store"))?;
+        (store.mutations.len(), store.tickets.len())
+    };
+    let sealed: DeviceFrameResponse2 = proxy
+        .call_confidential(
+            names::methods::DEVICE_FRAME2,
+            (DeviceFrameRequest2 {
+                scope_id: "a".repeat(32),
+                handle: tunnel.into(),
+                call_id: "module-frame-seal".into(),
+                operation: DeviceFrameOperation2::Seal {
+                    plaintext: b"private-secret".to_vec(),
+                },
+            },),
+        )
+        .await?;
+    assert_eq!(sealed.bytes.first(), Some(&2));
+    assert_eq!(&*peer_tunnel.open(&sealed.bytes)?, b"private-secret");
+    let incoming = peer_tunnel.seal(b"private-secret")?;
+    let opened: DeviceFrameResponse2 = proxy
+        .call_confidential(
+            names::methods::DEVICE_FRAME2,
+            (DeviceFrameRequest2 {
+                scope_id: "a".repeat(32),
+                handle: tunnel.into(),
+                call_id: "module-frame-open".into(),
+                operation: DeviceFrameOperation2::Open {
+                    frame: incoming.clone(),
+                },
+            },),
+        )
+        .await?;
+    assert_eq!(opened.bytes, b"private-secret");
+    assert!(
+        proxy
+            .call_confidential::<DeviceFrameResponse2>(
+                names::methods::DEVICE_FRAME2,
+                (DeviceFrameRequest2 {
+                    scope_id: "a".repeat(32),
+                    handle: tunnel.into(),
+                    call_id: "module-frame-replay".into(),
+                    operation: DeviceFrameOperation2::Open { frame: incoming },
+                },),
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        proxy
+            .call_confidential::<DeviceFrameResponse2>(
+                names::methods::DEVICE_FRAME2,
+                (DeviceFrameRequest2 {
+                    scope_id: "b".repeat(32),
+                    handle: tunnel.into(),
+                    call_id: "module-frame-cross-scope".into(),
+                    operation: DeviceFrameOperation2::Seal {
+                        plaintext: b"private-secret".to_vec()
+                    },
+                },),
+            )
+            .await
+            .is_err()
+    );
+    let after = {
+        let store = store
+            .lock()
+            .map_err(|_| tinybus::Error::failed("fixture store"))?;
+        (store.mutations.len(), store.tickets.len())
+    };
+    assert_eq!(
+        after, before,
+        "frame calls must not create approval rows or tickets"
+    );
+    Ok(())
+}
+
+async fn verify_revoked_tunnel(
+    proxy: &tinybus::Proxy,
+    store: &Arc<Mutex<fixture::store::DiskStore>>,
+    sequence: &mut u64,
+    own: &str,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tinysecurity::crypto::device::KeyPair;
+    let revoked_ephemeral = fixture::run(
+        proxy,
+        store,
+        sequence,
+        DeviceOperation2::Key {
+            purpose: DeviceKeyPurpose2::Ephemeral,
+        },
+    )
+    .await?;
+    let revoked_peer = KeyPair::generate()?;
+    let revoked_peer_ephemeral = KeyPair::generate()?;
+    let revoked = fixture::run(
+        proxy,
+        store,
+        sequence,
+        DeviceOperation2::Tunnel {
+            key: own.into(),
+            ephemeral: revoked_ephemeral.handle.ok_or("fixture ephemeral")?,
+            peer_static: revoked_peer.public_key().encode(),
+            peer_ephemeral: revoked_peer_ephemeral.public_key().encode(),
+            role: DeviceRole2::Client,
+        },
+    )
+    .await?
+    .handle
+    .ok_or("fixture revoked tunnel")?;
+    fixture::run(
+        proxy,
+        store,
+        sequence,
+        DeviceOperation2::Revoke {
+            handle: revoked.clone(),
+        },
+    )
+    .await?;
+    assert!(
+        proxy
+            .call_confidential::<DeviceFrameResponse2>(
+                names::methods::DEVICE_FRAME2,
+                (DeviceFrameRequest2 {
+                    scope_id: "a".repeat(32),
+                    handle: revoked,
+                    call_id: "module-frame-after-revoke".into(),
+                    operation: DeviceFrameOperation2::Seal { plaintext: vec![] },
+                },),
+            )
+            .await
+            .is_err()
     );
     Ok(())
 }
@@ -203,6 +350,10 @@ async fn routing_checks(
     assert!(
         info.capabilities
             .contains(&names::methods::EXECUTE_DEVICE2.to_owned())
+    );
+    assert!(
+        info.capabilities
+            .contains(&names::methods::DEVICE_FRAME2.to_owned())
     );
     assert!(!serde_json::to_string(&info)?.contains("static_secret"));
     let rejected = EvaluateDeviceRequest2 {
@@ -222,6 +373,33 @@ async fn routing_checks(
             .call_confidential::<ApprovalRow2>(names::methods::EVALUATE_DEVICE2, (rejected,))
             .await
             .is_err()
+    );
+    let unconfigured_frame = DeviceFrameRequest2 {
+        scope_id: "a".repeat(32),
+        handle: "missing-tunnel".into(),
+        call_id: "untrusted-frame".into(),
+        operation: DeviceFrameOperation2::Seal { plaintext: vec![] },
+    };
+    assert!(
+        proxy
+            .call::<DeviceFrameResponse2>(
+                names::methods::DEVICE_FRAME2,
+                (unconfigured_frame.clone(),),
+            )
+            .await
+            .is_err(),
+        "DeviceFrame2 requires confidential transport"
+    );
+    assert!(
+        attacker
+            .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
+            .call_confidential::<DeviceFrameResponse2>(
+                names::methods::DEVICE_FRAME2,
+                (unconfigured_frame,),
+            )
+            .await
+            .is_err(),
+        "untrusted peers cannot use DeviceFrame2"
     );
     let malformed = serde_json::json!([{"request":{"scope_id":"a","call_id":"private-secret","ttl_ms":1,"operation":{"kind":"seal","handle":"private-secret","plaintext":"private-secret"}},"audit":fixture::audit(1)}]);
     let error = proxy
@@ -284,7 +462,7 @@ async fn native_protocols(
     proxy: &tinybus::Proxy,
     store: &Arc<Mutex<fixture::store::DiskStore>>,
     sequence: &mut u64,
-) -> std::result::Result<String, Box<dyn std::error::Error>> {
+) -> std::result::Result<(String, String), Box<dyn std::error::Error>> {
     let server = fixture::run(
         proxy,
         store,
@@ -367,7 +545,7 @@ async fn native_protocols(
         .await
         .is_err()
     );
-    let key = fixture::run(
+    let observer = fixture::run(
         proxy,
         store,
         sequence,
@@ -375,10 +553,11 @@ async fn native_protocols(
             purpose: DeviceKeyPurpose2::Static,
         },
     )
-    .await?
-    .handle
-    .ok_or("fixture handle")?;
-    Ok(key)
+    .await?;
+    let observer_public = observer.public_key.ok_or("fixture public")?;
+    let observer = observer.handle.ok_or("fixture handle")?;
+    let stale_tunnel = native_tunnel(proxy, store, sequence, &observer, &observer_public).await?;
+    Ok((observer, stale_tunnel))
 }
 async fn generation_boundary(
     lifecycle: &ModuleHost,
@@ -387,8 +566,9 @@ async fn generation_boundary(
     proxy: &tinybus::Proxy,
     store: &Arc<Mutex<fixture::store::DiskStore>>,
     sequence: &mut u64,
-    key: String,
+    handles: (String, String),
 ) -> std::result::Result<String, Box<dyn std::error::Error>> {
+    let (key, stale_tunnel) = handles;
     // Actual SDK reinit retains the callback peer/registrations while advancing generation.
     for scope in &mut configuration
         .device
@@ -417,6 +597,21 @@ async fn generation_boundary(
         )
         .await
         .is_err()
+    );
+    assert!(
+        proxy
+            .call_confidential::<DeviceFrameResponse2>(
+                names::methods::DEVICE_FRAME2,
+                (DeviceFrameRequest2 {
+                    scope_id: "a".repeat(32),
+                    handle: stale_tunnel,
+                    call_id: "module-frame-after-reinit".into(),
+                    operation: DeviceFrameOperation2::Seal { plaintext: vec![] },
+                },),
+            )
+            .await
+            .is_err(),
+        "reinitialization invalidates old tunnel capabilities"
     );
     let current = fixture::run_at(
         proxy,

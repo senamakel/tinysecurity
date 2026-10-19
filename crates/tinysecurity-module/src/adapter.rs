@@ -308,6 +308,14 @@ impl PolicyService {
     ) -> BusResult<tinysecurity_bus::DeviceResponse2> {
         self.device_execute(request).await
     }
+    #[tinybus(confidential)]
+    /// Dispatch the no-human-prompt frame member; the adapter rechecks authority after crypto.
+    async fn device_frame2(
+        &self,
+        request: tinysecurity_bus::DeviceFrameRequest2,
+    ) -> BusResult<tinysecurity_bus::DeviceFrameResponse2> {
+        self.device_frame(request).await
+    }
     async fn plan(
         &self,
         _request: tinysecurity_bus::SandboxPlanRequest,
@@ -1944,7 +1952,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "GrantFlowTool2", "RevokeFlowTool2", "ListFlowTrust2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "RegisterSandboxScope2", "RetireSandboxScope2", "Audit2", "RecordAudit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "CheckPaths2", "ProtectedPath2", "ProtectedFloor2", "SpendAction2", "PeekBudget2", "ClassifyHostAction2", "PrivacyCheck2", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanPrompt2", "ScanToolDefinition"],
+    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "DeviceFrame2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "GrantFlowTool2", "RevokeFlowTool2", "ListFlowTrust2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "RegisterSandboxScope2", "RetireSandboxScope2", "Audit2", "RecordAudit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "CheckPaths2", "ProtectedPath2", "ProtectedFloor2", "SpendAction2", "PeekBudget2", "ClassifyHostAction2", "PrivacyCheck2", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanPrompt2", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = ["ai.tinyhumans.tinysecurity.KeyringConsent2", "ai.tinyhumans.tinysecurity.SecretCipherConsumer2", "ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],

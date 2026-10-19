@@ -1,5 +1,7 @@
 use super::*;
-use tinysecurity_bus::{AccessTier, DeviceScope2, SubjectScope};
+use tinysecurity_bus::{
+    AccessTier, DeviceFrameOperation2, DeviceFrameRequest2, DeviceScope2, SubjectScope,
+};
 type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
 fn time(n: u64) -> Time {
     Time {
@@ -39,6 +41,7 @@ fn config() -> DeviceConfig2 {
         max_handles: 16,
         max_in_flight: 2,
         operations_per_minute: 100,
+        frames_per_minute: 12_000,
         max_ttl_ms: 100,
         max_message_bytes: 1000,
         max_bootstrap_nonces: 2,
@@ -593,6 +596,251 @@ fn both_native_tunnel_roles_preserve_direction_replay_and_reflection() -> TestRe
     );
     Ok(())
 }
+
+#[test]
+fn confidential_frames_reuse_only_a_live_approved_tunnel_capability() -> TestResult {
+    let reg = registry()?;
+    let (static_a, public_a) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (static_b, public_b) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (eph_a, epublic_a) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let (eph_b, epublic_b) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let client = tunnel(
+        &reg,
+        &static_a,
+        &eph_a,
+        &public_b,
+        &epublic_b,
+        DeviceRole2::Client,
+    )?;
+    let server = tunnel(
+        &reg,
+        &static_b,
+        &eph_b,
+        &public_a,
+        &epublic_a,
+        DeviceRole2::Server,
+    )?;
+    let sealed = reg.execute_frame(
+        &DeviceFrameRequest2 {
+            scope_id: "a".repeat(32),
+            handle: client.clone(),
+            call_id: "socket-send-1".into(),
+            operation: DeviceFrameOperation2::Seal {
+                plaintext: b"confidential socket frame".to_vec(),
+            },
+        },
+        1,
+        time(0),
+    )?;
+    let opened = reg.execute_frame(
+        &DeviceFrameRequest2 {
+            scope_id: "a".repeat(32),
+            handle: server.clone(),
+            call_id: "socket-receive-1".into(),
+            operation: DeviceFrameOperation2::Open {
+                frame: sealed.bytes.clone(),
+            },
+        },
+        1,
+        time(0),
+    )?;
+    assert_eq!(opened.bytes, b"confidential socket frame");
+    assert!(matches!(
+        reg.execute_frame(
+            &DeviceFrameRequest2 {
+                scope_id: "a".repeat(32),
+                handle: server.clone(),
+                call_id: "socket-receive-replay".into(),
+                operation: DeviceFrameOperation2::Open {
+                    frame: sealed.bytes.clone(),
+                },
+            },
+            1,
+            time(0),
+        ),
+        Err(Error::Replay)
+    ));
+    assert!(matches!(
+        reg.execute_frame(
+            &DeviceFrameRequest2 {
+                scope_id: "b".repeat(32),
+                handle: server.clone(),
+                call_id: "wrong-device".into(),
+                operation: DeviceFrameOperation2::Open {
+                    frame: sealed.bytes
+                },
+            },
+            1,
+            time(0),
+        ),
+        Err(Error::DeviceDenied)
+    ));
+    run(
+        &reg,
+        'a',
+        DeviceOperation2::Revoke {
+            handle: server.clone(),
+        },
+    )?;
+    assert!(
+        reg.execute_frame(
+            &DeviceFrameRequest2 {
+                scope_id: "a".repeat(32),
+                handle: server,
+                call_id: "after-revoke".into(),
+                operation: DeviceFrameOperation2::Seal { plaintext: vec![] },
+            },
+            1,
+            time(0),
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn frame_revalidation_rejects_a_tunnel_after_generation_change() -> TestResult {
+    let reg = registry()?;
+    let (static_handle, _) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (ephemeral, _) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let remote = KeyPair::from_secret(Zeroizing::new([31; 32]))?;
+    let remote_ephemeral = KeyPair::from_secret(Zeroizing::new([32; 32]))?;
+    let handle = tunnel(
+        &reg,
+        &static_handle,
+        &ephemeral,
+        &remote.public_key().encode(),
+        &remote_ephemeral.public_key().encode(),
+        DeviceRole2::Client,
+    )?;
+    assert!(
+        reg.validate_frame(&"a".repeat(32), &handle, 1, time(0))
+            .is_ok()
+    );
+    run(
+        &reg,
+        'a',
+        DeviceOperation2::Revoke {
+            handle: handle.clone(),
+        },
+    )?;
+    assert!(
+        reg.validate_frame(&"a".repeat(32), &handle, 1, time(0))
+            .is_err()
+    );
+    let mut next = config();
+    for scope in &mut next.scopes {
+        scope.static_secret = None;
+    }
+    reg.reconfigure(next, 2)?;
+    assert!(
+        reg.validate_frame(&"a".repeat(32), &handle, 1, time(0))
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn confidential_frames_enforce_size_limits_expiry_and_replay() -> TestResult {
+    let mut cfg = config();
+    cfg.max_message_bytes = 4;
+    let reg = Registry::new(
+        cfg,
+        &[registration(&"a".repeat(32)), registration(&"b".repeat(32))],
+        ":1.1",
+        1,
+        time(0),
+    )?;
+    let (static_handle, _) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (ephemeral, _) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let external = KeyPair::from_secret(Zeroizing::new([9; 32]))?;
+    let remote_ephemeral = KeyPair::from_secret(Zeroizing::new([10; 32]))?;
+    let tunnel_handle = tunnel(
+        &reg,
+        &static_handle,
+        &ephemeral,
+        &external.public_key().encode(),
+        &remote_ephemeral.public_key().encode(),
+        DeviceRole2::Client,
+    )?;
+    let too_large = reg.execute_frame(
+        &DeviceFrameRequest2 {
+            scope_id: "a".repeat(32),
+            handle: tunnel_handle.clone(),
+            call_id: "oversized".into(),
+            operation: DeviceFrameOperation2::Seal {
+                plaintext: b"12345".to_vec(),
+            },
+        },
+        1,
+        time(0),
+    );
+    assert!(matches!(too_large, Err(Error::Limit)));
+    let expired_request = request(
+        'a',
+        DeviceOperation2::Seal {
+            handle: tunnel_handle.clone(),
+            plaintext: vec![],
+        },
+    );
+    assert!(
+        reg.execute_frame(
+            &DeviceFrameRequest2 {
+                scope_id: "a".repeat(32),
+                handle: tunnel_handle,
+                call_id: expired_request.call_id,
+                operation: DeviceFrameOperation2::Seal { plaintext: vec![] },
+            },
+            1,
+            time(101),
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn frame_budget_is_per_tunnel_and_independent_of_control_operations() -> TestResult {
+    let mut cfg = config();
+    cfg.frames_per_minute = 1;
+    cfg.operations_per_minute = 100;
+    let reg = Registry::new(
+        cfg,
+        &[registration(&"a".repeat(32)), registration(&"b".repeat(32))],
+        ":1.1",
+        1,
+        time(0),
+    )?;
+    let (static_handle, _) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    let (ephemeral, _) = key(&reg, 'a', DeviceKeyPurpose2::Ephemeral)?;
+    let external = KeyPair::from_secret(Zeroizing::new([19; 32]))?;
+    let remote_ephemeral = KeyPair::from_secret(Zeroizing::new([20; 32]))?;
+    let handle = tunnel(
+        &reg,
+        &static_handle,
+        &ephemeral,
+        &external.public_key().encode(),
+        &remote_ephemeral.public_key().encode(),
+        DeviceRole2::Client,
+    )?;
+    let frame_request = |call_id: &str| DeviceFrameRequest2 {
+        scope_id: "a".repeat(32),
+        handle: handle.clone(),
+        call_id: call_id.into(),
+        operation: DeviceFrameOperation2::Seal {
+            plaintext: b"x".to_vec(),
+        },
+    };
+    reg.execute_frame(&frame_request("frame-1"), 1, time(0))?;
+    assert!(matches!(
+        reg.execute_frame(&frame_request("frame-2"), 1, time(0)),
+        Err(Error::DeviceRate)
+    ));
+    // The independent control plane remains available after a frame budget is exhausted.
+    key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    Ok(())
+}
+
 #[test]
 fn invalid_initialization_inputs_and_every_operation_shape_fail_closed() -> TestResult {
     let regs = [registration(&"a".repeat(32)), registration(&"b".repeat(32))];
@@ -605,7 +853,7 @@ fn invalid_initialization_inputs_and_every_operation_shape_fail_closed() -> Test
     let mut duplicate = config();
     duplicate.scopes.push(duplicate.scopes[0].clone());
     assert!(init(duplicate, &regs, ":1.1", 1).is_err());
-    for change in 0..7 {
+    for change in 0..9 {
         let mut cfg = config();
         match change {
             0 => cfg.scopes.clear(),
@@ -614,7 +862,9 @@ fn invalid_initialization_inputs_and_every_operation_shape_fail_closed() -> Test
             3 => cfg.operations_per_minute = 0,
             4 => cfg.max_ttl_ms = 300_001,
             5 => cfg.max_message_bytes = 1_048_577,
-            _ => cfg.max_bootstrap_nonces = 0,
+            6 => cfg.max_bootstrap_nonces = 0,
+            7 => cfg.frames_per_minute = 0,
+            _ => cfg.frames_per_minute = 60_001,
         }
         assert!(init(cfg, &regs, ":1.1", 1).is_err());
     }
@@ -753,5 +1003,130 @@ fn epoch_exhaustion_rejects_reconfiguration_without_partial_mutation() -> TestRe
     assert_eq!(state.scopes[&"a".repeat(32)].epoch, 1);
     assert!(state.handles.contains_key(&handle));
     assert_eq!(state.limits, cfg);
+    Ok(())
+}
+
+#[test]
+fn clock_sampling_is_serialized_with_registry_state_transitions() -> TestResult {
+    use std::sync::mpsc;
+
+    let registry = registry()?;
+    let (sampled_tx, sampled_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let earlier_registry = registry.clone();
+    let earlier = std::thread::spawn(move || {
+        earlier_registry.execute_frame_with_clock(
+            &DeviceFrameRequest2 {
+                scope_id: "a".repeat(32),
+                handle: "missing-frame-handle".into(),
+                call_id: "earlier-clock-sample".into(),
+                operation: DeviceFrameOperation2::Seal {
+                    plaintext: b"frame".to_vec(),
+                },
+            },
+            1,
+            || {
+                sampled_tx.send(()).ok()?;
+                release_rx.recv().ok()?;
+                Some(time(1))
+            },
+        )
+    });
+    sampled_rx.recv()?;
+
+    // The old adapter sampled before entering the registry. Prove whether the first callback
+    // still owns the state lock while paused; if it does not, commit the later observation first
+    // to deterministically recreate the old out-of-order transition.
+    let sample_order_was_unlocked = match registry.0.try_lock() {
+        Ok(state) => {
+            drop(state);
+            assert!(matches!(
+                registry.execute_frame_with_clock(
+                    &DeviceFrameRequest2 {
+                        scope_id: "a".repeat(32),
+                        handle: "missing-frame-handle".into(),
+                        call_id: "later-clock-sample".into(),
+                        operation: DeviceFrameOperation2::Seal {
+                            plaintext: b"frame".to_vec(),
+                        },
+                    },
+                    1,
+                    || Some(time(2)),
+                ),
+                Err(Error::DeviceDenied)
+            ));
+            true
+        }
+        Err(std::sync::TryLockError::WouldBlock) => false,
+        Err(std::sync::TryLockError::Poisoned(_)) => return Err(Error::DeviceDenied.into()),
+    };
+    release_tx.send(())?;
+
+    let earlier_result = earlier.join().map_err(|_| Error::DeviceDenied)?;
+    assert!(matches!(earlier_result, Err(Error::DeviceDenied)));
+    assert!(
+        !sample_order_was_unlocked,
+        "clock callback ran outside registry lock"
+    );
+    assert!(matches!(
+        registry.execute_frame_with_clock(
+            &DeviceFrameRequest2 {
+                scope_id: "a".repeat(32),
+                handle: "still-missing".into(),
+                call_id: "after-concurrent-clock-samples".into(),
+                operation: DeviceFrameOperation2::Seal {
+                    plaintext: b"frame".to_vec(),
+                },
+            },
+            1,
+            || Some(time(3)),
+        ),
+        Err(Error::DeviceDenied)
+    ));
+    Ok(())
+}
+
+#[test]
+fn a_genuine_clock_rollback_still_faults_registry_authority() -> TestResult {
+    let registry = registry()?;
+    let request = DeviceFrameRequest2 {
+        scope_id: "a".repeat(32),
+        handle: "missing-frame-handle".into(),
+        call_id: "clock-rollback".into(),
+        operation: DeviceFrameOperation2::Seal {
+            plaintext: b"frame".to_vec(),
+        },
+    };
+    assert!(matches!(
+        registry.execute_frame_with_clock(&request, 1, || Some(time(2))),
+        Err(Error::DeviceDenied)
+    ));
+    assert!(matches!(
+        registry.execute_frame_with_clock(&request, 1, || Some(time(1))),
+        Err(Error::DeviceClock)
+    ));
+    assert!(matches!(
+        registry.execute_frame_with_clock(&request, 1, || Some(time(3))),
+        Err(Error::DeviceClock)
+    ));
+    Ok(())
+}
+
+#[test]
+fn frame_admission_is_released_during_crypto_unwind() -> TestResult {
+    let reg = registry()?;
+    let mut state = reg.lock()?;
+    let State { budget, scopes, .. } = &mut *state;
+    let scope = scopes.get_mut(&"a".repeat(32)).ok_or(Error::DeviceDenied)?;
+    assert!(budget.reserve(&mut scope.rate, 0, 1, 12_000).is_ok());
+    drop(state);
+
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = reg.with_frame_reservation(|| -> Result<()> {
+            std::panic::resume_unwind(Box::new("crypto unwind"));
+        });
+    }));
+    assert!(unwind.is_err());
+    assert!(!reg.lock()?.budget.full(1));
     Ok(())
 }

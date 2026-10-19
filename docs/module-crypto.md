@@ -27,14 +27,33 @@ frames and handles do not reach approval/audit payloads, errors, Debug or
 `PolicyInfo`.
 
 Explicit init bounds cover registrations, handles, concurrent reservations,
-per-scope rate, TTL, message bytes and retained bootstrap nonces. Reinit may
-change bounds without reimporting credentials or changing immutable subjects.
+per-scope control-operation rate, per-tunnel frame rate, TTL, message bytes and
+retained bootstrap nonces. `frames_per_minute` defaults to 12000 (200 frames per
+second), independently of `operations_per_minute`, and accepts 1 through 60000.
+Older device configs receive the default. Reinit may change bounds without
+reimporting credentials or changing immutable subjects.
 It invalidates all old handles; successful new-generation receipts issue new
 handles. Revoke removes dependent tunnels; scoped Cancel fences pending work.
 Bootstrap replay evidence survives alias issuance, Cancel and reinit and fails
 closed at capacity. Clock rollback/unavailability faults device authority for
 that process. Shutdown closes owned credentials even when an SDK observer
 retains the connection. See the [owned cleanup and replay limits](../crates/tinysecurity-crypto/README.md#scoped-device-handles).
+
+Contract 1.23 adds confidential `DeviceFrame2` for streaming v2 frames. It
+accepts only a live tunnel handle returned by `ExecuteDevice2`; it cannot issue
+or extend a handle and checks scope, generation, TTL, revocation, per-tunnel
+frame rate and message bounds. It reuses the native v2 codec and direction-bound
+tunnel keys. Frame calls reuse the approved tunnel capability and need no new
+human receipt; handshake and acknowledgement operations remain on the approved
+Device2 path. The actual native module example exercises this member through
+confidential TinyBus dispatch.
+
+This fast-path does not complete the host device migration. Key and tunnel setup
+still goes through exact-human Device2 approval, and configured handles may live
+for at most five minutes. A later module capability must bind the existing
+paired-device authorization to session setup and renewal while preserving the
+current pairing UX and v2/v3/v4 wire behavior. Device2's exact approval path
+remains fail-closed until that owning-module work is complete.
 
 `device_native_contract` loads the hashed shared library and exercises actual
 confidential dispatch, verified approval/audit callback continuity, v2/v3/v4,
