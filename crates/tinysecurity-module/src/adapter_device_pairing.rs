@@ -56,9 +56,8 @@ fn unlock_scope_lookup<T>(
     now: Time,
     lookup: impl FnOnce() -> tinybus::Result<T>,
 ) -> tinybus::Result<T> {
-    let found = lookup()?;
     validate_unlock_context(context, generation, now)?;
-    Ok(found)
+    lookup()
 }
 fn valid_persistence_backend_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
