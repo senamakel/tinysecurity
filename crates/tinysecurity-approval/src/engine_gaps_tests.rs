@@ -688,8 +688,7 @@ async fn whole_tool_revoke_retry_reconciles_a_committed_cancellation_audit() -> 
 }
 
 #[tokio::test]
-async fn imported_flow_tool_revoke_retry_reconciles_a_committed_cancellation_audit() -> Result<()>
-{
+async fn imported_flow_tool_revoke_retry_reconciles_a_committed_cancellation_audit() -> Result<()> {
     let (fixture, owner) = owner()?;
     owner.register_scope(register(7)).await?;
     let imported = owner
@@ -730,7 +729,10 @@ async fn imported_flow_tool_revoke_retry_reconciles_a_committed_cancellation_aud
 
     let retry = owner.revoke_flow_tool(request).await?;
     assert_eq!(retry.outcome, FlowTrustOutcome2::Revoked);
-    assert_eq!(retry.request_id.as_deref(), Some(cancelled.request_id.as_str()));
+    assert_eq!(
+        retry.request_id.as_deref(),
+        Some(cancelled.request_id.as_str())
+    );
     assert!(
         fixture
             .audit_receipts
