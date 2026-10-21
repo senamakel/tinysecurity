@@ -359,6 +359,25 @@ impl DevicePairingStateCipher {
         }
         SecretCipher::new(Zeroizing::new(*self.key), true).decrypt(ciphertext)
     }
+
+    /// Decrypt one historical `enc:` value for an explicit migration path.
+    /// The caller must immediately re-encrypt the plaintext with [`Self::encrypt`].
+    /// # Errors
+    /// Denies stale authority, malformed legacy ciphertext, or non-UTF-8 plaintext.
+    pub fn decrypt_legacy(&self, ciphertext: &str) -> Result<Zeroizing<String>> {
+        self.validate()?;
+        if !ciphertext.starts_with("enc:") {
+            return Err(Error::NativeDenied);
+        }
+        let bytes = tinystoragedrivers::secrets::crypto::decrypt_legacy_enc(
+            &self.key,
+            ciphertext,
+        )
+        .map_err(|_| Error::NativeDenied)?;
+        String::from_utf8(bytes.to_vec())
+            .map(Zeroizing::new)
+            .map_err(|_| Error::NativeDenied)
+    }
 }
 impl CipherOwner {
     /// Capture immutable native configuration and fixed consumer.

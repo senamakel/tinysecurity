@@ -351,6 +351,17 @@ async fn pairing_state_cipher_keeps_plaintext_inside_module_without_host_deliver
     assert!(encrypted.starts_with("enc2:"));
     let decrypted = internal.decrypt(&encrypted)?;
     assert_eq!(decrypted.as_str(), r#"{"private_identity":"module-only"}"#);
+    let legacy_plaintext = b"legacy device private key";
+    let legacy_hex = legacy_plaintext
+        .iter()
+        .enumerate()
+        .map(|(index, byte)| format!("{:02x}", byte ^ internal.key[index % 32]))
+        .collect::<String>();
+    assert_eq!(
+        internal.decrypt_legacy(&format!("enc:{legacy_hex}"))?.as_bytes(),
+        legacy_plaintext
+    );
+    assert!(internal.decrypt_legacy(&encrypted).is_err());
     assert_eq!(f.capture.calls.load(Ordering::SeqCst), 0);
 
     let disabled = Fixture::new(false, Limits::default()).await?;

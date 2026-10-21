@@ -908,7 +908,11 @@ impl PairingState {
                     if !valid_prefix || row.ciphertext.len() > 16_384 {
                         return Err(denied());
                     }
-                    let private = loaded.cipher.decrypt(value).map_err(|_| denied())?;
+                    let private = match row.format {
+                        DevicePairingLegacyFormat2::Enc2 => loaded.cipher.decrypt(value),
+                        DevicePairingLegacyFormat2::Enc => loaded.cipher.decrypt_legacy(value),
+                    }
+                    .map_err(|_| denied())?;
                     let bytes = Zeroizing::new(
                         base64::Engine::decode(
                             &base64::engine::general_purpose::URL_SAFE_NO_PAD,
@@ -1125,6 +1129,9 @@ impl PairingState {
             .owner
             .merge_durable_state(&plaintext, &context, time(self.clock.as_ref())?)
             .map_err(|_| denied())?;
+        // The merge is now committed to the in-memory owner. Keep the CAS token
+        // in sync even when channel recovery or final context validation fails.
+        loaded.revision = durable.revision;
         // Keep the current CAS token: Recover only rehydrates an already committed
         // revision and does not write or reset the live tunnel registry.
         let recovered = loaded
@@ -1132,7 +1139,6 @@ impl PairingState {
             .recover_channel(&channel_id, &context, time(self.clock.as_ref())?)
             .map_err(|_| denied())?;
         self.validate_live_scope(&mut loaded, &context)?;
-        loaded.revision = durable.revision;
         Ok(DevicePairingResponse2 {
             pairing_id: Some(recovered.pairing_id),
             device_public_key: Some(recovered.device_public_key),
