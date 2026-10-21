@@ -355,6 +355,7 @@ jobs:
           package_name="${CRATE_NAME}-${VERSION}-${BUNDLE_ID}"
           package_root="dist/${package_name}"
           mkdir -p "$package_root"
+          chmod 755 "$package_root"
           install -m 755 "$module" "$package_root/"
           install -m 644 LICENSE MODULE.md "$package_root/"
 
@@ -364,6 +365,11 @@ jobs:
             > "$package_root/modules.toml"
 
           tar -C "$package_root" -czf "dist/${package_name}.tar.gz" .
+          archive_root_mode="$(tar -tvzf "dist/${package_name}.tar.gz" | awk 'NR == 1 { print substr($0, 1, 10) }')"
+          if [[ "$archive_root_mode" != "drwxr-xr-x" ]]; then
+            echo "unsafe module archive root mode: ${archive_root_mode}" >&2
+            exit 1
+          fi
           echo "archive=dist/${package_name}.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Assemble Windows module package
@@ -513,6 +519,7 @@ jobs:
           package_name="${CRATE_NAME}-${VERSION}-${BUNDLE_ID}"
           package_root="dist/${package_name}"
           mkdir -p "$package_root"
+          chmod 755 "$package_root"
           install -m 755 "$module" "$package_root/"
           install -m 644 LICENSE MODULE.md "$package_root/"
 
@@ -522,6 +529,11 @@ jobs:
             > "$package_root/modules.toml"
 
           tar -C "$package_root" -czf "dist/${package_name}.tar.gz" .
+          archive_root_mode="$(tar -tvzf "dist/${package_name}.tar.gz" | awk 'NR == 1 { print substr($0, 1, 10) }')"
+          if [[ "$archive_root_mode" != "drwxr-xr-x" ]]; then
+            echo "unsafe module archive root mode: ${archive_root_mode}" >&2
+            exit 1
+          fi
           echo "archive=dist/${package_name}.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Upload distribution package
