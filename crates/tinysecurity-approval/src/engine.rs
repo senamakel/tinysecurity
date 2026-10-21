@@ -1693,6 +1693,11 @@ impl Engine {
         if row.state != ApprovalLifecycle2::Approved || row.host_instance != self.instance {
             return Err(Error::Denied);
         }
+        let _tool_trust_serial = if row.attribution.as_deref() == Some("auto:tool-grant") {
+            Some(self.tool_trust_lock.lock().await)
+        } else {
+            None
+        };
         self.grant_still_holds(&request, &row).await?;
         // The loads and audit above awaited; judge the live scope, not the snapshot.
         let live = self.registration(&request.scope_id)?;

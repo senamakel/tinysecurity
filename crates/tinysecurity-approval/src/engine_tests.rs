@@ -28,6 +28,7 @@ struct Fixture {
     ledger: Mutex<std::collections::BTreeMap<String, (ApprovalCasRequest2, ApprovalCasResponse2)>>,
     order: Mutex<Vec<&'static str>>,
     fail: AtomicU64,
+    load_fail: AtomicU64,
     pause_load: AtomicU64,
     pause_nth_load: AtomicU64,
     load_calls: AtomicU64,
@@ -106,6 +107,9 @@ impl Ports for Fixture {
         NativeAuditAcknowledgement::from_verified_sink(row, expected_scope, receipt)
     }
     async fn load(&self, r: ApprovalLoadRequest2) -> Result<ApprovalLoadResponse2> {
+        if self.load_fail.load(Ordering::SeqCst) != 0 {
+            return Err(Error::Unavailable);
+        }
         let requested_scope = r.scope.clone();
         let response = ApprovalLoadResponse2 {
             scope: requested_scope.clone(),
