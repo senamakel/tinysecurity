@@ -841,6 +841,18 @@ fn paired_tunnel_uses_device_frame_registry_and_transient_retirement() -> TestRe
 }
 
 #[test]
+fn paired_tunnel_retirement_preserves_ordinary_device_handles() -> TestResult {
+    let reg = registry()?;
+    let (static_handle, _) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
+    assert!(reg.lock()?.handles.contains_key(&static_handle));
+
+    reg.retire_paired_tunnel(&static_handle)?;
+
+    assert!(reg.lock()?.handles.contains_key(&static_handle));
+    Ok(())
+}
+
+#[test]
 fn confidential_frames_enforce_size_limits_expiry_and_replay() -> TestResult {
     let mut cfg = config();
     cfg.max_message_bytes = 4;

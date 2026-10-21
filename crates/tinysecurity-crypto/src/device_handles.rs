@@ -691,7 +691,14 @@ impl Registry {
     /// # Errors
     /// Rejects an unavailable registry; an unknown handle is already retired.
     pub fn retire_paired_tunnel(&self, handle: &str) -> Result<()> {
-        self.lock()?.handles.remove(handle);
+        let mut state = self.lock()?;
+        if state
+            .handles
+            .get(handle)
+            .is_some_and(|entry| matches!(&entry.native, Native::PairedTunnel(_)))
+        {
+            state.handles.remove(handle);
+        }
         Ok(())
     }
     /// Wipe all paired tunnel capabilities for one authenticated scope on logout.
