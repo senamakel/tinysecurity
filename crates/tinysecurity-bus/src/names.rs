@@ -49,6 +49,12 @@ pub mod methods {
     pub const REVOKE_FLOW_TOOL2: &str = "RevokeFlowTool2";
     /// Read the live durable flow trust of one scope (contract 1.22).
     pub const LIST_FLOW_TRUST2: &str = "ListFlowTrust2";
+    /// Durably trust one exact whole tool in a registered scope (contract 1.25).
+    pub const GRANT_TOOL2: &str = "GrantTool2";
+    /// Withdraw durable trust of one exact whole tool (contract 1.25).
+    pub const REVOKE_TOOL2: &str = "RevokeTool2";
+    /// Read the live durable whole-tool trust of one scope (contract 1.25).
+    pub const LIST_TOOL_TRUST2: &str = "ListToolTrust2";
     /// Register a runtime approval scope and its tool and flow grants (contract 1.17).
     pub const REGISTER_APPROVAL_SCOPE2: &str = "RegisterApprovalScope2";
     /// Atomically replace one scope's posture, grants or policy reference (contract 1.17).
