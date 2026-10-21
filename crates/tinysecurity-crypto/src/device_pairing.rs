@@ -1284,6 +1284,12 @@ impl DevicePairingOwner {
         self.pending.clear();
     }
 
+    /// Whether this owner has been permanently closed after an authority fault.
+    #[must_use]
+    pub fn is_faulted(&self) -> bool {
+        self.faulted
+    }
+
     /// Permanently fault after an indeterminate persistence failure.
     pub fn fail_persistence(&mut self) {
         self.close();
