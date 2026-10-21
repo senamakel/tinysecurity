@@ -203,19 +203,26 @@ fn controller(channel: &str) -> tinysecurity_bus::DevicePairingContextResponse2 
 }
 
 #[test]
-fn unlock_rejects_agent_context_even_when_scope_is_already_loaded() {
+fn unlock_rejects_agent_before_loaded_scope_lookup() {
     let mut context = controller("agent-unlock");
     context.source = tinysecurity_bus::DevicePairingSource2::Agent;
+    let lookup_ran = std::cell::Cell::new(false);
+    let result = unlock_scope_lookup(
+        &context,
+        1,
+        Time {
+            wall: 1001,
+            monotonic: 1001,
+        },
+        || {
+            lookup_ran.set(true);
+            Ok(Some("already-loaded-scope"))
+        },
+    );
+    assert!(result.is_err());
     assert!(
-        validate_unlock_context(
-            &context,
-            1,
-            Time {
-                wall: 1001,
-                monotonic: 1001,
-            },
-        )
-        .is_err()
+        !lookup_ran.get(),
+        "agent context must be denied before the existing-scope fast path runs"
     );
 }
 

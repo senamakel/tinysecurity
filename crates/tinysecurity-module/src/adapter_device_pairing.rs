@@ -50,6 +50,16 @@ fn validate_unlock_context(
     }
     Ok(())
 }
+fn unlock_scope_lookup<T>(
+    context: &DevicePairingContextResponse2,
+    generation: u64,
+    now: Time,
+    lookup: impl FnOnce() -> tinybus::Result<T>,
+) -> tinybus::Result<T> {
+    let found = lookup()?;
+    validate_unlock_context(context, generation, now)?;
+    Ok(found)
+}
 fn valid_persistence_backend_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
 }
@@ -683,16 +693,16 @@ impl PairingState {
         &self,
         context: &DevicePairingContextResponse2,
     ) -> tinybus::Result<Arc<tokio::sync::Mutex<LoadedScope>>> {
-        validate_unlock_context(
+        let (epoch, existing) = unlock_scope_lookup(
             context,
             self.generation.load(Ordering::Acquire),
             time(self.clock.as_ref())?,
+            || {
+                let scopes = self.scopes.lock().map_err(|_| denied())?;
+                let epoch = *scopes.epochs.get(&context.scope_id).ok_or_else(denied)?;
+                Ok((epoch, scopes.loaded.get(&context.scope_id).cloned()))
+            },
         )?;
-        let (epoch, existing) = {
-            let scopes = self.scopes.lock().map_err(|_| denied())?;
-            let epoch = *scopes.epochs.get(&context.scope_id).ok_or_else(denied)?;
-            (epoch, scopes.loaded.get(&context.scope_id).cloned())
-        };
         if let Some(existing) = existing {
             return Ok(existing);
         }
