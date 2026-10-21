@@ -762,6 +762,9 @@ impl DevicePairingOwner {
     ) -> Result<(String, String, u64)> {
         self.check_time(now)?;
         let binding = self.context(context, DevicePairingSource2::AuthenticatedUserController)?;
+        if !valid_channel(&binding.channel) {
+            return Err(Error::DeviceDenied);
+        }
         if self
             .revocations
             .iter()
@@ -1293,7 +1296,9 @@ impl DevicePairingOwner {
             || c.scope_id.is_empty()
             || c.user_binding.is_empty()
             || (source != DevicePairingSource2::AuthenticatedUserController
-                && (c.channel_id.is_empty() || c.connection_nonce.is_empty()))
+                && !valid_channel(&c.channel_id))
+            || (source != DevicePairingSource2::AuthenticatedUserController
+                && c.connection_nonce.is_empty())
             || c.expires_at_ms <= self.last.wall
             || !self.scope_identities.contains_key(&c.scope_id)
         {
@@ -1310,6 +1315,7 @@ impl DevicePairingOwner {
             || context.generation != self.generation
             || context.scope_id.is_empty()
             || context.user_binding.is_empty()
+            || (!context.channel_id.is_empty() && !valid_channel(&context.channel_id))
             || context.expires_at_ms <= now.wall
             || !self.scope_identities.contains_key(&context.scope_id)
         {
@@ -1362,12 +1368,38 @@ impl DevicePairingOwner {
         );
         Ok((receipt, public, expires_wall))
     }
-    fn check_time(&mut self, now: Time) -> Result<()> {
+    fn validate_time(&mut self, now: Time) -> Result<()> {
         if self.faulted || now.wall < self.last.wall || now.monotonic < self.last.monotonic {
             self.close();
             return Err(Error::DeviceDenied);
         }
         self.last = now;
+        Ok(())
+    }
+    /// Prune expired pending receipts and return their ids to the host adapter.
+    ///
+    /// The adapter uses these ids to retire receipt-bound confidential aliases
+    /// when the native owner expires the corresponding enrollment.
+    ///
+    /// # Errors
+    /// Rejects a faulted owner or a clock that moved backwards.
+    pub fn prune_expired_pending(&mut self, now: Time) -> Result<Vec<String>> {
+        self.validate_time(now)?;
+        let expired: Vec<_> = self
+            .pending
+            .iter()
+            .filter(|(_, pending)| {
+                now.wall >= pending.expires_wall || now.monotonic >= pending.expires_mono
+            })
+            .map(|(receipt, _)| receipt.clone())
+            .collect();
+        for receipt in &expired {
+            self.pending.remove(receipt);
+        }
+        Ok(expired)
+    }
+    fn check_time(&mut self, now: Time) -> Result<()> {
+        self.validate_time(now)?;
         self.pending
             .retain(|_, p| now.wall < p.expires_wall && now.monotonic < p.expires_mono);
         Ok(())

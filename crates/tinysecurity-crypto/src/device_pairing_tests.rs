@@ -222,6 +222,63 @@ fn enrollment_requires_first_static_key_authenticated_frame_and_durable_commit()
 }
 
 #[test]
+fn invalid_channel_ids_are_rejected_before_begin_or_renewal() {
+    for invalid_channel in ["channel.with.dot".to_owned(), "c".repeat(129)] {
+        let mut fresh = owner();
+        assert!(
+            fresh
+                .begin(
+                    &context(
+                        DevicePairingSource2::AuthenticatedUserController,
+                        &invalid_channel,
+                        "nonce-a",
+                        10_000,
+                    ),
+                    5_000,
+                    time(1_001),
+                )
+                .is_err(),
+            "Begin must reject invalid channel ids before accepting pending state"
+        );
+
+        let mut existing = owner();
+        let paired = existing
+            .import_legacy_identities(
+                &context(
+                    DevicePairingSource2::AuthenticatedUserController,
+                    "valid-channel",
+                    "nonce-existing",
+                    10_000,
+                ),
+                vec![LegacyDeviceIdentity {
+                    channel_id: "valid-channel".into(),
+                    device_public_key: KeyPair::generate().unwrap().public_key().encode(),
+                    core_private_key: Zeroizing::new([0x52; 32]),
+                    revoked: false,
+                }],
+                time(1_001),
+            )
+            .unwrap();
+        assert!(
+            existing
+                .renew(
+                    &paired[0].pairing_id,
+                    &context(
+                        DevicePairingSource2::BackendReconnect,
+                        &invalid_channel,
+                        "nonce-b",
+                        10_000,
+                    ),
+                    5_000,
+                    time(1_002),
+                )
+                .is_err(),
+            "Renew must reject invalid channel ids before accepting pending state"
+        );
+    }
+}
+
+#[test]
 fn renewal_requires_same_static_key_and_fresh_context() {
     let mut owner = owner();
     let device = KeyPair::generate().unwrap();

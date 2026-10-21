@@ -36,6 +36,23 @@ fn check_persistence_fault(
     }
 }
 
+fn begin_with_master_alias(
+    owner: &mut DevicePairingOwner,
+    pending_master_aliases: &mut BTreeMap<String, String>,
+    context: &DevicePairingContextResponse2,
+    ttl_ms: u32,
+    alias: &str,
+    now: Time,
+) -> tinybus::Result<(String, String, u64)> {
+    let expired = owner.prune_expired_pending(now).map_err(|_| denied())?;
+    for receipt in expired {
+        pending_master_aliases.remove(&receipt);
+    }
+    let (receipt, public, expiry) = owner.begin(context, ttl_ms, now).map_err(|_| denied())?;
+    pending_master_aliases.insert(receipt.clone(), alias.to_owned());
+    Ok((receipt, public, expiry))
+}
+
 fn time(clock: &dyn tinysecurity::approval::Clock) -> tinybus::Result<Time> {
     Ok(Time {
         wall: clock.wall_ms().ok_or_else(denied)?,
@@ -632,6 +649,12 @@ impl PairingState {
                 let loaded = self.load_scope(&context).await?;
                 let mut loaded = loaded.lock().await;
                 self.validate_live_scope(&mut loaded, &context)?;
+                self.secret.validate_cipher_master(
+                    &scope.secret_registration_id,
+                    alias,
+                    generation,
+                    context.expires_at_ms,
+                )?;
                 let public = loaded
                     .owner
                     .public_key(&context.scope_id, time(self.clock.as_ref())?)
@@ -684,17 +707,25 @@ impl PairingState {
                 let loaded = self.loaded_scope(&context.scope_id)?;
                 let mut loaded = loaded.lock().await;
                 self.validate_live_scope(&mut loaded, &context)?;
-                let (receipt, public, expiry) = loaded
-                    .owner
-                    .begin(
-                        &context,
-                        self.config.max_pending_ttl_ms,
-                        time(self.clock.as_ref())?,
-                    )
-                    .map_err(|_| denied())?;
-                loaded
-                    .pending_master_aliases
-                    .insert(receipt.clone(), alias.into());
+                self.secret.validate_cipher_master(
+                    &scope.secret_registration_id,
+                    alias,
+                    generation,
+                    context.expires_at_ms,
+                )?;
+                let LoadedScope {
+                    owner,
+                    pending_master_aliases,
+                    ..
+                } = &mut *loaded;
+                let (receipt, public, expiry) = begin_with_master_alias(
+                    owner,
+                    pending_master_aliases,
+                    &context,
+                    self.config.max_pending_ttl_ms,
+                    alias,
+                    time(self.clock.as_ref())?,
+                )?;
                 Ok(DevicePairingResponse2 {
                     receipt: Some(receipt),
                     core_public_key: Some(public),
@@ -737,6 +768,12 @@ impl PairingState {
                 let loaded = self.loaded_scope(&scope.scope_id)?;
                 let mut loaded = loaded.lock().await;
                 self.validate_live_scope(&mut loaded, &context)?;
+                self.secret.validate_cipher_master(
+                    &scope.secret_registration_id,
+                    alias,
+                    generation,
+                    context.expires_at_ms,
+                )?;
                 if !loaded.cipher.is_bound_to(
                     &scope.secret_registration_id,
                     &scope.scope_id,

@@ -328,6 +328,43 @@ async fn denied_revoke_does_not_fault_the_pairing_owner() -> TestResult {
 }
 
 #[tokio::test]
+async fn expired_begin_receipts_release_their_master_aliases_before_a_new_begin() -> TestResult {
+    let mut owner = owner()?;
+    let mut aliases = std::collections::BTreeMap::new();
+    let first = begin_with_master_alias(
+        &mut owner,
+        &mut aliases,
+        &controller("channel-expiring"),
+        1000,
+        "master-alias-1",
+        Time {
+            wall: 1000,
+            monotonic: 1000,
+        },
+    )?;
+    let second = begin_with_master_alias(
+        &mut owner,
+        &mut aliases,
+        &controller("channel-expiring"),
+        1000,
+        "master-alias-2",
+        Time {
+            wall: 2001,
+            monotonic: 2001,
+        },
+    )?;
+
+    assert_eq!(
+        aliases.len(),
+        1,
+        "expired receipts must release alias entries"
+    );
+    assert!(!aliases.contains_key(&first.0));
+    assert!(aliases.contains_key(&second.0));
+    Ok(())
+}
+
+#[tokio::test]
 async fn canceled_legacy_import_callback_faults_the_mutated_owner() -> TestResult {
     let mut owner = owner()?;
     let faulted = Arc::new(AtomicBool::new(false));
