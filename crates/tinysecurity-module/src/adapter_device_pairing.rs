@@ -161,15 +161,22 @@ fn finish_refresh<T>(
     result: tinybus::Result<T>,
     owner: &mut DevicePairingOwner,
     registry: &Registry,
+    scope_id: &str,
     session_id: &str,
 ) -> tinybus::Result<T> {
     if let Ok(value) = result {
         Ok(value)
     } else {
-        owner.retire_session(session_id);
-        registry
-            .retire_paired_tunnel(session_id)
-            .map_err(|_| denied())?;
+        if owner.is_faulted() {
+            registry
+                .retire_paired_scope(scope_id)
+                .map_err(|_| denied())?;
+        } else {
+            owner.retire_session(session_id);
+            registry
+                .retire_paired_tunnel(session_id)
+                .map_err(|_| denied())?;
+        }
         Err(denied())
     }
 }
@@ -1282,6 +1289,7 @@ impl PairingState {
                 .map_err(|_| denied()),
             &mut loaded.owner,
             &self.registry,
+            &context.scope_id,
             &session_id,
         )?;
         if self
