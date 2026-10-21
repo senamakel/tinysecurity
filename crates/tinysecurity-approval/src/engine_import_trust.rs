@@ -5,8 +5,7 @@
 //! so a later startup retry cannot recreate revoked authority.
 use super::{
     ApprovalChoice2, ApprovalLifecycle2, ApprovalRow2, ApprovalScope2, CallerContext, Engine,
-    Error, EvaluateRequest, Origin, RedactMode, Result, binding, engine_flow_trust as flow_trust,
-    engine_tool_trust as tool_trust,
+    Error, EvaluateRequest, Origin, RedactMode, Result, binding, flow_trust, tool_trust,
 };
 use tinysecurity_bus::{
     FLOW_TRUST_LIFETIME_MS2, ImportTrustItem2, ImportTrustOutcome2, ImportTrustReceipt2,
@@ -28,8 +27,8 @@ fn source_marker(reg: &ApprovalScope2, request: &ImportTrustSourceRequest2) -> R
     let item = serde_json::to_vec(&request.item).map_err(|_| Error::Invalid)?;
     let mut bytes = Vec::with_capacity(scope.user.len() + scope.agent.len() + item.len() + 256);
     for value in [
-        scope.tenant.as_str(),
         scope.user.as_str(),
+        scope.workspace.as_str(),
         scope.agent.as_str(),
         request.source_id.as_str(),
         request.source_version.as_str(),
@@ -45,7 +44,11 @@ fn source_marker(reg: &ApprovalScope2, request: &ImportTrustSourceRequest2) -> R
     ))
 }
 
-fn marker_exists(rows: &[ApprovalRow2], marker: &str, attribution: &str) -> Option<&ApprovalRow2> {
+fn marker_exists<'a>(
+    rows: &'a [ApprovalRow2],
+    marker: &str,
+    attribution: &str,
+) -> Option<&'a ApprovalRow2> {
     rows.iter().find(|row| {
         row.attribution.as_deref() == Some(attribution)
             && row.binding.call_sha256 == marker
