@@ -19,6 +19,8 @@ docs/
   describing its behavior, public surface, invariants, and acceptance criteria.
 - **[`module-crypto.md`](module-crypto.md)** — confidential device, master, cipher, password, keyring and pairing members of the TinySecurity module contract.
 - **[`module-subject-policies.md`](module-subject-policies.md)** — registered subject policy members and their generation-bound authorization rules.
+- **[`specs/device-pairing-contract-1.25.md`](specs/device-pairing-contract-1.25.md)** — host-attested paired-device lifecycle contract and trust boundaries.
+- **[`plans/device-pairing-contract-1.25.md`](plans/device-pairing-contract-1.25.md)** — ordered implementation and verification steps for pairing lifecycle support.
 - **[`plans/`](plans/README.md)** — implementation-ordered, test-first steps for
   delivering an approved specification. Plans name exact files and verification
   commands, and are updated as the work progresses.

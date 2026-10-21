@@ -419,6 +419,9 @@ pub struct ModuleConfig {
     /// Init-only bounded native device registration; absent preserves older payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<crate::DeviceConfig2>,
+    /// Init-only trusted paired-device lifecycle; absent preserves older payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_pairing: Option<crate::DevicePairingConfig2>,
     /// Init-only immutable verified sandbox authority; absent preserves legacy payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<crate::SandboxConfig2>,
@@ -447,6 +450,7 @@ impl Default for ModuleConfig {
         Self {
             contract_version: crate::CONTRACT_VERSION,
             device: None,
+            device_pairing: None,
             crypto: None,
             secret: None,
             secret_cipher: None,

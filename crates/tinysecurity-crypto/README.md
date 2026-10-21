@@ -113,6 +113,12 @@ acceptance gates, not established by Linux or cross-compilation.
 
 ## Scoped device handles
 
+The separate `device_pairing` owner composes these primitives into durable
+enrollment, proof-based confirmation, renewal and revocation. Its state model,
+callback boundaries and persistence constraints are documented in the
+[device pairing module design](src/device_pairing/README.md); the contract
+specification remains the authority for host integration requirements.
+
 `device_handles::Registry` owns immutable approval registrations and the actual
 verified TinyBus peer, user, workspace, agent and origin captured at SDK init.
 Calls contain an existing scope reference and operation, never identity claims.

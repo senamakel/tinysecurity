@@ -25,6 +25,8 @@ pub mod methods {
     pub const EXECUTE_DEVICE2: &str = "ExecuteDevice2";
     /// Seal or open a frame through a live tunnel handle created by approved device work.
     pub const DEVICE_FRAME2: &str = "DeviceFrame2";
+    /// Host-attested pairing, renewal and revocation of device tunnel identities (contract 1.25).
+    pub const DEVICE_PAIRING2: &str = "DevicePairing2";
     /// Trusted legacy history migration without broad grant revival.
     pub const IMPORT_APPROVAL_HISTORY2: &str = "ImportApprovalHistory2";
     /// Durable exact approval evaluation.
@@ -173,6 +175,7 @@ pub const METHODS: &[&str] = &[
     methods::PAIRING_CONTROL2,
     methods::EVALUATE_DEVICE2,
     methods::EXECUTE_DEVICE2,
+    methods::DEVICE_PAIRING2,
     methods::DEVICE_FRAME2,
     methods::PLAN,
     methods::EVALUATE_SANDBOX_APPROVAL2,
