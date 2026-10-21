@@ -327,6 +327,13 @@ cannot bind the call answers an error, never an allow. Latency budgets are per c
   `Verdict::Deny { reason: DenialReason::Privacy }`, `cacheable: false`, stamped with the live
   policy generation. Budget: a pure in-memory decision. Refused with required audit.
 
+## Native credential-store roots (contract 1.24)
+
+- `CredentialRoots2` (`CredentialRootsRequest2` -> `CredentialRootsResponse2`): resolves bounded
+  native credential-store denial roots from the host's optional operator home; see
+  [credential roots](docs/module-credential-roots.md). Filesystem canonicalization runs on a
+  blocking worker so the module's async bus executor remains responsive.
+
 ## Approval origin classes, durable flow trust and scored prompt screening (contract 1.22)
 
 Additive: every new member and enum value is absent from a 1.21 host's traffic, and a 1.22 host

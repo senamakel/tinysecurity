@@ -75,6 +75,8 @@ pub mod methods {
     pub const PROTECTED_PATH2: &str = "ProtectedPath2";
     /// The floor's component, file, pair and prefix vocabulary (contract 1.22).
     pub const PROTECTED_FLOOR2: &str = "ProtectedFloor2";
+    /// Resolves concrete native credential-store roots for a host-provided home.
+    pub const CREDENTIAL_ROOTS2: &str = "CredentialRoots2";
     /// Reserve one action from a registered command scope's hourly ledger (contract 1.22).
     pub const SPEND_ACTION2: &str = "SpendAction2";
     /// Read a registered command scope's hourly ledger without spending (contract 1.22).
@@ -187,6 +189,7 @@ pub const METHODS: &[&str] = &[
     methods::CHECK_PATHS2,
     methods::PROTECTED_PATH2,
     methods::PROTECTED_FLOOR2,
+    methods::CREDENTIAL_ROOTS2,
     methods::SPEND_ACTION2,
     methods::PEEK_BUDGET2,
     methods::CLASSIFY_HOST_ACTION2,

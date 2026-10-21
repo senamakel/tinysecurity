@@ -1,4 +1,95 @@
 use super::*;
+
+#[test]
+fn concrete_credential_roots_keep_home_none_isolated_and_resolve_native_paths()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::fs;
+
+    assert_eq!(credential_roots(None)?, Vec::<PathBuf>::new());
+    let home = tempfile::tempdir()?;
+    let ssh = home.path().join(".ssh");
+    fs::create_dir(&ssh)?;
+    let aws = home.path().join(".aws");
+    fs::create_dir(&aws)?;
+    fs::write(home.path().join(".netrc"), "fixture")?;
+    let roots = credential_roots(Some(home.path()))?;
+    assert!(roots.contains(&fs::canonicalize(&ssh)?));
+    assert!(roots.contains(&fs::canonicalize(&aws)?));
+    assert!(roots.contains(&home.path().join(".netrc")));
+    assert!(roots.iter().all(|root| root.is_absolute()));
+    assert!(roots.len() <= tinysecurity_bus::MAX_CREDENTIAL_ROOTS);
+
+    #[cfg(target_os = "macos")]
+    {
+        let keychains = home.path().join("Library/Keychains");
+        fs::create_dir_all(&keychains)?;
+        let roots = credential_roots(Some(home.path()))?;
+        assert!(roots.contains(&fs::canonicalize(keychains)?));
+    }
+
+    #[cfg(windows)]
+    {
+        let protect = home.path().join("AppData/Roaming/Microsoft/Protect");
+        fs::create_dir_all(&protect)?;
+        let roots = credential_roots(Some(home.path()))?;
+        assert!(roots.contains(&fs::canonicalize(protect)?));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn credential_roots_include_symlink_alias_and_target_and_fail_closed_on_dangling_links()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::symlink;
+
+    let home = tempfile::tempdir()?;
+    let target = home.path().join("credential-target");
+    std::fs::create_dir(&target)?;
+    let alias = home.path().join(".ssh");
+    symlink(&target, &alias)?;
+    let roots = credential_roots(Some(home.path()))?;
+    assert!(roots.contains(&alias));
+    assert!(roots.contains(&std::fs::canonicalize(target)?));
+
+    let dangling_home = tempfile::tempdir()?;
+    symlink(
+        dangling_home.path().join("missing"),
+        dangling_home.path().join(".ssh"),
+    )?;
+    assert!(credential_roots(Some(dangling_home.path())).is_err());
+    Ok(())
+}
+
+#[test]
+fn credential_roots_reject_relative_and_non_directory_homes()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert!(credential_roots(Some(Path::new("relative-home"))).is_err());
+    let file = tempfile::NamedTempFile::new()?;
+    assert!(credential_roots(Some(file.path())).is_err());
+    Ok(())
+}
+
+#[test]
+fn windows_credential_candidates_preserve_native_casing_and_match_floor_pairs() {
+    let root = Path::new("C:/Users/fixture");
+    let candidates = super::windows_credential_candidates(root);
+    let stores = ["Protect", "Credentials", "Crypto", "Vault", "Ngc"];
+    for app_data in ["AppData/Roaming", "AppData/Local"] {
+        for store in stores {
+            assert!(
+                candidates.contains(&root.join(app_data).join("Microsoft").join(store)),
+                "missing native path for {app_data}/Microsoft/{store}"
+            );
+            assert!(
+                CREDENTIAL_PAIRS.iter().any(|&(parent, child)| {
+                    parent == "microsoft" && child == store.to_ascii_lowercase()
+                }),
+                "{store} has no lowercased floor pair"
+            );
+        }
+    }
+}
 use std::path::PathBuf;
 
 fn floor(path: &str) -> bool {
@@ -25,6 +116,12 @@ fn floor_covers_credentials_system_roots_traversal_and_nul() {
     ] {
         assert!(floor(path), "{path}");
     }
+}
+
+#[test]
+fn floor_protects_windows_ngc_credentials_at_any_depth() {
+    assert!(floor("/home/u/AppData/Local/Microsoft/Ngc/secret"));
+    assert!(floor(r"C:\Users\u\AppData\Local\Microsoft\Ngc\secret"));
 }
 
 #[test]
