@@ -471,7 +471,7 @@ async fn successful_store_remains_fenced_until_post_store_validation_finishes() 
     )
     .await?;
     // A context expiry or generation change rejects publication after the CAS has committed.
-    stored.fail(&mut owner);
+    stored.1.fail(&mut owner);
     assert!(faulted.load(Ordering::Acquire));
     assert!(
         owner
@@ -511,7 +511,7 @@ async fn imported_store_remains_fenced_until_master_revalidation_finishes() -> T
         |_snapshot| async { Ok("committed-import-revision".into()) },
     )
     .await?;
-    stored.fail(&mut owner);
+    stored.1.fail(&mut owner);
     assert!(faulted.load(Ordering::Acquire));
     assert!(
         owner
