@@ -281,6 +281,89 @@ async fn flow_trust_survives_restart_and_covers_only_its_exact_tool_and_flow() -
 }
 
 #[tokio::test]
+async fn redacted_tool_labels_do_not_break_exact_flow_grant_identity() -> Result<()> {
+    let tool = "private-flow-tool-label";
+    let mut redactor = RedactorConfig::default();
+    redactor.secrets.push(Secret(tool.into()));
+    let fixture = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    clock.wall.store(1000, Ordering::SeqCst);
+    let owner = Engine::new(
+        config(),
+        fixture,
+        clock,
+        Redactor::new(&redactor).map_err(|_| Error::Invalid)?,
+    )?;
+    owner.register_scope(register(7)).await?;
+
+    assert_eq!(
+        owner
+            .grant_flow_tool(grant(7, "flow-direct", tool, 1))
+            .await?
+            .outcome,
+        FlowTrustOutcome2::Granted
+    );
+    let mut direct = shell(7, Some("flow-direct"), Origin::Operator, "redacted-flow-direct");
+    direct.request.call.tool = tool.into();
+    direct.audit = at(2);
+    assert_eq!(owner.begin(direct).await?.state, ApprovalLifecycle2::Approved);
+    assert_eq!(
+        owner
+            .revoke_flow_tool(revoke(7, "flow-direct", tool, 3))
+            .await?
+            .outcome,
+        FlowTrustOutcome2::Revoked
+    );
+
+    let imported = ImportTrustSourceRequest2 {
+        scope_id: id(7),
+        source_id: "legacy-redacted-flow".into(),
+        source_version: "v1".into(),
+        item: ImportTrustItem2::FlowTool {
+            flow_id: "flow-imported".into(),
+            tool: tool.into(),
+        },
+        audit: at(4),
+    };
+    assert_eq!(
+        owner.import_trust_source(imported).await?.outcome,
+        ImportTrustOutcome2::Imported
+    );
+    let mut imported_call = shell(
+        7,
+        Some("flow-imported"),
+        Origin::Operator,
+        "redacted-flow-imported",
+    );
+    imported_call.request.call.tool = tool.into();
+    imported_call.audit = at(5);
+    assert_eq!(
+        owner.begin(imported_call).await?.state,
+        ApprovalLifecycle2::Approved
+    );
+    assert_eq!(
+        owner
+            .revoke_flow_tool(revoke(7, "flow-imported", tool, 6))
+            .await?
+            .outcome,
+        FlowTrustOutcome2::Revoked
+    );
+    let mut after_revoke = shell(
+        7,
+        Some("flow-imported"),
+        Origin::Operator,
+        "redacted-flow-after-revoke",
+    );
+    after_revoke.request.call.tool = tool.into();
+    after_revoke.audit = at(7);
+    assert_eq!(
+        owner.begin(after_revoke).await?.state,
+        ApprovalLifecycle2::Pending
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn granting_a_live_pair_twice_changes_nothing_and_lists_it_once() -> Result<()> {
     let (fixture, owner) = owner()?;
     owner.register_scope(register(7)).await?;
