@@ -249,7 +249,7 @@ fn failed_refresh_retires_the_paired_tunnel() -> TestResult {
     let registry = registry_with_frame()?;
     assert!(frame_seal(&registry));
     let mut owner = owner()?;
-    let result = finish_refresh::<()>(Err(denied()), &mut owner, &registry, FRAME_HANDLE);
+    let result = finish_refresh::<()>(Err(denied()), &mut owner, &registry, SCOPE_ID, FRAME_HANDLE);
     assert!(result.is_err());
     assert!(!frame_seal(&registry));
     Ok(())
@@ -276,6 +276,7 @@ fn clock_rollback_retires_every_tunnel_in_the_scope() -> TestResult {
             result.map_err(|_| denied()),
             &mut owner,
             &registry,
+            SCOPE_ID,
             FRAME_HANDLE
         )
         .is_err()
