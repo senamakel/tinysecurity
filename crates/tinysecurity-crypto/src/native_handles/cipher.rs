@@ -369,11 +369,8 @@ impl DevicePairingStateCipher {
         if !ciphertext.starts_with("enc:") {
             return Err(Error::NativeDenied);
         }
-        let bytes = tinystoragedrivers::secrets::crypto::decrypt_legacy_enc(
-            &self.key,
-            ciphertext,
-        )
-        .map_err(|_| Error::NativeDenied)?;
+        let bytes = tinystoragedrivers::secrets::crypto::decrypt_legacy_enc(&self.key, ciphertext)
+            .map_err(|_| Error::NativeDenied)?;
         String::from_utf8(bytes.to_vec())
             .map(Zeroizing::new)
             .map_err(|_| Error::NativeDenied)
