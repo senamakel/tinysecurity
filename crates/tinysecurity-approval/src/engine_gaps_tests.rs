@@ -500,9 +500,21 @@ async fn whole_tool_trust_survives_restart_and_is_exactly_scoped() -> Result<()>
     let clock = Arc::new(TestClock::default());
     clock.wall.store(1000, Ordering::SeqCst);
     let first = engine(fixture.clone(), clock.clone())?;
-    first.register_scope(register(7)).await?;
+    first
+        .register_scope(register(7))
+        .await
+        .map_err(|error| {
+            eprintln!("register scope 7: {error:?}");
+            error
+        })?;
     first.register_scope(register(8)).await?;
-    let granted = first.grant_tool(tool_grant(7, "shell", 1)).await?;
+    let granted = first
+        .grant_tool(tool_grant(7, "shell", 1))
+        .await
+        .map_err(|error| {
+            eprintln!("grant shell: {error:?}");
+            error
+        })?;
     assert_eq!(granted.outcome, ToolTrustOutcome2::Granted);
     assert!(granted.request_id.is_some());
     let repeated = first.grant_tool(tool_grant(7, "shell", 2)).await?;
@@ -551,7 +563,10 @@ async fn whole_tool_revocation_before_consume_revokes_queued_automatic_approval(
     owner.grant_tool(tool_grant(7, "shell", 1)).await?;
     let mut request = shell(7, None, Origin::Operator, "queued-call");
     request.audit = at(2);
-    let row = owner.begin(request.clone()).await?;
+    let row = owner.begin(request.clone()).await.map_err(|error| {
+        eprintln!("begin granted call: {error:?}");
+        error
+    })?;
     assert_eq!(row.attribution.as_deref(), Some("auto:tool-grant"));
 
     owner.revoke_tool(tool_revoke(7, "shell", 3)).await?;
