@@ -16,6 +16,7 @@
 //! ```
 pub mod device;
 pub mod device_handles;
+pub mod device_pairing;
 mod error;
 pub mod keyring;
 pub mod native_handles;

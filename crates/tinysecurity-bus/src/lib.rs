@@ -12,6 +12,8 @@ mod device;
 pub use device::*;
 mod device_frame;
 pub use device_frame::*;
+mod device_pairing;
+pub use device_pairing::*;
 mod sandbox;
 pub use sandbox::*;
 mod sandbox_scopes;

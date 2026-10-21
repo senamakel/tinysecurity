@@ -297,6 +297,85 @@ pub struct CipherOwner {
     identity: [u8; 32],
     pending: Arc<PendingState>,
 }
+/// Module-internal persistent-state cipher retained from a live `HumanOnly` master.
+/// It never crosses a bus boundary and is fenced by registration epoch and module
+/// generation, while the original alias expiry continues to govern only unlock.
+pub struct DevicePairingStateCipher {
+    key: Zeroizing<[u8; 32]>,
+    registry: Registry,
+    registration: String,
+    scope_id: String,
+    persistence_backend_id: String,
+    generation: u64,
+    epoch: u64,
+}
+impl std::fmt::Debug for DevicePairingStateCipher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DevicePairingStateCipher([REDACTED])")
+    }
+}
+impl DevicePairingStateCipher {
+    /// Check the immutable pairing slot binding without exposing master material.
+    #[must_use]
+    pub fn is_bound_to(
+        &self,
+        registration: &str,
+        scope_id: &str,
+        persistence_backend_id: &str,
+        generation: u64,
+    ) -> bool {
+        self.registration == registration
+            && self.scope_id == scope_id
+            && self.persistence_backend_id == persistence_backend_id
+            && self.generation == generation
+    }
+    fn validate(&self) -> Result<()> {
+        let (state, _) = self.registry.checked_lock()?;
+        if state.closed
+            || state.generation != self.generation
+            || state
+                .scopes
+                .get(&self.registration)
+                .is_none_or(|scope| scope.epoch != self.epoch)
+        {
+            return Err(Error::NativeDenied);
+        }
+        Ok(())
+    }
+    /// Encrypt a module-owned persistent record using the existing enc2 format.
+    /// # Errors
+    /// Denies stale generation/registration authority and oversized values.
+    pub fn encrypt(&self, plaintext: &str) -> Result<Zeroizing<String>> {
+        self.validate()?;
+        SecretCipher::new(Zeroizing::new(*self.key), true).encrypt_confidential(plaintext)
+    }
+    /// Decrypt an internal persistent record without exposing plaintext to a host callback.
+    /// # Errors
+    /// Denies stale generation/registration authority and invalid ciphertext.
+    pub fn decrypt(&self, ciphertext: &str) -> Result<Zeroizing<String>> {
+        self.validate()?;
+        if !ciphertext.starts_with("enc2:") {
+            return Err(Error::NativeDenied);
+        }
+        SecretCipher::new(Zeroizing::new(*self.key), true).decrypt(ciphertext)
+    }
+
+    /// Decrypt one historical `enc:` value for an explicit migration path.
+    /// The caller must immediately re-encrypt the plaintext with [`Self::encrypt`].
+    /// # Errors
+    /// Denies stale authority, malformed legacy ciphertext, or non-UTF-8 plaintext.
+    pub fn decrypt_legacy(&self, ciphertext: &str) -> Result<Zeroizing<String>> {
+        self.validate()?;
+        if !ciphertext.starts_with("enc:") {
+            return Err(Error::NativeDenied);
+        }
+        let bytes = tinystoragedrivers::secrets::crypto::decrypt_legacy_enc(&self.key, ciphertext)
+            .map_err(|_| Error::NativeDenied)?;
+        String::from_utf8(bytes.to_vec())
+            .map(Zeroizing::new)
+            .map_err(|_| Error::NativeDenied)
+    }
+}
 impl CipherOwner {
     /// Capture immutable native configuration and fixed consumer.
     /// # Errors
@@ -494,6 +573,47 @@ impl CipherOwner {
             return Err(Error::NativeDenied);
         }
         self.validate(pending.work.as_ref().ok_or(Error::NativeDenied)?)
+    }
+    /// Retain the selected master for one module-owned persistence identity.
+    /// The returned cipher survives alias expiry but is fenced by generation,
+    /// registration epoch, registry shutdown and owner drop.
+    /// # Errors
+    /// Denies disabled encryption, stale authority or non-encryption reservations.
+    pub fn retain_device_pairing_state(
+        &self,
+        pending: CipherPending,
+        scope_id: &str,
+        persistence_backend_id: &str,
+    ) -> Result<DevicePairingStateCipher> {
+        if !self.config.enabled {
+            return Err(Error::NativeDenied);
+        }
+        if scope_id.is_empty()
+            || scope_id.len() > 128
+            || persistence_backend_id.is_empty()
+            || persistence_backend_id.len() > 128
+        {
+            return Err(Error::NativeDenied);
+        }
+        let work = self.consume(pending)?;
+        let binding = work.binding.cipher.as_ref().ok_or(Error::NativeDenied)?;
+        if binding.kind != CipherKind::Encrypt || !binding.enabled {
+            return Err(Error::NativeDenied);
+        }
+        let (key, epoch) = {
+            let (state, now) = self.registry.checked_lock()?;
+            let key = self.validate_locked(&state, &work, now)?;
+            (Zeroizing::new(*key.bytes()), binding.master_epoch)
+        };
+        Ok(DevicePairingStateCipher {
+            key,
+            registry: self.registry.clone(),
+            registration: work.binding.registration.clone(),
+            scope_id: scope_id.into(),
+            persistence_backend_id: persistence_backend_id.into(),
+            generation: work.binding.generation,
+            epoch,
+        })
     }
     /// Consume pending authority once and synchronously execute before delivery.
     /// No lock spans delivery; the original reservation remains owned throughout.

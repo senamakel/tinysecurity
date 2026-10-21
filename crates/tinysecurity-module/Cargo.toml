@@ -16,15 +16,24 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 # Handwritten contextual authority wrapper around generated typed dispatch.
 async-trait.workspace = true
+# Internal native engines for password, device, pairing and secret operations.
 tinysecurity = { workspace = true }
+# Wire types and confidential member contracts implemented by this module.
 tinysecurity-bus = { workspace = true }
+# TinyBus peer, invocation and confidential-call primitives used by adapters.
 tinybus = { workspace = true }
+# Generated TinyBus module entry point and SDK lifecycle integration.
 tinybus-module = { workspace = true }
+# JSON encoding for bounded encrypted-state snapshots and typed member payloads.
 serde_json = { workspace = true }
+# Serialize and deserialize the module's configuration and bus-facing records.
+serde = { workspace = true }
 # Wipe unpublished native output on every error or canceled worker join.
 zeroize.workspace = true
 # Independent opaque aliases and operation correlations; no key export.
 getrandom.workspace = true
+# Encode encrypted pairing snapshots for JSON persistence and decode legacy private-key material during migration.
+base64.workspace = true
 # Stable module-derived original-content correlation for redacted audit retries.
 sha2.workspace = true
 # Filesystem policy runs on blocking workers without blocking the module runtime.

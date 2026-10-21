@@ -39,6 +39,7 @@ pub(super) async fn verify(
         callback_names2::SECRET_BACKEND,
         callback_names2::SECRET_CIPHER_CONSUMER,
         callback_names2::KEYRING_CONSENT,
+        callback_names2::DEVICE_PAIRING_HOST,
     ]
     .into_iter()
     .collect();

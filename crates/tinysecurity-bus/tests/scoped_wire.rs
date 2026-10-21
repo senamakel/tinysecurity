@@ -87,6 +87,7 @@ fn contract_bump_is_additive_for_older_hosts_and_modules() {
     // A host built against 1.25 accepts this module and newer minors, not a 1.24 module.
     assert!(is_compatible((1, 25)));
     assert!(!is_compatible((1, 24)));
+    assert!(!is_compatible((1, 23)));
     assert!(!is_compatible((1, 22)));
     assert!(!is_compatible((1, 21)));
     assert!(!is_compatible((1, 20)));

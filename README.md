@@ -7,6 +7,10 @@ compile the transport-free `tinysecurity-bus` contract and load the isolated
 Contract 1.23 adds confidential per-frame `DeviceFrame2` calls over the live
 opaque tunnel capability issued by approved `ExecuteDevice2` work; see the
 [device contract](MODULE.md#confidential-device-handles).
+Contract 1.25 adds `DevicePairing2`, which owns the paired-device static
+identity, ciphertext-only persistence, host-attested enrollment/reconnect,
+session refresh and revocation while preserving the existing v2/v3/v4 wire;
+see the [pairing lifecycle specification](docs/specs/device-pairing-contract-1.25.md).
 Contract 1.1 also supplies immutable native [filesystem scopes](docs/specs/immutable-path-scopes.md)
 through `RegisterPathPolicy`, `ValidatePath`, `ValidateParent` and `CheckPath`.
 Contract 1.3 adds native `Redact`, `ScanPrompt` and `ScanToolDefinition`, with a
@@ -43,7 +47,7 @@ diagnostics work with disabled autonomy, which is the default.
 
 This is bootstrap infrastructure for [OpenHuman #7328](https://github.com/tinyhumansai/openhuman/issues/7328)
 and [TinySecurity #1](https://github.com/tinyhumansai/tinysecurity/issues/1).
-It does **not** complete the migration. Concrete sandbox spawning, connection pinning, Linux Secret Service and pairing challenge delivery (`Begin`/`Verify`) remain unavailable; contract 1.14 password, keyring and pairing-status members are implemented. The optional [native device handle surface](MODULE.md#confidential-device-handles) uses authenticated confidential calls and exact human/audit receipts. Reserved wire types do not advertise callable handlers.
+It does **not** complete the migration. Concrete sandbox spawning, connection pinning, Linux Secret Service and production host configuration/adapter migration remain unavailable. Contract 1.25 supplies the module-owned pairing and tunnel lifecycle; the host must provide the server-trusted controller/socket/reconnect callbacks and encrypted persistence plumbing described in its specification. The optional [native device handle surface](MODULE.md#confidential-device-handles) uses authenticated confidential calls; initial master unlock remains HumanOnly. Reserved wire types do not advertise callable handlers.
 There is no production host migration until an upstream release and checksum
 manifest exist.
 
