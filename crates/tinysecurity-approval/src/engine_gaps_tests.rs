@@ -761,6 +761,49 @@ async fn source_import_retries_only_items_missing_from_a_partial_import() -> Res
 }
 
 #[tokio::test]
+async fn expired_import_receipts_do_not_recreate_legacy_trust() -> Result<()> {
+    let fixture = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    clock.wall.store(1000, Ordering::SeqCst);
+    let first = engine(fixture.clone(), clock.clone())?;
+    first.register_scope(register(7)).await?;
+    let imported = first
+        .import_trust_source(import_tool_source(
+            7,
+            "legacy-autonomy-auto-approve",
+            "shell",
+            1,
+        ))
+        .await?;
+    assert_eq!(imported.outcome, ImportTrustOutcome2::Imported);
+
+    clock.wall.store(
+        1000 + tinysecurity_bus::TOOL_TRUST_LIFETIME_MS2 + 1,
+        Ordering::SeqCst,
+    );
+    let restarted = engine(fixture, clock)?;
+    restarted.register_scope(register(7)).await?;
+    let repeated = restarted
+        .import_trust_source(import_tool_source(
+            7,
+            "legacy-autonomy-auto-approve",
+            "shell",
+            2,
+        ))
+        .await?;
+    assert_eq!(repeated.outcome, ImportTrustOutcome2::AlreadyImported);
+    assert_eq!(repeated.request_id, imported.request_id);
+    assert!(
+        restarted
+            .list_tool_trust(tool_listing(7))
+            .await?
+            .entries
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_unlabelled_approval_dies_when_only_a_flow_grant_remains() -> Result<()> {
     let (_, owner) = owner()?;
     let mut req = register(7);
