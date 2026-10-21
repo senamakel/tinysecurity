@@ -32,6 +32,7 @@ impl HumanGrantVerifier for Human {
     }
 }
 type CapturedValue = (Zeroizing<String>, Option<Zeroizing<String>>);
+const HEX: &[u8; 16] = b"0123456789abcdef";
 #[derive(Default)]
 struct Capture {
     calls: AtomicUsize,
@@ -352,7 +353,6 @@ async fn pairing_state_cipher_keeps_plaintext_inside_module_without_host_deliver
     let decrypted = internal.decrypt(&encrypted)?;
     assert_eq!(decrypted.as_str(), r#"{"private_identity":"module-only"}"#);
     let legacy_plaintext = b"legacy device private key";
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     let legacy_hex = legacy_plaintext
         .iter()
         .enumerate()
