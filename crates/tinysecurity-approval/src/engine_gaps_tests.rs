@@ -510,18 +510,11 @@ async fn whole_tool_trust_survives_restart_and_is_exactly_scoped() -> Result<()>
     let clock = Arc::new(TestClock::default());
     clock.wall.store(1000, Ordering::SeqCst);
     let first = engine(fixture.clone(), clock.clone())?;
-    first.register_scope(register(7)).await.map_err(|error| {
-        eprintln!("register scope 7: {error:?}");
-        error
-    })?;
+    first.register_scope(register(7)).await?;
     first.register_scope(register(8)).await?;
     let granted = first
         .grant_tool(tool_grant(7, "shell", 1))
-        .await
-        .map_err(|error| {
-            eprintln!("grant shell: {error:?}");
-            error
-        })?;
+        .await?;
     assert_eq!(granted.outcome, ToolTrustOutcome2::Granted);
     assert!(granted.request_id.is_some());
     let repeated = first.grant_tool(tool_grant(7, "shell", 2)).await?;
@@ -570,10 +563,7 @@ async fn whole_tool_revocation_before_consume_revokes_queued_automatic_approval(
     owner.grant_tool(tool_grant(7, "shell", 1)).await?;
     let mut request = shell(7, None, Origin::Operator, "queued-call");
     request.audit = at(2);
-    let row = owner.begin(request.clone()).await.map_err(|error| {
-        eprintln!("begin granted call: {error:?}");
-        error
-    })?;
+    let row = owner.begin(request.clone()).await?;
     assert_eq!(row.attribution.as_deref(), Some("auto:tool-grant"));
 
     owner.revoke_tool(tool_revoke(7, "shell", 3)).await?;
@@ -627,12 +617,9 @@ async fn whole_tool_grant_fails_closed_when_the_store_cannot_persist() -> Result
         owner.grant_tool(tool_grant(7, "shell", 1)).await.err(),
         Some(Error::Unavailable)
     );
-    assert!(
-        owner
-            .list_tool_trust(tool_listing(7))
-            .await?
-            .entries
-            .is_empty()
+    assert_eq!(
+        owner.list_tool_trust(tool_listing(7)).await?.entries.len(),
+        0
     );
     Ok(())
 }
@@ -663,12 +650,9 @@ async fn whole_tool_trust_rejects_invalid_names_and_expires_with_its_generation(
     );
 
     owner.advance_generation(2)?;
-    assert!(
-        owner
-            .list_tool_trust(tool_listing(7))
-            .await?
-            .entries
-            .is_empty()
+    assert_eq!(
+        owner.list_tool_trust(tool_listing(7)).await?.entries.len(),
+        0
     );
     let mut request = shell(7, None, Origin::Operator, "new-generation");
     request.audit = AuditCorrelation2 {
@@ -793,12 +777,13 @@ async fn expired_import_receipts_do_not_recreate_legacy_trust() -> Result<()> {
         .await?;
     assert_eq!(repeated.outcome, ImportTrustOutcome2::AlreadyImported);
     assert_eq!(repeated.request_id, imported.request_id);
-    assert!(
+    assert_eq!(
         restarted
             .list_tool_trust(tool_listing(7))
             .await?
             .entries
-            .is_empty()
+            .len(),
+        0
     );
     Ok(())
 }
@@ -887,12 +872,9 @@ async fn source_import_validation_and_store_errors_fail_closed() -> Result<()> {
         Some(Error::Unavailable)
     );
     fixture.fail.store(0, Ordering::SeqCst);
-    assert!(
-        owner
-            .list_tool_trust(tool_listing(7))
-            .await?
-            .entries
-            .is_empty()
+    assert_eq!(
+        owner.list_tool_trust(tool_listing(7)).await?.entries.len(),
+        0
     );
     Ok(())
 }
