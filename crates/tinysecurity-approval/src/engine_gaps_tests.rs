@@ -688,6 +688,60 @@ async fn whole_tool_revoke_retry_reconciles_a_committed_cancellation_audit() -> 
 }
 
 #[tokio::test]
+async fn imported_flow_tool_revoke_retry_reconciles_a_committed_cancellation_audit() -> Result<()>
+{
+    let (fixture, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    let imported = owner
+        .import_trust_source(ImportTrustSourceRequest2 {
+            scope_id: id(7),
+            source_id: "legacy-flow-trust".into(),
+            source_version: "v1".into(),
+            item: ImportTrustItem2::FlowTool {
+                flow_id: "flow-imported".into(),
+                tool: "shell".into(),
+            },
+            audit: at(1),
+        })
+        .await?;
+    let request = revoke(7, "flow-imported", "shell", 2);
+
+    // The cancellation CAS succeeds, then the required terminal audit sink fails.
+    fixture.fail_cancelled_audit.store(1, Ordering::SeqCst);
+    assert_eq!(
+        owner.revoke_flow_tool(request.clone()).await.err(),
+        Some(Error::Unavailable)
+    );
+    let request_id = imported.request_id;
+    let cancelled = owner
+        .list(&id(7))
+        .await?
+        .into_iter()
+        .find(|row| row.request_id == request_id)
+        .ok_or(Error::Invalid)?;
+    assert_eq!(cancelled.state, ApprovalLifecycle2::Cancelled);
+    assert!(
+        !fixture
+            .audit_receipts
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .contains_key(&(cancelled.request_id.clone(), cancelled.version))
+    );
+
+    let retry = owner.revoke_flow_tool(request).await?;
+    assert_eq!(retry.outcome, FlowTrustOutcome2::Revoked);
+    assert_eq!(retry.request_id.as_deref(), Some(cancelled.request_id.as_str()));
+    assert!(
+        fixture
+            .audit_receipts
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .contains_key(&(cancelled.request_id.clone(), cancelled.version))
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn redacted_tool_labels_do_not_break_exact_grant_identity() -> Result<()> {
     let tool = "private-tool-label";
     let mut redactor = RedactorConfig::default();
