@@ -301,6 +301,16 @@ impl Callback {
                     "legacy-channel-b",
                     "",
                 ),
+                (DevicePairingPurpose2::UserController, "recover-lost-confirm") => (
+                    DevicePairingSource2::AuthenticatedUserController,
+                    self.state
+                        .master_alias
+                        .lock()
+                        .map_err(|_| denied())?
+                        .clone(),
+                    "fixture-channel-after-revoke",
+                    "",
+                ),
                 (DevicePairingPurpose2::LegacyImport, "legacy-import-event") => (
                     DevicePairingSource2::AuthenticatedUserController,
                     self.state
@@ -1864,8 +1874,8 @@ async fn device_pairing_roundtrip(
             (call(
                 "pair-recover-lost-confirm-response",
                 DevicePairingOperation2::Recover {
-                    channel_id: "fixture-channel-1".into(),
-                    host_event_id: "user-event".into(),
+                    channel_id: "fixture-channel-after-revoke".into(),
+                    host_event_id: "recover-lost-confirm".into(),
                 },
             ),),
         )

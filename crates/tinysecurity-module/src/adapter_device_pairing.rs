@@ -376,8 +376,13 @@ where
     let imported = owner
         .import_legacy_identities(context, identities, now)
         .map_err(|_| denied())?;
-    let snapshot = owner.snapshot_state().map_err(|_| denied())?;
-    let revision = persist_fenced(persistence, persist(snapshot)).await?;
+    let fence = PersistenceFence::new(persistence);
+    let Ok(snapshot) = owner.snapshot_state() else {
+        owner.fail_persistence();
+        return Err(denied());
+    };
+    let revision = persist(snapshot).await?;
+    fence.complete();
     Ok((imported, revision))
 }
 async fn revoke_and_persist<F, Fut>(
@@ -396,8 +401,11 @@ where
     let snapshot = owner
         .revoke(pairing_id, context, now)
         .map_err(|_| denied())?;
+    let fence = PersistenceFence::new(persistence);
     before_persist()?;
-    persist_fenced(persistence, persist(snapshot)).await
+    let revision = persist(snapshot).await?;
+    fence.complete();
+    Ok(revision)
 }
 struct ScopeRegistry {
     epochs: BTreeMap<String, u64>,
@@ -791,7 +799,9 @@ impl PairingState {
                 {
                     Ok(result) => result,
                     Err(error) => {
-                        loaded.owner.fail_persistence();
+                        if loaded.persistence_faulted.load(Ordering::Acquire) {
+                            loaded.owner.fail_persistence();
+                        }
                         return Err(error);
                     }
                 };
