@@ -131,7 +131,11 @@ impl Engine {
         // pushing the scope far past its margin, so it is never locked out.
         let known = rows
             .iter()
-            .any(|r| r.attribution.as_deref() == Some(ATTRIBUTION) && r.binding.call_sha256 == key);
+            .any(|row| {
+                is_trust_row(row)
+                    && row.binding.content_sha256 == key
+                    && row.tool_name == request.tool
+            });
         if rows.len() >= MAX_SCOPE_ROWS && !known {
             return Err(Error::Unavailable);
         }

@@ -103,7 +103,7 @@ impl Engine {
             });
         }
         let known = rows.iter().any(|row| {
-            row.attribution.as_deref() == Some(ATTRIBUTION) && row.binding.call_sha256 == key
+            is_trust_row(row) && row.binding.content_sha256 == key && row.tool_name == request.tool
         });
         if rows.len() >= MAX_SCOPE_ROWS && !known {
             return Err(Error::Unavailable);
