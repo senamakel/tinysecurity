@@ -13,15 +13,16 @@ use tinysecurity_bus::{
 };
 
 const ATTRIBUTION: &str = "tool-trust-grant";
+pub(super) const IMPORT_ATTRIBUTION: &str = "tool-trust-import";
 const MAX_SCOPE_ROWS: usize = 960;
 
 /// Digest of an exact tool name, disjoint from call and flow trust bindings.
-fn trust_key(tool: &str) -> String {
+pub(super) fn trust_key(tool: &str) -> String {
     binding::digest(b"tinysecurity/tool-trust/v1\0", tool.as_bytes())
 }
 
-fn is_trust_row(row: &ApprovalRow2) -> bool {
-    row.attribution.as_deref() == Some(ATTRIBUTION)
+pub(super) fn is_trust_row(row: &ApprovalRow2) -> bool {
+    matches!(row.attribution.as_deref(), Some(ATTRIBUTION | IMPORT_ATTRIBUTION))
         && row.choice == Some(ApprovalChoice2::Tool)
         && row.state == ApprovalLifecycle2::Approved
         && row.decision_ticket_sha256.is_none()
@@ -57,7 +58,7 @@ impl Engine {
         })
     }
 
-    fn live_tool_trust<'a>(
+    pub(super) fn live_tool_trust<'a>(
         reg: &ApprovalScope2,
         rows: &'a [ApprovalRow2],
         key: &str,

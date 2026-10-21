@@ -18,13 +18,14 @@ use tinysecurity_bus::{
 };
 
 const ATTRIBUTION: &str = "flow-trust-grant";
+pub(super) const IMPORT_ATTRIBUTION: &str = "flow-trust-import";
 
 /// Rows a scope may hold before a new grant is refused, below the 1024 the module's
 /// load contract accepts so ordinary approvals keep a margin.
 const MAX_SCOPE_ROWS: usize = 960;
 
 /// Digest of the exact `(flow, tool)` pair, domain-separated from every call digest.
-fn trust_key(flow_id: &str, tool: &str) -> String {
+pub(super) fn trust_key(flow_id: &str, tool: &str) -> String {
     let mut bytes = Vec::with_capacity(flow_id.len() + tool.len() + 8);
     bytes.extend_from_slice(&(flow_id.len() as u64).to_be_bytes());
     bytes.extend_from_slice(flow_id.as_bytes());
@@ -32,8 +33,8 @@ fn trust_key(flow_id: &str, tool: &str) -> String {
     binding::digest(b"tinysecurity/flow-trust/v1\0", &bytes)
 }
 
-fn is_trust_row(row: &ApprovalRow2) -> bool {
-    row.attribution.as_deref() == Some(ATTRIBUTION)
+pub(super) fn is_trust_row(row: &ApprovalRow2) -> bool {
+    matches!(row.attribution.as_deref(), Some(ATTRIBUTION | IMPORT_ATTRIBUTION))
         && row.choice == Some(ApprovalChoice2::Flow)
         && row.state == ApprovalLifecycle2::Approved
         && row.decision_ticket_sha256.is_none()
@@ -63,7 +64,7 @@ impl Engine {
         })
     }
 
-    fn live_trust<'a>(
+    pub(super) fn live_trust<'a>(
         reg: &ApprovalScope2,
         rows: &'a [ApprovalRow2],
         key: &str,
@@ -80,7 +81,7 @@ impl Engine {
     /// Whether a flow and a tool name could ever name a grant: the flow may be as
     /// long as a caller's flow identity (1024 bytes), the tool follows the shared
     /// grant-name rules.
-    fn trust_pair_valid(flow_id: &str, tool: &str) -> bool {
+    pub(super) fn trust_pair_valid(flow_id: &str, tool: &str) -> bool {
         !flow_id.trim().is_empty()
             && flow_id.len() <= 1024
             && !flow_id.chars().any(char::is_control)

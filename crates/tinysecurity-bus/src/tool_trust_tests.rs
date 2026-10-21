@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use serde_json::json;
 
 #[test]
 fn whole_tool_trust_payloads_have_stable_wire_shapes() {
@@ -32,5 +33,21 @@ fn whole_tool_trust_payloads_have_stable_wire_shapes() {
         })
         .unwrap(),
         json!({"scope_id": "scope", "outcome": "unchanged", "request_id": "request"})
+    );
+}
+
+#[test]
+fn source_trust_import_items_keep_exact_tagged_wire_shapes() {
+    let tool = ImportTrustItem2::Tool {
+        tool: "search".into(),
+    };
+    let flow = ImportTrustItem2::FlowTool {
+        flow_id: "flow-1".into(),
+        tool: "search".into(),
+    };
+    assert_eq!(serde_json::to_value(tool).ok(), Some(json!({"kind":"tool", "tool":"search"})));
+    assert_eq!(
+        serde_json::to_value(flow).ok(),
+        Some(json!({"kind":"flow_tool", "flow_id":"flow-1", "tool":"search"}))
     );
 }
