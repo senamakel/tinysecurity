@@ -106,13 +106,18 @@ impl Ports for Fixture {
         NativeAuditAcknowledgement::from_verified_sink(row, expected_scope, receipt)
     }
     async fn load(&self, r: ApprovalLoadRequest2) -> Result<ApprovalLoadResponse2> {
+        let requested_scope = r.scope.clone();
         let response = ApprovalLoadResponse2 {
-            scope: r.scope.clone(),
+            scope: requested_scope.clone(),
             records: self
                 .rows
                 .lock()
                 .map_err(|_| Error::Unavailable)?
                 .values()
+                .filter(|record| {
+                    serde_json::from_str::<ApprovalRow2>(&record.record_json)
+                        .is_ok_and(|row| row.binding.scope == requested_scope)
+                })
                 .cloned()
                 .collect(),
         };
