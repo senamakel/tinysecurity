@@ -1297,16 +1297,18 @@ impl Engine {
         }
     }
     /// Atomically replace the posture, grants or policy reference of a live scope.
+    /// Replacement waits for any in-flight whole-tool trust mutation to finish.
     /// The subject and, for runtime scopes, the audit stream cannot change. Pending
     /// rows bound to a different `policy_ref` stop being decidable, which is the
     /// intended invalidation.
     /// # Errors
     /// Rejects unknown scopes, a changed subject or stream, and invalid input.
-    pub fn replace_scope(
+    pub async fn replace_scope(
         &self,
         request: RegisterApprovalScopeRequest2,
     ) -> Result<ApprovalScopeReceipt2> {
         self.validate_runtime(&request)?;
+        let _tool_trust = self.tool_trust_lock.lock().await;
         let report = request.report_handle;
         let candidate = ScopeEntry::runtime(request);
         let mut scopes = self.scopes.write().map_err(|_| Error::Unavailable)?;

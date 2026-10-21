@@ -819,6 +819,46 @@ async fn whole_tool_trust_fails_closed_when_the_store_cannot_be_loaded() -> Resu
 }
 
 #[tokio::test]
+async fn whole_tool_trust_serializes_scope_replacement_while_loading_rows() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    fixture.pause_load.store(1, Ordering::SeqCst);
+
+    let owner = Arc::new(owner);
+    let granting_owner = owner.clone();
+    let grant =
+        tokio::spawn(async move { granting_owner.grant_tool(tool_grant(7, "shell", 1)).await });
+    fixture.loaded.notified().await;
+
+    let replacing_owner = owner.clone();
+    let replace = tokio::spawn(async move {
+        let mut request = register(7);
+        request.scope.policy_ref = "runtime-policy-v2".into();
+        replacing_owner.replace_scope(request).await
+    });
+    tokio::task::yield_now().await;
+    assert!(!replace.is_finished());
+
+    fixture.release_load.notify_one();
+    assert_eq!(
+        grant.await.map_err(|_| Error::Unavailable)??.outcome,
+        ToolTrustOutcome2::Granted
+    );
+    assert_eq!(
+        replace.await.map_err(|_| Error::Unavailable)??.outcome,
+        ApprovalScopeOutcome2::Replaced
+    );
+    assert!(
+        owner
+            .list_tool_trust(tool_listing(7))
+            .await?
+            .entries
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn source_import_retries_only_items_missing_from_a_partial_import() -> Result<()> {
     let (fixture, owner) = owner()?;
     owner.register_scope(register(7)).await?;
@@ -1062,7 +1102,7 @@ async fn an_unlabelled_approval_dies_when_only_a_flow_grant_remains() -> Result<
     assert_eq!(row.attribution.as_deref(), Some("auto:tool-grant"));
     // The whole-tool grant is replaced by a flow grant for the same tool and flow.
     req.grants = grants(&[], &[("flow-1", "shell")]);
-    owner.replace_scope(req)?;
+    owner.replace_scope(req).await?;
     let consumption = ApprovalActionRequest2 {
         scope_id: id(7),
         request_id: row.request_id,

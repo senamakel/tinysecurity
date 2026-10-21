@@ -1122,7 +1122,10 @@ impl PolicyService {
             .approvals
             .as_ref()
             .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?;
-        std::future::ready(engine.replace_scope(request).map_err(approval_failure)).await
+        engine
+            .replace_scope(request)
+            .await
+            .map_err(approval_failure)
     }
     async fn retire_approval_scope2(
         &self,
