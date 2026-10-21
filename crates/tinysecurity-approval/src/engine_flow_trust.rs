@@ -129,13 +129,13 @@ impl Engine {
         // so a long-lived grant never takes the last slot of a full scope.
         // A pair that already has a record (revoked or expired) renews without
         // pushing the scope far past its margin, so it is never locked out.
-        let known = rows
-            .iter()
-            .any(|row| {
-                is_trust_row(row)
-                    && row.binding.content_sha256 == key
-                    && row.tool_name == request.tool
-            });
+        let known = rows.iter().any(|row| {
+            matches!(
+                row.attribution.as_deref(),
+                Some(ATTRIBUTION | IMPORT_ATTRIBUTION)
+            ) && row.binding.content_sha256 == key
+                && row.tool_name == request.tool
+        });
         if rows.len() >= MAX_SCOPE_ROWS && !known {
             return Err(Error::Unavailable);
         }

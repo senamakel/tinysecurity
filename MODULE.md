@@ -387,6 +387,9 @@ automatic one attributed `auto:flow-grant`.
 Contract 1.25 adds durable whole-tool trust through `GrantTool2`, `RevokeTool2` and
 `ListToolTrust2`. Its Standard-scope eligibility and lifecycle rules are in
 [`docs/specs/durable-tool-trust.md`](docs/specs/durable-tool-trust.md).
+The private host-only `ImportTrustSource2` records one durable source/item receipt
+alongside its imported trust row, so retries after partial migration or revocation
+cannot restore legacy authority.
 
 ### Scored prompt screening: `ScanPrompt2`
 

@@ -19,7 +19,10 @@ Contract 1.22 adds policy and egress gap members: `CheckPaths2` (batch path chec
 
 Contract 1.25 adds durable whole-tool trust (`GrantTool2`, `RevokeTool2` and
 `ListToolTrust2`), persisted and audited through the approval store. See the
-[whole-tool trust spec](docs/specs/durable-tool-trust.md).
+[whole-tool trust spec](docs/specs/durable-tool-trust.md). The private
+`ImportTrustSource2` host member adds import-once receipts for legacy whole-tool
+and flow-tool grants, retained after revocation so partial migration retries cannot
+restore removed authority.
 
 Contract 1.6 supplies `Audit2`, `EvaluateAudited2` and `CheckAudited2` with
 authenticated exact audit callbacks and a bounded [native journal](crates/tinysecurity-audit/README.md).
