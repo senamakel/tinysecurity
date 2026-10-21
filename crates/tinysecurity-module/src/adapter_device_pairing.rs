@@ -37,6 +37,16 @@ fn validate_logout_context(
     }
     Ok(())
 }
+fn validate_unlock_context(
+    context: &DevicePairingContextResponse2,
+    generation: u64,
+    now: Time,
+) -> tinybus::Result<()> {
+    if context.generation != generation || context.expires_at_ms <= now.wall {
+        return Err(denied());
+    }
+    Ok(())
+}
 fn valid_persistence_backend_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
 }
@@ -118,8 +128,15 @@ fn decode_state(
     ciphertext: &[u8],
     scope: &tinysecurity_bus::DevicePairingScope2,
 ) -> tinybus::Result<Zeroizing<Vec<u8>>> {
+    decode_state_with(ciphertext, scope, |text| cipher.decrypt(text))
+}
+fn decode_state_with(
+    ciphertext: &[u8],
+    scope: &tinysecurity_bus::DevicePairingScope2,
+    decrypt: impl FnOnce(&str) -> tinybus::Result<Zeroizing<String>>,
+) -> tinybus::Result<Zeroizing<Vec<u8>>> {
     let text = std::str::from_utf8(ciphertext).map_err(|_| denied())?;
-    let plaintext = cipher.decrypt(text).map_err(|_| denied())?;
+    let plaintext = decrypt(text).map_err(|_| denied())?;
     let envelope: StateEnvelope = serde_json::from_str(&plaintext).map_err(|_| denied())?;
     if envelope.version != 1
         || envelope.scope_id != scope.scope_id
@@ -635,6 +652,11 @@ impl PairingState {
         &self,
         context: &DevicePairingContextResponse2,
     ) -> tinybus::Result<Arc<tokio::sync::Mutex<LoadedScope>>> {
+        validate_unlock_context(
+            context,
+            self.generation.load(Ordering::Acquire),
+            time(self.clock.as_ref())?,
+        )?;
         let (epoch, existing) = {
             let scopes = self.scopes.lock().map_err(|_| denied())?;
             let epoch = *scopes.epochs.get(&context.scope_id).ok_or_else(denied)?;
@@ -1229,10 +1251,19 @@ impl PairingState {
         let loaded = self.loaded_scope(&context.scope_id)?;
         let mut loaded = loaded.lock().await;
         self.validate_live_scope(&mut loaded, &context)?;
-        let expiry = loaded
+        let expiry = match loaded
             .owner
             .refresh_session(&session_id, &context, time(self.clock.as_ref())?)
-            .map_err(|_| denied())?;
+        {
+            Ok(expiry) => expiry,
+            Err(_) => {
+                loaded.owner.retire_session(&session_id);
+                self.registry
+                    .retire_paired_tunnel(&session_id)
+                    .map_err(|_| denied())?;
+                return Err(denied());
+            }
+        };
         if self
             .registry
             .refresh_paired_tunnel_with_clock(
