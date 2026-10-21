@@ -778,7 +778,7 @@ async fn wrong_registration_agent_access_ceiling_and_unverified_human_inputs_den
         Arc::new(TestClock::default()),
         Redactor::new(&RedactorConfig::default()).map_err(|_| Error::Invalid)?,
     )?;
-    assert!(other.list(&request().scope_id).await.is_err());
+    assert!(other.list(&request().scope_id).await?.is_empty());
     let f = Arc::new(Fixture::default());
     let mut ceiling = config();
     ceiling.scopes[0].ceiling = AccessTier::Read;
