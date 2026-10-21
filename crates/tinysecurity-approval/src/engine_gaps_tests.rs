@@ -848,12 +848,9 @@ async fn whole_tool_trust_serializes_scope_replacement_while_loading_rows() -> R
         replace.await.map_err(|_| Error::Unavailable)??.outcome,
         ApprovalScopeOutcome2::Replaced
     );
-    assert!(
-        owner
-            .list_tool_trust(tool_listing(7))
-            .await?
-            .entries
-            .is_empty()
+    assert_eq!(
+        owner.list_tool_trust(tool_listing(7)).await?.entries,
+        Vec::new()
     );
     Ok(())
 }
