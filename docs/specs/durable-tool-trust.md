@@ -1,6 +1,6 @@
 # Durable whole-tool trust
 
-Contract 1.25 gives the authenticated host three approval members:
+Contract 1.26 gives the authenticated host three approval members:
 `GrantTool2`, `RevokeTool2` and `ListToolTrust2`. The private host-only
 `ImportTrustSource2` member records legacy migration receipts. Each request is bound to a
 registered `scope_id`; tool names are exact and never pattern-matched. The host
@@ -16,8 +16,9 @@ reviewed decision.
 
 Granting a live tool again returns `unchanged`; revoking a missing or expired
 grant returns `absent`. Both operations are serialized per scope, and a scope
-with at least 960 approval rows refuses a new grant unless it renews a known
-tool row. Listing returns only live grants, ordered by exact tool name. Names
+with at least 960 approval rows refuses any new grant row, including a renewed
+revoked or expired tool. A still-live repeat remains `unchanged` without adding
+a row. Listing returns only live grants, ordered by exact tool name. Names
 must be nonblank, contain no control characters, fit within 256 bytes, and must
 not name a human-only or `native_*` tool.
 

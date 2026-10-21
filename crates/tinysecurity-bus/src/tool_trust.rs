@@ -1,4 +1,4 @@
-//! Durable whole-tool trust and imported-source receipts (contract 1.25).
+//! Durable whole-tool trust and imported-source receipts (contract 1.26).
 //!
 //! A host can grant, revoke and list an exact tool grant through the authenticated
 //! approval interface. Grants live as audited approval-store rows under one

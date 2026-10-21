@@ -339,7 +339,7 @@ cannot bind the call answers an error, never an allow. Latency budgets are per c
 
 <a id="approval-origin-classes-durable-flow-trust-and-scored-prompt-screening-contract-122"></a>
 
-## Approval origin classes, durable trust and scored prompt screening (contracts 1.22 and 1.25)
+## Approval origin classes, durable trust and scored prompt screening (contracts 1.22 and 1.26)
 
 Additive: every new member and enum value is absent from a 1.21 host's traffic, and a 1.22 host
 refuses a 1.21 module.
@@ -378,7 +378,8 @@ automatic one attributed `auto:flow-grant`.
   Grants and revocations of a scope are serialized, so one pair has one live row.
 - The row is bound to the scope's subject, policy reference and generation, like every durable
   grant: advancing the generation or replacing the policy reference makes it stale. It lives ten
-  years (`FLOW_TRUST_LIFETIME_MS2`); a later grant of the same pair renews an expired row.
+  years (`FLOW_TRUST_LIFETIME_MS2`); a later grant of the same pair renews an expired row only
+  while the scope has capacity below 960 rows.
 - A human-only or native tool, a blank or control-character name and an oversized name are
   refused. A trust never overrides a denial, a Cron external effect or a human-only tool. An
   approval it produced is re-checked at consumption, so revoking the trust first revokes it.
@@ -387,7 +388,7 @@ automatic one attributed `auto:flow-grant`.
 - Latency budget: one `Load` plus one `Cas` and one audit append, so the host's store latency plus
   about 1 ms. `ListFlowTrust2` is one `Load`.
 
-Contract 1.25 adds durable whole-tool trust through `GrantTool2`, `RevokeTool2` and
+Contract 1.26 adds durable whole-tool trust through `GrantTool2`, `RevokeTool2` and
 `ListToolTrust2`. Its Standard-scope eligibility and lifecycle rules are in
 [`docs/specs/durable-tool-trust.md`](docs/specs/durable-tool-trust.md).
 The private host-only `ImportTrustSource2` records one durable source/item receipt
