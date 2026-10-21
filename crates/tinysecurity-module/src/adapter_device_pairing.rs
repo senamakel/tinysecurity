@@ -128,7 +128,9 @@ fn decode_state(
     ciphertext: &[u8],
     scope: &tinysecurity_bus::DevicePairingScope2,
 ) -> tinybus::Result<Zeroizing<Vec<u8>>> {
-    decode_state_with(ciphertext, scope, |text| cipher.decrypt(text))
+    decode_state_with(ciphertext, scope, |text| {
+        cipher.decrypt(text).map_err(|_| denied())
+    })
 }
 fn decode_state_with(
     ciphertext: &[u8],
@@ -148,6 +150,14 @@ fn decode_state_with(
     let state = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &envelope.state)
         .map_err(|_| denied())?;
     Ok(Zeroizing::new(state))
+}
+fn finish_refresh<T>(
+    result: tinybus::Result<T>,
+    _owner: &mut DevicePairingOwner,
+    _registry: &Registry,
+    _session_id: &str,
+) -> tinybus::Result<T> {
+    result.map_err(|_| denied())
 }
 
 struct HostCallbacks {
@@ -1246,10 +1256,15 @@ impl PairingState {
         let loaded = self.loaded_scope(&context.scope_id)?;
         let mut loaded = loaded.lock().await;
         self.validate_live_scope(&mut loaded, &context)?;
-        let expiry = loaded
-            .owner
-            .refresh_session(&session_id, &context, time(self.clock.as_ref())?)
-            .map_err(|_| denied())?;
+        let expiry = finish_refresh(
+            loaded
+                .owner
+                .refresh_session(&session_id, &context, time(self.clock.as_ref())?)
+                .map_err(|_| denied()),
+            &mut loaded.owner,
+            &self.registry,
+            &session_id,
+        )?;
         if self
             .registry
             .refresh_paired_tunnel_with_clock(

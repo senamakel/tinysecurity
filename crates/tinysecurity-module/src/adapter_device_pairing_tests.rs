@@ -167,6 +167,55 @@ fn controller(channel: &str) -> tinysecurity_bus::DevicePairingContextResponse2 
     }
 }
 
+#[test]
+fn unlock_rejects_agent_context_even_when_scope_is_already_loaded() {
+    let mut context = controller("agent-unlock");
+    context.source = tinysecurity_bus::DevicePairingSource2::Agent;
+    assert!(validate_unlock_context(
+        &context,
+        1,
+        Time {
+            wall: 1001,
+            monotonic: 1001,
+        },
+    )
+    .is_err());
+}
+
+#[test]
+fn plaintext_pairing_snapshot_is_rejected() {
+    let scope = tinysecurity_bus::DevicePairingScope2 {
+        scope_id: SCOPE_ID.into(),
+        secret_registration_id: "abcdef0123456789abcdef0123456789".into(),
+        persistence_backend_id: "user-secret-store".into(),
+        legacy_device_backend_id: None,
+        legacy_source_registration_id: None,
+    };
+    let plaintext = serde_json::json!({
+        "version": 1,
+        "scope_id": SCOPE_ID,
+        "backend_id": "user-secret-store",
+        "secret_registration_id": "abcdef0123456789abcdef0123456789",
+        "state": ""
+    })
+    .to_string();
+    assert!(decode_state_with(plaintext.as_bytes(), &scope, |text| {
+        Ok(Zeroizing::new(text.to_owned()))
+    })
+    .is_err());
+}
+
+#[test]
+fn failed_refresh_retires_the_paired_tunnel() -> TestResult {
+    let registry = registry_with_frame()?;
+    assert!(frame_seal(&registry));
+    let mut owner = owner()?;
+    let result = finish_refresh::<()>(Err(denied()), &mut owner, &registry, FRAME_HANDLE);
+    assert!(result.is_err());
+    assert!(!frame_seal(&registry));
+    Ok(())
+}
+
 fn import_one(
     owner: &mut DevicePairingOwner,
     channel: &str,
