@@ -232,7 +232,7 @@ async fn whole_tool_trust_survives_a_module_restart_and_is_revoked_before_consum
             },),
         )
         .await?;
-    assert!(listed.entries.is_empty());
+    assert_eq!(listed.entries.len(), 0);
     second.broker.abort();
     Ok(())
 }
@@ -257,7 +257,7 @@ async fn imported_trust_stays_revoked_after_restart_and_reimport() -> TestResult
     Ok(())
 }
 
-fn import_request(source_id: &str, item: serde_json::Value, sequence: u64) -> serde_json::Value {
+fn import_request(source_id: &str, item: &serde_json::Value, sequence: u64) -> serde_json::Value {
     serde_json::json!({
         "scope_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "source_id": source_id,
@@ -284,7 +284,7 @@ async fn import_legacy_sources(proxy: &tinybus::Proxy) -> TestResult {
         let receipt: serde_json::Value = proxy
             .call(
                 "ImportTrustSource2",
-                (import_request(source, item, sequence),),
+                (import_request(source, &item, sequence),),
             )
             .await?;
         assert_eq!(receipt["outcome"], "imported");
@@ -336,7 +336,7 @@ async fn reimport_keeps_revocations(proxy: &tinybus::Proxy) -> TestResult {
         let receipt: serde_json::Value = proxy
             .call(
                 "ImportTrustSource2",
-                (import_request(source, item, sequence),),
+                (import_request(source, &item, sequence),),
             )
             .await?;
         assert_eq!(receipt["outcome"], "already_imported");
