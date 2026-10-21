@@ -271,7 +271,7 @@ fn clock_rollback_retires_every_tunnel_in_the_scope() -> TestResult {
         },
     );
     assert!(result.is_err());
-    assert!(finish_refresh(result, &mut owner, &registry, FRAME_HANDLE).is_err());
+    assert!(finish_refresh(result.map_err(|_| denied()), &mut owner, &registry, FRAME_HANDLE).is_err());
     assert!(!frame_seal_handle(&registry, FRAME_HANDLE));
     assert!(!frame_seal_handle(&registry, SECOND_FRAME_HANDLE));
     Ok(())
