@@ -652,11 +652,6 @@ impl PairingState {
         &self,
         context: &DevicePairingContextResponse2,
     ) -> tinybus::Result<Arc<tokio::sync::Mutex<LoadedScope>>> {
-        validate_unlock_context(
-            context,
-            self.generation.load(Ordering::Acquire),
-            time(self.clock.as_ref())?,
-        )?;
         let (epoch, existing) = {
             let scopes = self.scopes.lock().map_err(|_| denied())?;
             let epoch = *scopes.epochs.get(&context.scope_id).ok_or_else(denied)?;
@@ -1251,19 +1246,10 @@ impl PairingState {
         let loaded = self.loaded_scope(&context.scope_id)?;
         let mut loaded = loaded.lock().await;
         self.validate_live_scope(&mut loaded, &context)?;
-        let expiry = match loaded
+        let expiry = loaded
             .owner
             .refresh_session(&session_id, &context, time(self.clock.as_ref())?)
-        {
-            Ok(expiry) => expiry,
-            Err(_) => {
-                loaded.owner.retire_session(&session_id);
-                self.registry
-                    .retire_paired_tunnel(&session_id)
-                    .map_err(|_| denied())?;
-                return Err(denied());
-            }
-        };
+            .map_err(|_| denied())?;
         if self
             .registry
             .refresh_paired_tunnel_with_clock(
