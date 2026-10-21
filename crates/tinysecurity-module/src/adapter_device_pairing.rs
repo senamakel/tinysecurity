@@ -42,7 +42,10 @@ fn validate_unlock_context(
     generation: u64,
     now: Time,
 ) -> tinybus::Result<()> {
-    if context.generation != generation || context.expires_at_ms <= now.wall {
+    if context.source != tinysecurity_bus::DevicePairingSource2::AuthenticatedUserController
+        || context.generation != generation
+        || context.expires_at_ms <= now.wall
+    {
         return Err(denied());
     }
     Ok(())
@@ -138,6 +141,9 @@ fn decode_state_with(
     decrypt: impl FnOnce(&str) -> tinybus::Result<Zeroizing<String>>,
 ) -> tinybus::Result<Zeroizing<Vec<u8>>> {
     let text = std::str::from_utf8(ciphertext).map_err(|_| denied())?;
+    if !text.starts_with("enc2:") {
+        return Err(denied());
+    }
     let plaintext = decrypt(text).map_err(|_| denied())?;
     let envelope: StateEnvelope = serde_json::from_str(&plaintext).map_err(|_| denied())?;
     if envelope.version != 1
@@ -153,11 +159,20 @@ fn decode_state_with(
 }
 fn finish_refresh<T>(
     result: tinybus::Result<T>,
-    _owner: &mut DevicePairingOwner,
-    _registry: &Registry,
-    _session_id: &str,
+    owner: &mut DevicePairingOwner,
+    registry: &Registry,
+    session_id: &str,
 ) -> tinybus::Result<T> {
-    result.map_err(|_| denied())
+    match result {
+        Ok(value) => Ok(value),
+        Err(_) => {
+            owner.retire_session(session_id);
+            registry
+                .retire_paired_tunnel(session_id)
+                .map_err(|_| denied())?;
+            Err(denied())
+        }
+    }
 }
 
 struct HostCallbacks {
@@ -662,6 +677,11 @@ impl PairingState {
         &self,
         context: &DevicePairingContextResponse2,
     ) -> tinybus::Result<Arc<tokio::sync::Mutex<LoadedScope>>> {
+        validate_unlock_context(
+            context,
+            self.generation.load(Ordering::Acquire),
+            time(self.clock.as_ref())?,
+        )?;
         let (epoch, existing) = {
             let scopes = self.scopes.lock().map_err(|_| denied())?;
             let epoch = *scopes.epochs.get(&context.scope_id).ok_or_else(denied)?;
