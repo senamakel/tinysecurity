@@ -19,6 +19,7 @@ docs/
   describing its behavior, public surface, invariants, and acceptance criteria.
 - **[`module-crypto.md`](module-crypto.md)** — confidential device, master, cipher, password, keyring and pairing members of the TinySecurity module contract.
 - **[`module-subject-policies.md`](module-subject-policies.md)** — registered subject policy members and their generation-bound authorization rules.
+- **[`specs/browser-dial-contract-1.26.md`](specs/browser-dial-contract-1.26.md)** — destination-only, one-use socket authorization for opaque browser traffic.
 - **[`plans/`](plans/README.md)** — implementation-ordered, test-first steps for
   delivering an approved specification. Plans name exact files and verification
   commands, and are updated as the work progresses.

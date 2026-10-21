@@ -75,6 +75,8 @@ fn new_members_are_advertised_and_named_by_contract_constants() {
         names::methods::EVALUATE_SCOPED_AUDITED,
         names::methods::CHECK_SCOPED_AUDITED,
         names::methods::DEVICE_FRAME2,
+        names::methods::AUTHORIZE_BROWSER_DIAL,
+        names::methods::CONSUME_BROWSER_DIAL,
     ] {
         assert!(names::METHODS.contains(&name), "{name}");
     }
@@ -83,9 +85,9 @@ fn new_members_are_advertised_and_named_by_contract_constants() {
 
 #[test]
 fn contract_bump_is_additive_for_older_hosts_and_modules() {
-    assert_eq!(CONTRACT_VERSION, (1, 25));
-    // A host built against 1.25 accepts this module and newer minors, not a 1.24 module.
-    assert!(is_compatible((1, 25)));
+    assert_eq!(CONTRACT_VERSION, (1, 26));
+    // A host built against 1.26 accepts this module and newer minors, not a 1.25 module.
+    assert!(is_compatible((1, 26)));
     assert!(!is_compatible((1, 23)));
     assert!(!is_compatible((1, 22)));
     assert!(!is_compatible((1, 21)));

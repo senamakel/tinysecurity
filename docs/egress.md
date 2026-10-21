@@ -59,6 +59,16 @@ is made that current host transports consume this contract. Browser and proxy
 routes without verified per-hop target enforcement deny. Redirects require a
 fresh scoped check; a previous URL string cannot grant authority.
 
+Contract 1.26 adds `AuthorizeBrowserDial` / `ConsumeBrowserDial` for the
+browser's opaque CONNECT transport. The host explicitly classifies these
+connections as `opaque_browser_traffic`; the method carries only destination
+scheme, canonical hostname and port, never a fabricated HTTP method, body or
+header fingerprint. The address set, scope, generation, deadline and one-use
+nonce are consumed for one exact `SocketAddr` immediately before dialing.
+`Sensitive` and `LocalOnly` modes refuse opaque browser traffic. This grants no
+HTTP payload approval and does not prove that a transport consumed the grant;
+TinyComputer must enforce the proxy and pin the actual socket itself.
+
 Sibling tests inject clocks/resolvers without third-party services. Test-only
 HTTP/TLS executors use locally constructed fixture grants (never production
 floor exemptions), retain the original hostname and nondefault port, perform no
