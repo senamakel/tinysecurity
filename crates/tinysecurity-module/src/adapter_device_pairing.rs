@@ -913,7 +913,8 @@ impl PairingState {
                     )
                     .is_err()
                 {
-                    loaded.owner.fail_persistence();
+                    revision.fail(&mut loaded.owner);
+                    loaded.pending_master_aliases.clear();
                     return Err(denied());
                 }
                 if let Err(error) = self.validate_live_scope(&mut loaded, &context) {
