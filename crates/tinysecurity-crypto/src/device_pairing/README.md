@@ -40,6 +40,12 @@ removes the pairing and its dependent sessions and records a tombstone for every
 historical channel so reimporting legacy channel data cannot resurrect it. State merges use the host persistence revision
 and refuse stale writes or capacity overflow.
 
+The adapter retains a persistence fence through post-store authority checks and
+session publication. Cancellation or failure after mutation faults the loaded
+scope and retires all its paired frame handles, even when Store may have
+committed. Lock followed by a new authenticated Unlock reloads the durable
+snapshot; the faulted live owner cannot continue with a stale CAS revision.
+
 Legacy import is optional and bound to an init-time backend and source
 registration. The host callback returns bounded channel-specific ciphertext;
 the adapter decrypts it with its retained user-master cipher and the crypto
