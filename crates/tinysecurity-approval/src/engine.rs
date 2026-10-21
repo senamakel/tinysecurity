@@ -486,10 +486,7 @@ impl Engine {
         let reg = self.registered(&entry);
         let (bound, args_redacted, external_effect) =
             binding::original(&reg, &request.request, &self.redactor()?)?;
-        let raw_rule = tinysecurity_auto::rules::evaluate(&reg, &bound.origin, external_effect);
-        if raw_rule == tinysecurity_auto::rules::Rule::Deny {
-            return Err(Error::Denied);
-        }
+        Self::reject_raw_deny(&reg, &bound.origin, external_effect)?;
         let now = self.now()?;
         let ttl = match bound.origin {
             Origin::Copilot | Origin::SubAgent => 180_000,
@@ -602,6 +599,14 @@ impl Engine {
         let durable_tool = Self::durable_tool_trust(reg, &rows, &request.request.call.tool, now);
         let rule = Self::origin_rule(entry, reg, origin, request, external_effect, durable_tool)?;
         Ok((rows, rule))
+    }
+    fn reject_raw_deny(reg: &ApprovalScope2, origin: &Origin, external_effect: bool) -> Result<()> {
+        if tinysecurity_auto::rules::evaluate(reg, origin, external_effect)
+            == tinysecurity_auto::rules::Rule::Deny
+        {
+            return Err(Error::Denied);
+        }
+        Ok(())
     }
     /// The judge never qualifies a human-only tool, however the tool is named.
     fn judge_barred(tool: &str) -> bool {
