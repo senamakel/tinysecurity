@@ -294,6 +294,221 @@ fn renewal_requires_same_static_key_and_fresh_context() {
 }
 
 #[test]
+fn renewal_is_rejected_when_its_future_revocation_would_overflow_state() {
+    let mut owner = owner();
+    let device = KeyPair::generate().unwrap();
+    let (receipt, _, _) = owner
+        .begin(
+            &context(
+                DevicePairingSource2::AuthenticatedUserController,
+                "channel-a",
+                "nonce-a",
+                10_000,
+            ),
+            5_000,
+            time(1_000),
+        )
+        .unwrap();
+    let (client, _) = start_handshake(&mut owner, &receipt, "channel-a", "nonce-a", &device, 1_001);
+    let prepared = owner
+        .prepare_confirmation(
+            &receipt,
+            &context(
+                DevicePairingSource2::RegisteredSocket,
+                "channel-a",
+                "nonce-a",
+                10_000,
+            ),
+            &client.seal(b"initial proof").unwrap(),
+            time(1_003),
+        )
+        .unwrap();
+    let paired = owner.commit_confirmation(prepared, time(1_004)).unwrap();
+
+    // Build enough legitimate channel history that converting each retained channel
+    // to its standalone tombstone is larger than the active record representation.
+    for index in 0..8 {
+        let now = 1_005 + index * 3;
+        let channel = format!("channel-{index}");
+        let nonce = format!("nonce-{index}");
+        let (renewal, _, _) = owner
+            .renew(
+                &paired.pairing_id,
+                &context(
+                    DevicePairingSource2::BackendReconnect,
+                    &channel,
+                    &nonce,
+                    30_000,
+                ),
+                5_000,
+                time(now),
+            )
+            .unwrap();
+        let (tunnel, _) = start_handshake(&mut owner, &renewal, &channel, &nonce, &device, now + 1);
+        let prepared = owner
+            .prepare_confirmation(
+                &renewal,
+                &context(
+                    DevicePairingSource2::RegisteredSocket,
+                    &channel,
+                    &nonce,
+                    30_000,
+                ),
+                &tunnel.seal(b"renewal proof").unwrap(),
+                time(now + 2),
+            )
+            .unwrap();
+        owner.commit_confirmation(prepared, time(now + 3)).unwrap();
+    }
+
+    let second_key = KeyPair::from_secret(Zeroizing::new([0x42; 32])).unwrap();
+    let second_identity = "independent-identity".to_string();
+    owner.identities.insert(
+        second_identity.clone(),
+        Identity {
+            secret: Zeroizing::new([0x42; 32]),
+            key: KeyPair::from_secret(Zeroizing::new([0x42; 32])).unwrap(),
+        },
+    );
+    let mut second_record = owner.records.get(&paired.pairing_id).unwrap().clone();
+    second_record.id = random_id().unwrap();
+    second_record.device_key = second_key.public_key().encode();
+    second_record.identity_id = second_identity;
+    second_record.channel = "other-channel-7".into();
+    second_record.channels = (0..8)
+        .map(|index| format!("other-channel-{index}"))
+        .collect();
+    second_record.nonce = "other-nonce".into();
+    let second_pairing_id = second_record.id.clone();
+    owner
+        .records
+        .insert(second_pairing_id.clone(), second_record);
+
+    let compact = owner.snapshot_state().unwrap();
+    let mut renewed_record = owner.records.get(&paired.pairing_id).unwrap().clone();
+    renewed_record.channel = "channel-b".into();
+    renewed_record.channels.insert("channel-b".into());
+    renewed_record.nonce = "nonce-b".into();
+    let mut renewed_records = owner.records.clone();
+    renewed_records.insert(paired.pairing_id.clone(), renewed_record);
+    let candidate_bytes = owner.snapshot(&renewed_records).unwrap().len();
+    let revocable_bytes = owner
+        .snapshot_after_revoking(&renewed_records, &paired.pairing_id)
+        .unwrap()
+        .len();
+    assert!(compact.len() <= candidate_bytes);
+    assert!(revocable_bytes > candidate_bytes);
+    owner.config.max_state_bytes = u32::try_from(candidate_bytes).unwrap();
+    assert!(compact.len() <= owner.config.max_state_bytes as usize);
+    assert!(revocable_bytes > owner.config.max_state_bytes as usize);
+
+    let (renewal, _, _) = owner
+        .renew(
+            &paired.pairing_id,
+            &context(
+                DevicePairingSource2::BackendReconnect,
+                "channel-b",
+                "nonce-b",
+                20_000,
+            ),
+            5_000,
+            time(1_035),
+        )
+        .unwrap();
+    let (renewal_tunnel, _) =
+        start_handshake(&mut owner, &renewal, "channel-b", "nonce-b", &device, 1_036);
+    let error = owner.prepare_confirmation(
+        &renewal,
+        &context(
+            DevicePairingSource2::RegisteredSocket,
+            "channel-b",
+            "nonce-b",
+            20_000,
+        ),
+        &renewal_tunnel.seal(b"renewal proof").unwrap(),
+        time(1_038),
+    );
+    assert!(error.is_err());
+    assert!(owner.snapshot_state().is_ok());
+    assert!(owner.records.contains_key(&paired.pairing_id));
+    assert!(
+        owner
+            .revoke(
+                &paired.pairing_id,
+                &context(
+                    DevicePairingSource2::AuthenticatedUserController,
+                    "controller-channel",
+                    "controller-nonce",
+                    30_000,
+                ),
+                time(1_039),
+            )
+            .is_err()
+    );
+    assert!(owner.records.contains_key(&paired.pairing_id));
+
+    let reserve = renewed_records.values().fold(0usize, |total, record| {
+        let tombstones = record
+            .channels
+            .iter()
+            .map(|channel| Revocation {
+                scope: record.scope.clone(),
+                user: record.user.clone(),
+                channel: channel.clone(),
+                pairing_id: record.id.clone(),
+            })
+            .collect::<Vec<_>>();
+        let tombstone_bytes = serde_json::to_vec(&tombstones)
+            .unwrap()
+            .len()
+            .saturating_sub(2)
+            .saturating_add(tombstones.len());
+        let record_bytes = serde_json::to_vec(record).unwrap().len();
+        total.saturating_add(tombstone_bytes.saturating_sub(record_bytes))
+    });
+    owner.config.max_state_bytes = u32::try_from(candidate_bytes + reserve).unwrap();
+    let prepared = owner
+        .prepare_confirmation(
+            &renewal,
+            &context(
+                DevicePairingSource2::RegisteredSocket,
+                "channel-b",
+                "nonce-b",
+                20_000,
+            ),
+            &renewal_tunnel.seal(b"renewal proof").unwrap(),
+            time(1_040),
+        )
+        .unwrap();
+    owner.commit_confirmation(prepared, time(1_041)).unwrap();
+    owner
+        .revoke(
+            &paired.pairing_id,
+            &context(
+                DevicePairingSource2::AuthenticatedUserController,
+                "controller-channel",
+                "controller-nonce",
+                30_000,
+            ),
+            time(1_042),
+        )
+        .unwrap();
+    owner
+        .revoke(
+            &second_pairing_id,
+            &context(
+                DevicePairingSource2::AuthenticatedUserController,
+                "controller-channel",
+                "controller-nonce",
+                30_000,
+            ),
+            time(1_043),
+        )
+        .unwrap();
+    assert!(owner.snapshot_state().is_ok());
+}
+
+#[test]
 fn socket_close_retires_only_the_tunnel_and_reconnect_keeps_the_pairing() {
     let mut owner = owner();
     let device = KeyPair::generate().unwrap();

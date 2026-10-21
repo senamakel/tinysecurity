@@ -24,6 +24,17 @@ use zeroize::{Zeroize, Zeroizing};
 fn denied() -> tinybus::Error {
     tinybus::Error::failed("device pairing authority denied")
 }
+fn check_persistence_fault(
+    owner: &mut DevicePairingOwner,
+    faulted: &AtomicBool,
+) -> tinybus::Result<()> {
+    if faulted.load(Ordering::Acquire) {
+        owner.fail_persistence();
+        Err(denied())
+    } else {
+        Ok(())
+    }
+}
 
 fn time(clock: &dyn tinysecurity::approval::Clock) -> tinybus::Result<Time> {
     Ok(Time {
@@ -328,6 +339,56 @@ impl Drop for PersistenceFence {
         }
     }
 }
+async fn persist_fenced<T>(
+    faulted: Arc<AtomicBool>,
+    persist: impl std::future::Future<Output = tinybus::Result<T>>,
+) -> tinybus::Result<T> {
+    let fence = PersistenceFence::new(faulted);
+    let value = persist.await?;
+    fence.complete();
+    Ok(value)
+}
+async fn import_legacy_and_persist<F, Fut>(
+    owner: &mut DevicePairingOwner,
+    faulted: Arc<AtomicBool>,
+    context: &DevicePairingContextResponse2,
+    identities: Vec<LegacyDeviceIdentity>,
+    now: Time,
+    persist: F,
+) -> tinybus::Result<(
+    Vec<tinysecurity::crypto::device_pairing::ImportedDevicePairing>,
+    String,
+)>
+where
+    F: FnOnce(Zeroizing<Vec<u8>>) -> Fut,
+    Fut: std::future::Future<Output = tinybus::Result<String>>,
+{
+    let imported = owner
+        .import_legacy_identities(context, identities, now)
+        .map_err(|_| denied())?;
+    let snapshot = owner.snapshot_state().map_err(|_| denied())?;
+    let revision = persist_fenced(faulted, persist(snapshot)).await?;
+    Ok((imported, revision))
+}
+async fn revoke_and_persist<F, Fut>(
+    owner: &mut DevicePairingOwner,
+    faulted: Arc<AtomicBool>,
+    pairing_id: &str,
+    context: &DevicePairingContextResponse2,
+    now: Time,
+    before_persist: impl FnOnce() -> tinybus::Result<()>,
+    persist: F,
+) -> tinybus::Result<String>
+where
+    F: FnOnce(Zeroizing<Vec<u8>>) -> Fut,
+    Fut: std::future::Future<Output = tinybus::Result<String>>,
+{
+    let snapshot = owner
+        .revoke(pairing_id, context, now)
+        .map_err(|_| denied())?;
+    before_persist()?;
+    persist_fenced(faulted, persist(snapshot)).await
+}
 struct ScopeRegistry {
     epochs: BTreeMap<String, u64>,
     loaded: BTreeMap<String, Arc<tokio::sync::Mutex<LoadedScope>>>,
@@ -375,10 +436,7 @@ impl PairingState {
         loaded: &mut LoadedScope,
         context: &DevicePairingContextResponse2,
     ) -> tinybus::Result<()> {
-        if loaded.persistence_faulted.load(Ordering::Acquire) {
-            loaded.owner.fail_persistence();
-            return Err(denied());
-        }
+        check_persistence_fault(&mut loaded.owner, &loaded.persistence_faulted)?;
         let scopes = self.scopes.lock().map_err(|_| denied())?;
         self.validate_scope_epoch(
             &scopes,
@@ -574,14 +632,14 @@ impl PairingState {
                     *epoch = epoch.checked_add(1).ok_or_else(denied)?;
                     scopes.loaded.remove(&context.scope_id)
                 };
+                self.registry
+                    .retire_paired_scope(&context.scope_id)
+                    .map_err(|_| denied())?;
                 if let Some(loaded) = loaded {
                     let mut loaded = loaded.lock().await;
                     loaded.owner.close();
                     loaded.pending_master_aliases.clear();
                 }
-                self.registry
-                    .retire_paired_scope(&context.scope_id)
-                    .map_err(|_| denied())?;
                 Ok(empty_response())
             }
             DevicePairingOperation2::Begin { host_event_id } => {
@@ -688,21 +746,36 @@ impl PairingState {
                         revoked: row.revoked,
                     });
                 }
-                let imported = loaded
-                    .owner
-                    .import_legacy_identities(&context, identities, time(self.clock.as_ref())?)
-                    .map_err(|_| denied())?;
-                let revision = match store_state(
-                    &self.callbacks,
-                    &scope,
-                    &loaded.owner,
-                    &loaded.cipher,
-                    &loaded.revision,
-                    generation,
+                let LoadedScope {
+                    owner,
+                    cipher,
+                    revision: expected_revision,
+                    persistence_faulted,
+                    ..
+                } = &mut *loaded;
+                let callbacks = &self.callbacks;
+                let store_scope = scope.clone();
+                let (imported, revision) = match import_legacy_and_persist(
+                    owner,
+                    Arc::clone(persistence_faulted),
+                    &context,
+                    identities,
+                    time(self.clock.as_ref())?,
+                    move |snapshot| async move {
+                        store_snapshot(
+                            callbacks,
+                            &store_scope,
+                            cipher,
+                            &snapshot,
+                            expected_revision,
+                            generation,
+                        )
+                        .await
+                    },
                 )
                 .await
                 {
-                    Ok(revision) => revision,
+                    Ok(result) => result,
                     Err(error) => {
                         loaded.owner.fail_persistence();
                         return Err(error);
@@ -906,14 +979,16 @@ impl PairingState {
             .owner
             .prepare_confirmation(&receipt, &context, &frame, now)
             .map_err(|_| denied())?;
-        let persistence_fence = PersistenceFence::new(Arc::clone(&loaded.persistence_faulted));
-        let revision = match store_snapshot(
-            &self.callbacks,
-            &scope,
-            &loaded.cipher,
-            prepared.state_to_encrypt(),
-            &loaded.revision,
-            loaded.generation,
+        let revision = match persist_fenced(
+            Arc::clone(&loaded.persistence_faulted),
+            store_snapshot(
+                &self.callbacks,
+                &scope,
+                &loaded.cipher,
+                prepared.state_to_encrypt(),
+                &loaded.revision,
+                loaded.generation,
+            ),
         )
         .await
         {
@@ -942,7 +1017,6 @@ impl PairingState {
         }
         self.validate_live_scope(&mut loaded, &context)?;
         loaded.revision = revision;
-        persistence_fence.complete();
         loaded.pending_master_aliases.remove(&receipt);
         for previous in previous_sessions {
             if self.registry.retire_paired_tunnel(&previous).is_err() {
@@ -1079,27 +1153,45 @@ impl PairingState {
         self.validate_live_scope(&mut loaded, &context)?;
         let sessions = loaded.owner.sessions_for_pairing(&pairing_id);
         let pending = loaded.owner.pending_for_pairing(&pairing_id);
-        let snapshot = loaded
-            .owner
-            .revoke(&pairing_id, &context, time(self.clock.as_ref())?)
-            .map_err(|_| denied())?;
-        for receipt in pending {
-            loaded.pending_master_aliases.remove(&receipt);
-        }
-        for session in sessions {
-            if self.registry.retire_paired_tunnel(&session).is_err() {
-                loaded.owner.fail_persistence();
-                return Err(denied());
-            }
-        }
-        let persistence_fence = PersistenceFence::new(Arc::clone(&loaded.persistence_faulted));
-        let revision = match store_snapshot(
-            &self.callbacks,
-            &scope,
-            &loaded.cipher,
-            &snapshot,
-            &loaded.revision,
-            self.generation.load(Ordering::Acquire),
+        let LoadedScope {
+            owner,
+            cipher,
+            revision: expected_revision,
+            persistence_faulted,
+            pending_master_aliases,
+            ..
+        } = &mut *loaded;
+        let callbacks = &self.callbacks;
+        let registry = &self.registry;
+        let generation = self.generation.load(Ordering::Acquire);
+        let revision = match revoke_and_persist(
+            owner,
+            Arc::clone(persistence_faulted),
+            &pairing_id,
+            &context,
+            time(self.clock.as_ref())?,
+            || {
+                for receipt in pending {
+                    pending_master_aliases.remove(&receipt);
+                }
+                for session in sessions {
+                    registry
+                        .retire_paired_tunnel(&session)
+                        .map_err(|_| denied())?;
+                }
+                Ok(())
+            },
+            move |snapshot| async move {
+                store_snapshot(
+                    callbacks,
+                    &scope,
+                    cipher,
+                    &snapshot,
+                    expected_revision,
+                    generation,
+                )
+                .await
+            },
         )
         .await
         {
@@ -1111,7 +1203,6 @@ impl PairingState {
         };
         self.validate_live_scope(&mut loaded, &context)?;
         loaded.revision = revision;
-        persistence_fence.complete();
         Ok(DevicePairingResponse2 {
             pairing_id: Some(pairing_id),
             ..empty_response()
@@ -1269,25 +1360,218 @@ pub(super) async fn invoke(
 
 #[cfg(test)]
 mod persistence_fence_tests {
-    use super::PersistenceFence;
+    // Small deterministic fixtures use unwraps so each denied state transition stays legible.
+    #![allow(clippy::unwrap_used)]
+
+    use super::{check_persistence_fault, import_legacy_and_persist, revoke_and_persist};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+    use tinysecurity::crypto::device_pairing::{DevicePairingOwner, LegacyDeviceIdentity, Time};
+
+    fn owner() -> DevicePairingOwner {
+        let config = tinysecurity_bus::DevicePairingConfig2 {
+            scopes: vec![tinysecurity_bus::DevicePairingScope2 {
+                scope_id: "0123456789abcdef0123456789abcdef".into(),
+                secret_registration_id: "abcdef0123456789abcdef0123456789".into(),
+                persistence_backend_id: "user-secret-store".into(),
+                legacy_device_backend_id: None,
+                legacy_source_registration_id: None,
+            }],
+            max_pairings: 1,
+            max_pending: 1,
+            max_pending_ttl_ms: 1_000,
+            max_session_ttl_ms: 1_000,
+            max_state_bytes: 4096,
+            callback_timeout_ms: 1000,
+        };
+        DevicePairingOwner::new(
+            config,
+            1,
+            Time {
+                wall: 1000,
+                monotonic: 1000,
+            },
+            [(
+                "0123456789abcdef0123456789abcdef".into(),
+                zeroize::Zeroizing::new([0x41; 32]),
+            )]
+            .into(),
+        )
+        .unwrap()
+    }
+
+    fn controller(channel: &str) -> tinysecurity_bus::DevicePairingContextResponse2 {
+        tinysecurity_bus::DevicePairingContextResponse2 {
+            scope_id: "0123456789abcdef0123456789abcdef".into(),
+            user_binding: "pairing-test-user".into(),
+            secret_master_handle: None,
+            legacy_import_handle: None,
+            channel_id: channel.into(),
+            connection_nonce: "pairing-test-nonce".into(),
+            generation: 1,
+            source: tinysecurity_bus::DevicePairingSource2::AuthenticatedUserController,
+            expires_at_ms: 10_000,
+        }
+    }
+
+    fn import_one(owner: &mut DevicePairingOwner, channel: &str) -> String {
+        owner
+            .import_legacy_identities(
+                &controller(channel),
+                vec![LegacyDeviceIdentity {
+                    channel_id: channel.into(),
+                    device_public_key: tinysecurity::crypto::device::KeyPair::generate()
+                        .unwrap()
+                        .public_key()
+                        .encode(),
+                    core_private_key: zeroize::Zeroizing::new([0x52; 32]),
+                    revoked: false,
+                }],
+                Time {
+                    wall: 1000,
+                    monotonic: 1000,
+                },
+            )
+            .unwrap()[0]
+            .pairing_id
+            .clone()
+    }
 
     #[tokio::test]
-    async fn canceled_persistence_attempt_faults_its_scope() {
+    async fn canceled_revoke_callback_faults_the_mutated_owner() {
+        let mut owner = owner();
+        let pairing_id = import_one(&mut owner, "channel-revoke");
         let faulted = Arc::new(AtomicBool::new(false));
         let task_faulted = Arc::clone(&faulted);
-        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            let _fence = PersistenceFence::new(task_faulted);
-            let _ = started_tx.send(());
-            std::future::pending::<()>().await;
-        });
-        started_rx.await.unwrap();
-        task.abort();
-        let _ = task.await;
-        assert!(faulted.load(Ordering::Acquire));
+        let callback_started = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::clone(&callback_started);
+        let committed = Arc::new(AtomicBool::new(false));
+        let cas_committed = Arc::clone(&committed);
+        let context = controller("channel-revoke");
+        let mut operation = Box::pin(revoke_and_persist(
+            &mut owner,
+            task_faulted,
+            &pairing_id,
+            &context,
+            Time {
+                wall: 1001,
+                monotonic: 1001,
+            },
+            || Ok(()),
+            move |_snapshot| async move {
+                cas_committed.store(true, Ordering::Release);
+                started.notify_one();
+                std::future::pending::<tinybus::Result<String>>().await
+            },
+        ));
+        tokio::select! {
+            _ = callback_started.notified() => {},
+            result = &mut operation => panic!("revoke unexpectedly completed: {result:?}"),
+        }
+        drop(operation);
+        assert!(committed.load(Ordering::Acquire));
+        assert!(check_persistence_fault(&mut owner, &faulted).is_err());
+        assert!(
+            owner
+                .recover_channel(
+                    "channel-revoke",
+                    &controller("channel-revoke"),
+                    Time {
+                        wall: 1002,
+                        monotonic: 1002,
+                    },
+                )
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_revoke_persistence_keeps_owner_usable() {
+        let mut owner = owner();
+        let pairing_id = import_one(&mut owner, "channel-revoke-success");
+        let faulted = Arc::new(AtomicBool::new(false));
+        revoke_and_persist(
+            &mut owner,
+            Arc::clone(&faulted),
+            &pairing_id,
+            &controller("channel-revoke-success"),
+            Time {
+                wall: 1001,
+                monotonic: 1001,
+            },
+            || Ok(()),
+            |_snapshot| async { Ok("revision-2".into()) },
+        )
+        .await
+        .unwrap();
+        check_persistence_fault(&mut owner, &faulted).unwrap();
+        assert!(
+            owner
+                .public_key(
+                    "0123456789abcdef0123456789abcdef",
+                    Time {
+                        wall: 1002,
+                        monotonic: 1002,
+                    },
+                )
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn canceled_legacy_import_callback_faults_the_mutated_owner() {
+        let mut owner = owner();
+        let faulted = Arc::new(AtomicBool::new(false));
+        let task_faulted = Arc::clone(&faulted);
+        let callback_started = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::clone(&callback_started);
+        let imported_cas_committed = Arc::new(AtomicBool::new(false));
+        let cas_committed = Arc::clone(&imported_cas_committed);
+        let context = controller("channel-import");
+        let identities = vec![LegacyDeviceIdentity {
+            channel_id: "channel-import".into(),
+            device_public_key: tinysecurity::crypto::device::KeyPair::generate()
+                .unwrap()
+                .public_key()
+                .encode(),
+            core_private_key: zeroize::Zeroizing::new([0x53; 32]),
+            revoked: false,
+        }];
+        let mut operation = Box::pin(import_legacy_and_persist(
+            &mut owner,
+            task_faulted,
+            &context,
+            identities,
+            Time {
+                wall: 1000,
+                monotonic: 1000,
+            },
+            move |_snapshot| async move {
+                cas_committed.store(true, Ordering::Release);
+                started.notify_one();
+                std::future::pending::<tinybus::Result<String>>().await
+            },
+        ));
+        tokio::select! {
+            _ = callback_started.notified() => {},
+            result = &mut operation => panic!("legacy import unexpectedly completed: {result:?}"),
+        }
+        drop(operation);
+        assert!(imported_cas_committed.load(Ordering::Acquire));
+        assert!(check_persistence_fault(&mut owner, &faulted).is_err());
+        assert!(
+            owner
+                .recover_channel(
+                    "channel-import",
+                    &context,
+                    Time {
+                        wall: 1001,
+                        monotonic: 1001,
+                    },
+                )
+                .is_err()
+        );
     }
 }

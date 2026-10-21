@@ -36,6 +36,8 @@ struct Record {
     user: String,
     device_key: String,
     channel: String,
+    // Each renewal candidate is serialized through snapshot(), which enforces max_state_bytes;
+    // channel ids are independently capped at 128 bytes by valid_channel().
     #[serde(default)]
     channels: BTreeSet<String>,
     nonce: String,
@@ -611,6 +613,7 @@ impl DevicePairingOwner {
         if candidate_bytes.len() > self.config.max_state_bytes as usize {
             return Err(Error::DeviceDenied);
         }
+        self.ensure_revocation_capacity(candidate_bytes.len(), &candidate_records)?;
         drop(candidate);
         for (id, identity) in batch.identities {
             self.identities.insert(id, identity);
@@ -961,6 +964,7 @@ impl DevicePairingOwner {
         let mut records = self.records.clone();
         records.insert(record.id.clone(), record.clone());
         let state = self.snapshot(&records)?;
+        self.ensure_revocation_capacity(state.len(), &records)?;
         let session_id = random_id()?;
         let pending = self.pending.get_mut(receipt).ok_or(Error::DeviceDenied)?;
         pending.confirming = true;
@@ -1180,6 +1184,7 @@ impl DevicePairingOwner {
                 pairing_id: record.id.clone(),
             })
             .collect::<Vec<_>>();
+        self.snapshot_after_revoking(&self.records, id)?;
         if occupied_pairing_count(&self.records, &self.revocations).saturating_sub(1) + 1
             > self.config.max_pairings as usize
         {
@@ -1367,6 +1372,65 @@ impl DevicePairingOwner {
         Ok(())
     }
     fn snapshot(&self, records: &BTreeMap<String, Record>) -> Result<Zeroizing<Vec<u8>>> {
+        self.snapshot_with_revocations(records, &self.revocations)
+    }
+
+    fn ensure_revocation_capacity(
+        &self,
+        active_snapshot_bytes: usize,
+        records: &BTreeMap<String, Record>,
+    ) -> Result<()> {
+        let reserved = records.values().try_fold(0usize, |total, record| {
+            let tombstones = record
+                .channels
+                .iter()
+                .map(|channel| Revocation {
+                    scope: record.scope.clone(),
+                    user: record.user.clone(),
+                    channel: channel.clone(),
+                    pairing_id: record.id.clone(),
+                })
+                .collect::<Vec<_>>();
+            let tombstone_bytes = serde_json::to_vec(&tombstones)
+                .map_err(|_| Error::DeviceDenied)?
+                .len()
+                .saturating_sub(2)
+                .saturating_add(tombstones.len());
+            let record_bytes = serde_json::to_vec(record)
+                .map_err(|_| Error::DeviceDenied)?
+                .len();
+            Ok::<_, Error>(total.saturating_add(tombstone_bytes.saturating_sub(record_bytes)))
+        })?;
+        if active_snapshot_bytes.saturating_add(reserved) > self.config.max_state_bytes as usize {
+            return Err(Error::DeviceDenied);
+        }
+        Ok(())
+    }
+
+    fn snapshot_after_revoking(
+        &self,
+        records: &BTreeMap<String, Record>,
+        pairing_id: &str,
+    ) -> Result<Zeroizing<Vec<u8>>> {
+        let mut remaining_records = records.clone();
+        let record = remaining_records
+            .remove(pairing_id)
+            .ok_or(Error::DeviceDenied)?;
+        let mut revocations = self.revocations.clone();
+        revocations.extend(record.channels.iter().map(|channel| Revocation {
+            scope: record.scope.clone(),
+            user: record.user.clone(),
+            channel: channel.clone(),
+            pairing_id: record.id.clone(),
+        }));
+        self.snapshot_with_revocations(&remaining_records, &revocations)
+    }
+
+    fn snapshot_with_revocations(
+        &self,
+        records: &BTreeMap<String, Record>,
+        revocations: &BTreeSet<Revocation>,
+    ) -> Result<Zeroizing<Vec<u8>>> {
         if self.faulted {
             return Err(Error::DeviceDenied);
         }
@@ -1379,9 +1443,9 @@ impl DevicePairingOwner {
                 .collect(),
             scope_identities: self.scope_identities.clone(),
             pairings: records.values().cloned().collect(),
-            revocations: self.revocations.iter().cloned().collect(),
+            revocations: revocations.iter().cloned().collect(),
         };
-        if occupied_pairing_count(records, &self.revocations) > self.config.max_pairings as usize {
+        if occupied_pairing_count(records, revocations) > self.config.max_pairings as usize {
             return Err(Error::DeviceDenied);
         }
         let bytes = serde_json::to_vec(&snapshot).map_err(|_| Error::DeviceDenied)?;

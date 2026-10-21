@@ -261,6 +261,26 @@ impl Callback {
                     "fixture-channel-1",
                     "fixture-nonce-1",
                 ),
+                (DevicePairingPurpose2::UserController, "user-event-after-cancel") => (
+                    DevicePairingSource2::AuthenticatedUserController,
+                    self.state
+                        .master_alias
+                        .lock()
+                        .map_err(|_| denied())?
+                        .clone(),
+                    "fixture-channel-after-cancel",
+                    "fixture-nonce-after-cancel",
+                ),
+                (DevicePairingPurpose2::UserController, "user-event-after-revoke") => (
+                    DevicePairingSource2::AuthenticatedUserController,
+                    self.state
+                        .master_alias
+                        .lock()
+                        .map_err(|_| denied())?
+                        .clone(),
+                    "fixture-channel-after-revoke",
+                    "fixture-nonce-after-revoke",
+                ),
                 (DevicePairingPurpose2::UserController, "recover-legacy-a") => (
                     DevicePairingSource2::AuthenticatedUserController,
                     self.state
@@ -362,6 +382,12 @@ impl Callback {
                         )
                     }
                 }
+                (DevicePairingPurpose2::SocketEvent, "socket-event-after-revoke") => (
+                    DevicePairingSource2::RegisteredSocket,
+                    None,
+                    "fixture-channel-after-revoke",
+                    "fixture-nonce-after-revoke",
+                ),
                 (DevicePairingPurpose2::Reconnect, "reconnect-event") => (
                     DevicePairingSource2::BackendReconnect,
                     None,
@@ -1694,7 +1720,7 @@ async fn device_pairing_roundtrip(
             (call(
                 "pair-begin-confirm-logout-race",
                 DevicePairingOperation2::Begin {
-                    host_event_id: "user-event".into(),
+                    host_event_id: "user-event-after-revoke".into(),
                 },
             ),),
         )
@@ -1719,7 +1745,7 @@ async fn device_pairing_roundtrip(
                 "pair-handshake-confirm-logout-race",
                 DevicePairingOperation2::Handshake {
                     receipt: retry_receipt.clone(),
-                    host_event_id: "socket-event-confirm-race".into(),
+                    host_event_id: "socket-event-after-revoke".into(),
                     frame: retry_bootstrap.seal_handshake(retry_core, &retry_payload)?,
                 },
             ),),
@@ -1752,7 +1778,7 @@ async fn device_pairing_roundtrip(
                     "pair-confirm-racing-logout",
                     DevicePairingOperation2::Confirm {
                         receipt: confirm_receipt,
-                        host_event_id: "socket-event-confirm-race".into(),
+                        host_event_id: "socket-event-after-revoke".into(),
                         frame: retry_proof,
                     },
                 ),),
