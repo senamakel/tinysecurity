@@ -26,3 +26,8 @@ Owned decoded input/output buffers are zeroizing. SDK serialization/frame and
 partial serde decode allocations, receiver trust, process abort and allocator
 metadata are not covered by those counters or the wiping claim. Full protocol
 and deployment constraints are in [MODULE.md](../../MODULE.md).
+
+The `DevicePairing2` adapter connects host-attested callbacks and ciphertext-only
+persistence to the crypto-owned lifecycle. Its identity and proof state model is
+documented in the [device pairing module design](../tinysecurity-crypto/src/device_pairing/README.md);
+this module remains responsible for callback wiring and lifecycle cleanup.

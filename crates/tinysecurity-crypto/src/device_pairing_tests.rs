@@ -1355,3 +1355,20 @@ fn legacy_import_is_atomic_idempotent_and_channel_recovery_is_user_scoped() {
         Vec::<String>::new()
     );
 }
+
+#[test]
+fn persistence_backend_identifiers_reject_oversized_and_control_names() {
+    for backend in ["", "backend\nname", &"x".repeat(129)] {
+        let mut config = config();
+        config.scopes[0].persistence_backend_id = backend.into();
+        assert!(
+            DevicePairingOwner::new(
+                config,
+                1,
+                time(1000),
+                [(SCOPE.into(), Zeroizing::new([0x41; 32]))].into()
+            )
+            .is_err()
+        );
+    }
+}

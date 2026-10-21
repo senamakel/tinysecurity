@@ -298,7 +298,8 @@ async fn successful_revoke_persistence_keeps_owner_usable() -> TestResult {
         || Ok(()),
         |_snapshot| async { Ok("revision-2".into()) },
     )
-    .await?;
+    .await?
+    .complete();
     check_persistence_fault(&mut owner, &faulted)?;
     assert!(frame_seal(&registry));
     assert!(
@@ -451,5 +452,113 @@ async fn canceled_legacy_import_callback_faults_the_mutated_owner() -> TestResul
             )
             .is_err()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn successful_store_remains_fenced_until_post_store_validation_finishes() -> TestResult {
+    let mut owner = owner()?;
+    let registry = registry_with_frame()?;
+    let faulted = Arc::new(AtomicBool::new(false));
+    let stored = persist_fenced(
+        PersistenceContext {
+            faulted: Arc::clone(&faulted),
+            registry: Arc::clone(&registry),
+            scope_id: SCOPE_ID.into(),
+        },
+        async { Ok("committed-revision".to_owned()) },
+    )
+    .await?;
+    // A context expiry or generation change rejects publication after the CAS has committed.
+    drop(stored);
+    assert!(check_persistence_fault(&mut owner, &faulted).is_err());
+    assert!(!frame_seal(&registry));
+    Ok(())
+}
+
+#[tokio::test]
+async fn imported_store_remains_fenced_until_master_revalidation_finishes() -> TestResult {
+    let mut owner = owner()?;
+    let registry = registry_with_frame()?;
+    let faulted = Arc::new(AtomicBool::new(false));
+    let context = controller("post-store-import");
+    let stored = import_legacy_and_persist(
+        &mut owner,
+        PersistenceContext {
+            faulted: Arc::clone(&faulted),
+            registry: Arc::clone(&registry),
+            scope_id: SCOPE_ID.into(),
+        },
+        &context,
+        Vec::new(),
+        Time {
+            wall: 1001,
+            monotonic: 1001,
+        },
+        |_snapshot| async { Ok("committed-import-revision".into()) },
+    )
+    .await?;
+    drop(stored);
+    assert!(check_persistence_fault(&mut owner, &faulted).is_err());
+    assert!(!frame_seal(&registry));
+    Ok(())
+}
+
+#[test]
+fn expired_logout_context_is_denied_before_scope_mutation() {
+    let mut context = controller("logout");
+    context.source = tinysecurity_bus::DevicePairingSource2::AuthenticatedUserLogout;
+    let now = Time {
+        wall: context.expires_at_ms,
+        monotonic: 1001,
+    };
+    assert!(validate_logout_context(&context, 1, now).is_err());
+    context.expires_at_ms += 1;
+    assert!(validate_logout_context(&context, 1, now).is_ok());
+}
+
+#[test]
+fn persistence_backend_identifiers_are_bounded_opaque_names() {
+    for accepted in ["user-secret-store", "backend:v2/user", &"x".repeat(128)] {
+        assert!(valid_persistence_backend_id(accepted));
+    }
+    for rejected in ["", "backend\nname", &"x".repeat(129)] {
+        assert!(!valid_persistence_backend_id(rejected));
+    }
+}
+
+#[tokio::test]
+async fn queued_handshake_cannot_read_crypto_state_after_scope_epoch_changes() -> TestResult {
+    let scope = Arc::new(tokio::sync::Mutex::new(owner()?));
+    let epoch = Arc::new(AtomicU64::new(1));
+    let held = scope.lock().await;
+    let task_scope = Arc::clone(&scope);
+    let task_epoch = Arc::clone(&epoch);
+    let (waiting_tx, waiting_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let _ = waiting_tx.send(());
+        let mut owner = lock_and_validate_scope(&task_scope, |_| {
+            if task_epoch.load(Ordering::Acquire) == 1 {
+                Ok(())
+            } else {
+                Err(denied())
+            }
+        })
+        .await?;
+        // Reading the handshake key must never happen on an epoch retired by logout.
+        owner
+            .public_key(
+                SCOPE_ID,
+                Time {
+                    wall: 1001,
+                    monotonic: 1001,
+                },
+            )
+            .map_err(|_| denied())
+    });
+    waiting_rx.await?;
+    epoch.store(2, Ordering::Release);
+    drop(held);
+    assert!(task.await?.is_err());
     Ok(())
 }

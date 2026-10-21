@@ -1,5 +1,7 @@
 # Device pairing and tunnel renewal (contract 1.25 proposal)
 
+Implementation sequence: [device pairing contract 1.25 plan](../plans/device-pairing-contract-1.25.md).
+
 This contract extends `DeviceFrame2` without changing the existing v2/v3/v4
 wire encodings. The host continues to own backend registration, QR presentation,
 socket transport, user credentials, tenant activation and consent UI. The module

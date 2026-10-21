@@ -1,4 +1,7 @@
 //! Module-owned paired-device identity, proof and tunnel lifecycle.
+//!
+//! Design, API boundaries and operational constraints are documented in the
+//! [module README](https://github.com/tinyhumansai/tinysecurity/blob/main/crates/tinysecurity-crypto/src/device_pairing/README.md).
 
 use crate::{
     Error, Result,
@@ -1529,6 +1532,8 @@ fn validate_config(c: &DevicePairingConfig2, generation: u64) -> Result<()> {
             || !s.scope_id.bytes().all(|b| b.is_ascii_hexdigit())
             || s.secret_registration_id.len() != 32
             || s.persistence_backend_id.is_empty()
+            || s.persistence_backend_id.len() > 128
+            || s.persistence_backend_id.chars().any(char::is_control)
             || !ids.insert(s.scope_id.as_str())
         {
             return Err(Error::DeviceDenied);

@@ -10,7 +10,8 @@ pub struct DevicePairingScope2 {
     pub scope_id: String,
     /// Existing `HumanOnly` master registration used to encrypt the private identity.
     pub secret_registration_id: String,
-    /// Opaque fixed backend id for the encrypted module-owned state record.
+    /// Opaque fixed backend id for the encrypted module-owned state record:
+    /// 1..=128 UTF-8 bytes, with no Unicode control characters.
     pub persistence_backend_id: String,
     /// Fixed backend containing channel-keyed legacy device metadata and ciphertext.
     /// `None` disables migration; it never causes a replacement identity to be minted.

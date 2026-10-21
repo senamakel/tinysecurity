@@ -24,6 +24,22 @@ use zeroize::{Zeroize, Zeroizing};
 fn denied() -> tinybus::Error {
     tinybus::Error::failed("device pairing authority denied")
 }
+fn validate_logout_context(
+    context: &DevicePairingContextResponse2,
+    generation: u64,
+    now: Time,
+) -> tinybus::Result<()> {
+    if context.source != tinysecurity_bus::DevicePairingSource2::AuthenticatedUserLogout
+        || context.generation != generation
+        || context.expires_at_ms <= now.wall
+    {
+        return Err(denied());
+    }
+    Ok(())
+}
+fn valid_persistence_backend_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
+}
 fn check_persistence_fault(
     owner: &mut DevicePairingOwner,
     faulted: &AtomicBool,
@@ -375,14 +391,29 @@ impl Drop for PersistenceFence {
         }
     }
 }
+// Retain the fence after the CAS response until all authority checks and publication finish.
+struct Persisted<T> {
+    value: T,
+    fence: PersistenceFence,
+}
+impl<T> Persisted<T> {
+    fn complete(self) -> T {
+        self.fence.complete();
+        self.value
+    }
+}
+impl<T> std::fmt::Debug for Persisted<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Persisted([REDACTED])")
+    }
+}
 async fn persist_fenced<T>(
     context: PersistenceContext,
     persist: impl std::future::Future<Output = tinybus::Result<T>>,
-) -> tinybus::Result<T> {
+) -> tinybus::Result<Persisted<T>> {
     let fence = PersistenceFence::new(context);
     let value = persist.await?;
-    fence.complete();
-    Ok(value)
+    Ok(Persisted { value, fence })
 }
 async fn import_legacy_and_persist<F, Fut>(
     owner: &mut DevicePairingOwner,
@@ -393,7 +424,7 @@ async fn import_legacy_and_persist<F, Fut>(
     persist: F,
 ) -> tinybus::Result<(
     Vec<tinysecurity::crypto::device_pairing::ImportedDevicePairing>,
-    String,
+    Persisted<String>,
 )>
 where
     F: FnOnce(Zeroizing<Vec<u8>>) -> Fut,
@@ -408,8 +439,13 @@ where
         return Err(denied());
     };
     let revision = persist(snapshot).await?;
-    fence.complete();
-    Ok((imported, revision))
+    Ok((
+        imported,
+        Persisted {
+            value: revision,
+            fence,
+        },
+    ))
 }
 async fn revoke_and_persist<F, Fut>(
     owner: &mut DevicePairingOwner,
@@ -419,7 +455,7 @@ async fn revoke_and_persist<F, Fut>(
     now: Time,
     before_persist: impl FnOnce() -> tinybus::Result<()>,
     persist: F,
-) -> tinybus::Result<String>
+) -> tinybus::Result<Persisted<String>>
 where
     F: FnOnce(Zeroizing<Vec<u8>>) -> Fut,
     Fut: std::future::Future<Output = tinybus::Result<String>>,
@@ -430,8 +466,10 @@ where
     let fence = PersistenceFence::new(persistence);
     before_persist()?;
     let revision = persist(snapshot).await?;
-    fence.complete();
-    Ok(revision)
+    Ok(Persisted {
+        value: revision,
+        fence,
+    })
 }
 
 fn fail_revoke_owner_on_error(owner: &mut DevicePairingOwner, persistence_faulted: &AtomicBool) {
@@ -677,13 +715,13 @@ impl PairingState {
                     .callbacks
                     .resolve(&host_event_id, DevicePairingPurpose2::UserLogout, None)
                     .await?;
-                if context.source != tinysecurity_bus::DevicePairingSource2::AuthenticatedUserLogout
-                    || context.generation != self.generation.load(Ordering::Acquire)
-                {
-                    return Err(denied());
-                }
                 let loaded = {
                     let mut scopes = self.scopes.lock().map_err(|_| denied())?;
+                    validate_logout_context(
+                        &context,
+                        self.generation.load(Ordering::Acquire),
+                        time(self.clock.as_ref())?,
+                    )?;
                     let epoch = scopes
                         .epochs
                         .get_mut(&context.scope_id)
@@ -874,7 +912,7 @@ impl PairingState {
                     return Err(denied());
                 }
                 self.validate_live_scope(&mut loaded, &context)?;
-                loaded.revision = revision;
+                loaded.revision = revision.complete();
                 // The bus result intentionally contains no private material. Existing
                 // host channel metadata already owns the public pairing presentation.
                 let _ = imported;
@@ -924,7 +962,10 @@ impl PairingState {
                     .resolve(&host_event_id, DevicePairingPurpose2::SocketEvent, None)
                     .await?;
                 let loaded = self.loaded_scope(&context.scope_id)?;
-                let mut loaded = loaded.lock().await;
+                let mut loaded = lock_and_validate_scope(loaded.as_ref(), |loaded| {
+                    self.validate_live_scope(loaded, &context)
+                })
+                .await?;
                 let frame = loaded
                     .owner
                     .handshake(&receipt, &context, &frame, time(self.clock.as_ref())?)
@@ -1099,7 +1140,7 @@ impl PairingState {
             return Err(denied());
         }
         self.validate_live_scope(&mut loaded, &context)?;
-        loaded.revision = revision;
+        loaded.revision.clone_from(&revision.value);
         loaded.pending_master_aliases.remove(&receipt);
         for previous in previous_sessions {
             if self.registry.retire_paired_tunnel(&previous).is_err() {
@@ -1112,7 +1153,9 @@ impl PairingState {
             .commit_confirmation(prepared, time(self.clock.as_ref())?)
             .map_err(|_| denied())?;
         let generation = loaded.generation;
-        self.publish_confirmed_session(&mut loaded, generation, &context, result)
+        let response = self.publish_confirmed_session(&mut loaded, generation, &context, result)?;
+        revision.complete();
+        Ok(response)
     }
 
     fn publish_confirmed_session(
@@ -1289,7 +1332,7 @@ impl PairingState {
             }
         };
         self.validate_live_scope(&mut loaded, &context)?;
-        loaded.revision = revision;
+        loaded.revision = revision.complete();
         Ok(DevicePairingResponse2 {
             pairing_id: Some(pairing_id),
             ..empty_response()
@@ -1370,11 +1413,7 @@ pub(super) fn configured(
                         .secret_registration_id
                         .bytes()
                         .all(|byte| byte.is_ascii_hexdigit())
-                    || scope.persistence_backend_id.len() != 32
-                    || !scope
-                        .persistence_backend_id
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit())
+                    || !valid_persistence_backend_id(&scope.persistence_backend_id)
                     || scope.legacy_device_backend_id.is_some()
                         != scope.legacy_source_registration_id.is_some()
                     || scope.legacy_device_backend_id.as_ref().is_some_and(|id| {
