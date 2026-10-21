@@ -253,6 +253,7 @@ impl ScopeEntry {
         request: &EvaluateApprovalRequest2,
         rule: tinysecurity_auto::rules::Rule,
         durable_flow: bool,
+        durable_tool: bool,
     ) -> Option<&'static str> {
         match rule {
             tinysecurity_auto::rules::Rule::Approval => self
@@ -260,6 +261,7 @@ impl ScopeEntry {
                     &request.request.call.tool,
                     request.request.caller.flow.as_deref(),
                 )
+                .or_else(|| durable_tool.then_some("auto:tool-grant"))
                 .or_else(|| durable_flow.then_some("auto:flow-grant")),
             tinysecurity_auto::rules::Rule::GrantOnly => {
                 self.tool_grant(&request.request.call.tool)
@@ -306,6 +308,8 @@ pub struct Engine {
     lifecycle: tokio::sync::Mutex<()>,
     /// Serializes flow-trust grants and revocations so one pair has one live row.
     flow_trust_lock: tokio::sync::Mutex<()>,
+    /// Serializes whole-tool trust grants and revocations so one tool has one live row.
+    tool_trust_lock: tokio::sync::Mutex<()>,
     ports: Arc<dyn Ports>,
     clock: Arc<dyn Clock>,
     redactor: RwLock<Redactor>,
@@ -360,6 +364,7 @@ impl Engine {
             scopes: RwLock::new(entries),
             lifecycle: tokio::sync::Mutex::new(()),
             flow_trust_lock: tokio::sync::Mutex::new(()),
+            tool_trust_lock: tokio::sync::Mutex::new(()),
             ports,
             clock,
             redactor: RwLock::new(redactor),
@@ -597,8 +602,14 @@ impl Engine {
         if !eligible {
             return None;
         }
-        let durable = Self::durable_flow_trust(reg, rows, &request.request, now);
-        entry.grant_for(request, rule, durable)
+        let durable_flow = Self::durable_flow_trust(reg, rows, &request.request, now);
+        let durable_tool = Self::durable_tool_trust(
+            reg,
+            rows,
+            &request.request.call.tool,
+            now,
+        );
+        entry.grant_for(request, rule, durable_flow, durable_tool)
     }
     /// The origin's shortcut for this call, or a denial: a Cron external effect is
     /// refused outright, and an origin nobody labelled is refused unless the scope
@@ -1898,6 +1909,8 @@ fn reusable_grant<'a>(
 
 #[path = "engine_flow_trust.rs"]
 mod flow_trust;
+#[path = "engine_tool_trust.rs"]
+mod tool_trust;
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 mod tests;
