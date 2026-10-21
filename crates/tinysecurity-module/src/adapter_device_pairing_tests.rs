@@ -171,15 +171,17 @@ fn controller(channel: &str) -> tinysecurity_bus::DevicePairingContextResponse2 
 fn unlock_rejects_agent_context_even_when_scope_is_already_loaded() {
     let mut context = controller("agent-unlock");
     context.source = tinysecurity_bus::DevicePairingSource2::Agent;
-    assert!(validate_unlock_context(
-        &context,
-        1,
-        Time {
-            wall: 1001,
-            monotonic: 1001,
-        },
-    )
-    .is_err());
+    assert!(
+        validate_unlock_context(
+            &context,
+            1,
+            Time {
+                wall: 1001,
+                monotonic: 1001,
+            },
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -199,10 +201,12 @@ fn plaintext_pairing_snapshot_is_rejected() {
         "state": ""
     })
     .to_string();
-    assert!(decode_state_with(plaintext.as_bytes(), &scope, |text| {
-        Ok(Zeroizing::new(text.to_owned()))
-    })
-    .is_err());
+    assert!(
+        decode_state_with(plaintext.as_bytes(), &scope, |text| {
+            Ok(Zeroizing::new(text.to_owned()))
+        })
+        .is_err()
+    );
 }
 
 #[test]
