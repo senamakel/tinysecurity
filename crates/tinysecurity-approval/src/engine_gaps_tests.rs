@@ -3,7 +3,7 @@ use super::*;
 use tinysecurity_bus::{
     FlowTrustOutcome2, GrantFlowToolRequest2, GrantToolRequest2, ImportTrustItem2,
     ImportTrustOutcome2, ImportTrustSourceRequest2, ListFlowTrustRequest2, ListToolTrustRequest2,
-    RevokeFlowToolRequest2, RevokeToolRequest2, ToolTrustOutcome2,
+    RedactorConfig, RevokeFlowToolRequest2, RevokeToolRequest2, Secret, ToolTrustOutcome2,
 };
 
 fn shell(n: u64, flow: Option<&str>, origin: Origin, call: &str) -> EvaluateApprovalRequest2 {
@@ -551,6 +551,52 @@ async fn whole_tool_trust_survives_restart_and_is_exactly_scoped() -> Result<()>
     let listed = restarted.list_tool_trust(tool_listing(7)).await?.entries;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].tool, "shell");
+    Ok(())
+}
+
+#[tokio::test]
+async fn redacted_tool_labels_do_not_break_exact_grant_identity() -> Result<()> {
+    let tool = "private-tool-label";
+    let mut redactor = RedactorConfig::default();
+    redactor.secrets.push(Secret(tool.into()));
+    let fixture = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    clock.wall.store(1000, Ordering::SeqCst);
+    let owner = Engine::new(
+        config(),
+        fixture,
+        clock,
+        Redactor::new(&redactor).map_err(|_| Error::Invalid)?,
+    )?;
+    owner.register_scope(register(7)).await?;
+
+    assert_eq!(
+        owner.grant_tool(tool_grant(7, tool, 1)).await?.outcome,
+        ToolTrustOutcome2::Granted
+    );
+    let listed = owner.list_tool_trust(tool_listing(7)).await?.entries;
+    assert_eq!(listed.len(), 1);
+    assert_ne!(listed[0].tool, tool);
+
+    let mut matching = shell(7, None, Origin::Operator, "redacted-tool-call");
+    matching.request.call.tool = tool.into();
+    matching.audit = at(2);
+    assert_eq!(
+        owner.begin(matching).await?.state,
+        ApprovalLifecycle2::Approved
+    );
+
+    assert_eq!(
+        owner.revoke_tool(tool_revoke(7, tool, 3)).await?.outcome,
+        ToolTrustOutcome2::Revoked
+    );
+    let mut after_revoke = shell(7, None, Origin::Operator, "redacted-tool-after-revoke");
+    after_revoke.request.call.tool = tool.into();
+    after_revoke.audit = at(4);
+    assert_eq!(
+        owner.begin(after_revoke).await?.state,
+        ApprovalLifecycle2::Pending
+    );
     Ok(())
 }
 
