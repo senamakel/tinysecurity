@@ -57,7 +57,7 @@ impl Engine {
         })
     }
 
-    fn live_trust<'a>(
+    fn live_tool_trust<'a>(
         reg: &ApprovalScope2,
         rows: &'a [ApprovalRow2],
         key: &str,
@@ -86,7 +86,7 @@ impl Engine {
         let key = trust_key(&request.tool);
         let rows = self.rows(&reg).await?;
         let now = self.now()?;
-        if let Some(existing) = Self::live_trust(&reg, &rows, &key, now) {
+        if let Some(existing) = Self::live_tool_trust(&reg, &rows, &key, now) {
             self.audit_row(existing.clone()).await?;
             return Ok(ToolTrustReceipt2 {
                 scope_id: request.scope_id,
@@ -167,7 +167,7 @@ impl Engine {
         let key = trust_key(&request.tool);
         let rows = self.rows(&reg).await?;
         let now = self.now()?;
-        let Some(live) = Self::live_trust(&reg, &rows, &key, now) else {
+        let Some(live) = Self::live_tool_trust(&reg, &rows, &key, now) else {
             return Ok(ToolTrustReceipt2 {
                 scope_id: request.scope_id,
                 outcome: ToolTrustOutcome2::Absent,
