@@ -407,6 +407,13 @@ where
     fence.complete();
     Ok(revision)
 }
+
+fn fail_revoke_owner_on_error(owner: &mut DevicePairingOwner, persistence_faulted: &AtomicBool) {
+    if persistence_faulted.load(Ordering::Acquire) {
+        owner.fail_persistence();
+    }
+}
+
 struct ScopeRegistry {
     epochs: BTreeMap<String, u64>,
     loaded: BTreeMap<String, Arc<tokio::sync::Mutex<LoadedScope>>>,
@@ -1229,7 +1236,7 @@ impl PairingState {
         {
             Ok(revision) => revision,
             Err(error) => {
-                loaded.owner.fail_persistence();
+                fail_revoke_owner_on_error(owner, persistence_faulted.as_ref());
                 return Err(error);
             }
         };

@@ -287,6 +287,47 @@ async fn successful_revoke_persistence_keeps_owner_usable() -> TestResult {
 }
 
 #[tokio::test]
+async fn denied_revoke_does_not_fault_the_pairing_owner() -> TestResult {
+    let mut owner = owner()?;
+    import_one(&mut owner, "channel-revoke-denied")?;
+    let faulted = Arc::new(AtomicBool::new(false));
+    let result = revoke_and_persist(
+        &mut owner,
+        PersistenceContext {
+            faulted: Arc::clone(&faulted),
+            registry: registry_with_frame()?,
+            scope_id: SCOPE_ID.into(),
+        },
+        "unknown-pairing",
+        &controller("channel-revoke-denied"),
+        Time {
+            wall: 1001,
+            monotonic: 1001,
+        },
+        || Ok(()),
+        |_snapshot| async { Ok("unreachable-revision".into()) },
+    )
+    .await;
+    assert!(result.is_err(), "unknown pairing ids must be denied");
+
+    fail_revoke_owner_on_error(&mut owner, &faulted);
+
+    assert!(
+        owner
+            .public_key(
+                SCOPE_ID,
+                Time {
+                    wall: 1002,
+                    monotonic: 1002,
+                },
+            )
+            .is_ok(),
+        "a denied revoke before persistence must leave the owner usable"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn canceled_legacy_import_callback_faults_the_mutated_owner() -> TestResult {
     let mut owner = owner()?;
     let faulted = Arc::new(AtomicBool::new(false));
