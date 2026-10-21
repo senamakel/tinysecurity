@@ -503,16 +503,9 @@ impl Engine {
             return Err(Error::Denied);
         }
         Self::correlation(&request.audit, reg.generation)?;
-        let rows = self.rows(&reg).await?;
-        let durable_tool = Self::durable_tool_trust(&reg, &rows, &request.request.call.tool, now);
-        let rule = Self::origin_rule(
-            &entry,
-            &reg,
-            &bound.origin,
-            &request,
-            external_effect,
-            durable_tool,
-        )?;
+        let (rows, rule) = self
+            .begin_rows_and_rule(&entry, &reg, &request, &bound.origin, external_effect, now)
+            .await?;
         self.reconcile_creations(&rows)?;
         if let Some(row) = self
             .existing_begin(&reg, &bound, &rows, now, deadline)
@@ -595,6 +588,20 @@ impl Engine {
             self.automatic_stands(&entry, &request.scope_id, automatic)?;
         }
         Ok(row)
+    }
+    async fn begin_rows_and_rule(
+        &self,
+        entry: &ScopeEntry,
+        reg: &ApprovalScope2,
+        request: &EvaluateApprovalRequest2,
+        origin: &Origin,
+        external_effect: bool,
+        now: u64,
+    ) -> Result<(Vec<ApprovalRow2>, tinysecurity_auto::rules::Rule)> {
+        let rows = self.rows(reg).await?;
+        let durable_tool = Self::durable_tool_trust(reg, &rows, &request.request.call.tool, now);
+        let rule = Self::origin_rule(entry, reg, origin, request, external_effect, durable_tool)?;
+        Ok((rows, rule))
     }
     /// The judge never qualifies a human-only tool, however the tool is named.
     fn judge_barred(tool: &str) -> bool {
