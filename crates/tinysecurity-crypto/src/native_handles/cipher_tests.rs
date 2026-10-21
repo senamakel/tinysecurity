@@ -352,16 +352,18 @@ async fn pairing_state_cipher_keeps_plaintext_inside_module_without_host_deliver
     let decrypted = internal.decrypt(&encrypted)?;
     assert_eq!(decrypted.as_str(), r#"{"private_identity":"module-only"}"#);
     let legacy_plaintext = b"legacy device private key";
-    use std::fmt::Write as _;
-    let legacy_hex =
-        legacy_plaintext
-            .iter()
-            .enumerate()
-            .fold(String::new(), |mut encoded, (index, byte)| {
-                write!(encoded, "{:02x}", byte ^ internal.key[index % 32])
-                    .expect("writing to a String cannot fail");
-                encoded
-            });
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let legacy_hex = legacy_plaintext
+        .iter()
+        .enumerate()
+        .flat_map(|(index, byte)| {
+            let encoded = *byte ^ internal.key[index % 32];
+            [
+                char::from(HEX[usize::from(encoded >> 4)]),
+                char::from(HEX[usize::from(encoded & 0x0f)]),
+            ]
+        })
+        .collect::<String>();
     assert_eq!(
         internal
             .decrypt_legacy(&format!("enc:{legacy_hex}"))?
