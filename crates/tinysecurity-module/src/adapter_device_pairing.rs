@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use std::{
     collections::BTreeMap,
     sync::Mutex,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use tinysecurity::crypto::{
     device_handles::{PairedTunnelRegistration, Registry},
@@ -303,6 +303,30 @@ struct LoadedScope {
     pending_master_aliases: BTreeMap<String, String>,
     epoch: u64,
     generation: u64,
+    persistence_faulted: Arc<AtomicBool>,
+}
+
+struct PersistenceFence {
+    faulted: Arc<AtomicBool>,
+    completed: bool,
+}
+impl PersistenceFence {
+    fn new(faulted: Arc<AtomicBool>) -> Self {
+        Self {
+            faulted,
+            completed: false,
+        }
+    }
+    fn complete(mut self) {
+        self.completed = true;
+    }
+}
+impl Drop for PersistenceFence {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.faulted.store(true, Ordering::Release);
+        }
+    }
 }
 struct ScopeRegistry {
     epochs: BTreeMap<String, u64>,
@@ -348,9 +372,13 @@ impl PairingState {
     }
     fn validate_live_scope(
         &self,
-        loaded: &LoadedScope,
+        loaded: &mut LoadedScope,
         context: &DevicePairingContextResponse2,
     ) -> tinybus::Result<()> {
+        if loaded.persistence_faulted.load(Ordering::Acquire) {
+            loaded.owner.fail_persistence();
+            return Err(denied());
+        }
         let scopes = self.scopes.lock().map_err(|_| denied())?;
         self.validate_scope_epoch(
             &scopes,
@@ -438,6 +466,7 @@ impl PairingState {
                 pending_master_aliases: BTreeMap::new(),
                 epoch,
                 generation,
+                persistence_faulted: Arc::new(AtomicBool::new(false)),
             });
         };
         Ok(LoadedScope {
@@ -447,6 +476,7 @@ impl PairingState {
             pending_master_aliases: BTreeMap::new(),
             epoch,
             generation,
+            persistence_faulted: Arc::new(AtomicBool::new(false)),
         })
     }
     async fn load_scope(
@@ -518,7 +548,7 @@ impl PairingState {
                 )?;
                 let loaded = self.load_scope(&context).await?;
                 let mut loaded = loaded.lock().await;
-                self.validate_live_scope(&loaded, &context)?;
+                self.validate_live_scope(&mut loaded, &context)?;
                 let public = loaded
                     .owner
                     .public_key(&context.scope_id, time(self.clock.as_ref())?)
@@ -570,7 +600,7 @@ impl PairingState {
                 )?;
                 let loaded = self.loaded_scope(&context.scope_id)?;
                 let mut loaded = loaded.lock().await;
-                self.validate_live_scope(&loaded, &context)?;
+                self.validate_live_scope(&mut loaded, &context)?;
                 let (receipt, public, expiry) = loaded
                     .owner
                     .begin(
@@ -623,7 +653,7 @@ impl PairingState {
                 self.validate_context_live(&context)?;
                 let loaded = self.loaded_scope(&scope.scope_id)?;
                 let mut loaded = loaded.lock().await;
-                self.validate_live_scope(&loaded, &context)?;
+                self.validate_live_scope(&mut loaded, &context)?;
                 if !loaded.cipher.is_bound_to(
                     &scope.secret_registration_id,
                     &scope.scope_id,
@@ -691,7 +721,7 @@ impl PairingState {
                     loaded.owner.fail_persistence();
                     return Err(denied());
                 }
-                self.validate_live_scope(&loaded, &context)?;
+                self.validate_live_scope(&mut loaded, &context)?;
                 loaded.revision = revision;
                 // The bus result intentionally contains no private material. Existing
                 // host channel metadata already owns the public pairing presentation.
@@ -712,7 +742,7 @@ impl PairingState {
                     .await?;
                 let loaded = self.loaded_scope(&context.scope_id)?;
                 let mut loaded = loaded.lock().await;
-                self.validate_live_scope(&loaded, &context)?;
+                self.validate_live_scope(&mut loaded, &context)?;
                 let (receipt, public, expiry) = loaded
                     .owner
                     .renew(
@@ -810,7 +840,7 @@ impl PairingState {
         let scope = self.callbacks.scope(&context.scope_id)?.clone();
         let loaded = self.loaded_scope(&scope.scope_id)?;
         let mut loaded = loaded.lock().await;
-        self.validate_live_scope(&loaded, &context)?;
+        self.validate_live_scope(&mut loaded, &context)?;
         let durable = self
             .callbacks
             .persist(&scope.scope_id, DevicePairingPersistenceOperation2::Load)
@@ -820,7 +850,7 @@ impl PairingState {
         }) {
             return Err(denied());
         }
-        self.validate_live_scope(&loaded, &context)?;
+        self.validate_live_scope(&mut loaded, &context)?;
         let plaintext = decode_state(
             &loaded.cipher,
             durable.ciphertext.as_deref().ok_or_else(denied)?,
@@ -836,7 +866,7 @@ impl PairingState {
             .owner
             .recover_channel(&channel_id, &context, time(self.clock.as_ref())?)
             .map_err(|_| denied())?;
-        self.validate_live_scope(&loaded, &context)?;
+        self.validate_live_scope(&mut loaded, &context)?;
         loaded.revision = durable.revision;
         Ok(DevicePairingResponse2 {
             pairing_id: Some(recovered.pairing_id),
@@ -861,7 +891,7 @@ impl PairingState {
         let scope = self.callbacks.scope(&context.scope_id)?.clone();
         let loaded = self.loaded_scope(&scope.scope_id)?;
         let mut loaded = loaded.lock().await;
-        self.validate_live_scope(&loaded, &context)?;
+        self.validate_live_scope(&mut loaded, &context)?;
         if let Some(alias) = loaded.pending_master_aliases.get(&receipt) {
             self.secret.validate_cipher_master(
                 &scope.secret_registration_id,
@@ -876,6 +906,7 @@ impl PairingState {
             .owner
             .prepare_confirmation(&receipt, &context, &frame, now)
             .map_err(|_| denied())?;
+        let persistence_fence = PersistenceFence::new(Arc::clone(&loaded.persistence_faulted));
         let revision = match store_snapshot(
             &self.callbacks,
             &scope,
@@ -909,8 +940,9 @@ impl PairingState {
             loaded.pending_master_aliases.clear();
             return Err(denied());
         }
-        self.validate_live_scope(&loaded, &context)?;
+        self.validate_live_scope(&mut loaded, &context)?;
         loaded.revision = revision;
+        persistence_fence.complete();
         loaded.pending_master_aliases.remove(&receipt);
         for previous in previous_sessions {
             if self.registry.retire_paired_tunnel(&previous).is_err() {
@@ -982,7 +1014,7 @@ impl PairingState {
             .await?;
         let loaded = self.loaded_scope(&context.scope_id)?;
         let mut loaded = loaded.lock().await;
-        self.validate_live_scope(&loaded, &context)?;
+        self.validate_live_scope(&mut loaded, &context)?;
         let expiry = loaded
             .owner
             .refresh_session(&session_id, &context, time(self.clock.as_ref())?)
@@ -1022,7 +1054,7 @@ impl PairingState {
             .await?;
         let loaded = self.loaded_scope(&context.scope_id)?;
         let mut loaded = loaded.lock().await;
-        self.validate_live_scope(&loaded, &context)?;
+        self.validate_live_scope(&mut loaded, &context)?;
         loaded
             .owner
             .end_session(&session_id, &context, time(self.clock.as_ref())?)
@@ -1044,7 +1076,7 @@ impl PairingState {
         let scope = self.callbacks.scope(&context.scope_id)?.clone();
         let loaded = self.loaded_scope(&scope.scope_id)?;
         let mut loaded = loaded.lock().await;
-        self.validate_live_scope(&loaded, &context)?;
+        self.validate_live_scope(&mut loaded, &context)?;
         let sessions = loaded.owner.sessions_for_pairing(&pairing_id);
         let pending = loaded.owner.pending_for_pairing(&pairing_id);
         let snapshot = loaded
@@ -1060,6 +1092,7 @@ impl PairingState {
                 return Err(denied());
             }
         }
+        let persistence_fence = PersistenceFence::new(Arc::clone(&loaded.persistence_faulted));
         let revision = match store_snapshot(
             &self.callbacks,
             &scope,
@@ -1076,8 +1109,9 @@ impl PairingState {
                 return Err(error);
             }
         };
-        self.validate_live_scope(&loaded, &context)?;
+        self.validate_live_scope(&mut loaded, &context)?;
         loaded.revision = revision;
+        persistence_fence.complete();
         Ok(DevicePairingResponse2 {
             pairing_id: Some(pairing_id),
             ..empty_response()
@@ -1231,4 +1265,29 @@ pub(super) async fn invoke(
 ) -> tinybus::Result<DevicePairingResponse2> {
     let state = PAIRING.get().and_then(Option::as_ref).ok_or_else(denied)?;
     state.execute(request).await
+}
+
+#[cfg(test)]
+mod persistence_fence_tests {
+    use super::PersistenceFence;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    #[tokio::test]
+    async fn canceled_persistence_attempt_faults_its_scope() {
+        let faulted = Arc::new(AtomicBool::new(false));
+        let task_faulted = Arc::clone(&faulted);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _fence = PersistenceFence::new(task_faulted);
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        started_rx.await.unwrap();
+        task.abort();
+        let _ = task.await;
+        assert!(faulted.load(Ordering::Acquire));
+    }
 }

@@ -36,6 +36,8 @@ struct Record {
     user: String,
     device_key: String,
     channel: String,
+    #[serde(default)]
+    channels: BTreeSet<String>,
     nonce: String,
     #[serde(default)]
     identity_id: String,
@@ -45,6 +47,8 @@ struct Revocation {
     scope: String,
     user: String,
     channel: String,
+    #[serde(default)]
+    pairing_id: String,
 }
 struct Binding {
     scope: String,
@@ -159,11 +163,10 @@ impl LegacyImportBatch {
         if row.revoked
             || !valid_channel(&row.channel_id)
             || !self.seen_channels.insert(row.channel_id.clone())
-            || owner.revocations.contains(&Revocation {
-                scope: binding.scope.clone(),
-                user: binding.user.clone(),
-                channel: row.channel_id.clone(),
-            })
+            || owner
+                .revocations
+                .iter()
+                .any(|revocation| revocation.channel == row.channel_id)
         {
             return Err(Error::DeviceDenied);
         }
@@ -171,29 +174,44 @@ impl LegacyImportBatch {
         let secret = row.core_private_key;
         let key = KeyPair::from_secret(Zeroizing::new(*secret))?;
         let core_public_key = key.public_key().encode();
-        if let Some(existing) = owner
-            .records
-            .values()
-            .find(|record| record.channel == row.channel_id)
-        {
-            let existing_identity = owner
-                .identities
-                .get(&existing.identity_id)
-                .ok_or(Error::DeviceDenied)?;
+        if let Some(existing) = owner.records.values().find(|record| {
+            record.scope == binding.scope
+                && record.user == binding.user
+                && record.device_key == row.device_public_key
+                && owner
+                    .identities
+                    .get(&record.identity_id)
+                    .is_some_and(|identity| identity.key.public_key().encode() == core_public_key)
+        }) {
             if existing.scope != binding.scope
                 || existing.user != binding.user
                 || existing.device_key != row.device_public_key
-                || existing_identity.key.public_key().encode() != core_public_key
+                || !existing.channels.contains(&row.channel_id)
+                    && existing.channel != row.channel_id
+            {
+                return Err(Error::DeviceDenied);
+            }
+            if owner
+                .records
+                .values()
+                .any(|record| record.id != existing.id && record.channels.contains(&row.channel_id))
             {
                 return Err(Error::DeviceDenied);
             }
             self.imported.push(ImportedDevicePairing {
-                channel_id: existing.channel.clone(),
+                channel_id: row.channel_id,
                 pairing_id: existing.id.clone(),
                 device_public_key: existing.device_key.clone(),
                 core_public_key,
             });
             return Ok(());
+        }
+        if owner
+            .records
+            .values()
+            .any(|record| record.channels.contains(&row.channel_id))
+        {
+            return Err(Error::DeviceDenied);
         }
         let id = random_id()?;
         let identity_id = format!("legacy:{id}");
@@ -203,6 +221,7 @@ impl LegacyImportBatch {
             user: binding.user.clone(),
             device_key: row.device_public_key.clone(),
             channel: row.channel_id.clone(),
+            channels: [row.channel_id.clone()].into(),
             nonce: "legacy-imported".into(),
             identity_id: identity_id.clone(),
         };
@@ -415,15 +434,16 @@ impl DevicePairingOwner {
         )?;
         Self::restore_revocations(&mut owner, std::mem::take(&mut snapshot.revocations))?;
         if owner.records.values().any(|record| {
-            owner.revocations.iter().any(|revocation| {
-                revocation.scope == record.scope
-                    && revocation.user == record.user
-                    && revocation.channel == record.channel
+            record.channels.iter().any(|channel| {
+                owner
+                    .revocations
+                    .iter()
+                    .any(|revocation| revocation.channel == *channel)
             })
         }) {
             return Err(Error::DeviceDenied);
         }
-        if owner.records.len().saturating_add(owner.revocations.len())
+        if occupied_pairing_count(&owner.records, &owner.revocations)
             > owner.config.max_pairings as usize
         {
             return Err(Error::DeviceDenied);
@@ -438,6 +458,9 @@ impl DevicePairingOwner {
     ) -> Result<()> {
         for record in records {
             let mut record = record;
+            if record.channels.is_empty() {
+                record.channels.insert(record.channel.clone());
+            }
             if record.identity_id.is_empty() && old_scope_layout {
                 record.identity_id = scope_identity_id(&record.scope);
             }
@@ -448,11 +471,18 @@ impl DevicePairingOwner {
                 || PublicKey::decode(&record.device_key).is_err()
                 || record.user.is_empty()
                 || !valid_channel(&record.channel)
+                || record
+                    .channels
+                    .iter()
+                    .any(|channel| !valid_channel(channel))
+                || !record.channels.contains(&record.channel)
                 || record.nonce.is_empty()
-                || owner
-                    .records
-                    .values()
-                    .any(|existing| existing.channel == record.channel)
+                || owner.records.values().any(|existing| {
+                    existing
+                        .channels
+                        .iter()
+                        .any(|channel| record.channels.contains(channel))
+                })
                 || owner.records.insert(record.id.clone(), record).is_some()
             {
                 return Err(Error::DeviceDenied);
@@ -473,6 +503,10 @@ impl DevicePairingOwner {
                     .revocations
                     .iter()
                     .any(|existing| existing.channel == revocation.channel)
+                || owner
+                    .records
+                    .values()
+                    .any(|record| record.channels.contains(&revocation.channel))
             {
                 return Err(Error::DeviceDenied);
             }
@@ -540,11 +574,8 @@ impl DevicePairingOwner {
         for row in rows {
             batch.stage(self, &binding, row)?;
         }
-        if self
-            .records
-            .len()
+        if occupied_pairing_count(&self.records, &self.revocations)
             .saturating_add(batch.records.len())
-            .saturating_add(self.revocations.len())
             .saturating_add(
                 self.pending
                     .values()
@@ -619,11 +650,7 @@ impl DevicePairingOwner {
                 .revocations
                 .iter()
                 .chain(self.revocations.iter())
-                .any(|revocation| {
-                    revocation.scope == record.scope
-                        && revocation.user == record.user
-                        && revocation.channel == record.channel
-                })
+                .any(|revocation| record.channels.contains(&revocation.channel))
             {
                 return Err(Error::DeviceDenied);
             }
@@ -631,20 +658,20 @@ impl DevicePairingOwner {
                 if current != record {
                     return Err(Error::DeviceDenied);
                 }
-            } else if self
-                .records
-                .values()
-                .any(|current| current.channel == record.channel)
-            {
+            } else if self.records.values().any(|current| {
+                current
+                    .channels
+                    .iter()
+                    .any(|channel| record.channels.contains(channel))
+            }) {
                 return Err(Error::DeviceDenied);
             }
         }
         if self.records.values().any(|record| {
-            durable.revocations.iter().any(|revocation| {
-                revocation.scope == record.scope
-                    && revocation.user == record.user
-                    && revocation.channel == record.channel
-            })
+            durable
+                .revocations
+                .iter()
+                .any(|revocation| record.channels.contains(&revocation.channel))
         }) {
             return Err(Error::DeviceDenied);
         }
@@ -731,18 +758,24 @@ impl DevicePairingOwner {
     ) -> Result<(String, String, u64)> {
         self.check_time(now)?;
         let binding = self.context(context, DevicePairingSource2::AuthenticatedUserController)?;
-        if self.revocations.contains(&Revocation {
-            scope: binding.scope.clone(),
-            user: binding.user.clone(),
-            channel: binding.channel.clone(),
-        }) {
+        if self
+            .revocations
+            .iter()
+            .any(|revocation| revocation.channel == binding.channel)
+        {
+            return Err(Error::DeviceDenied);
+        }
+        if self
+            .records
+            .values()
+            .any(|record| record.channels.contains(&binding.channel))
+        {
             return Err(Error::DeviceDenied);
         }
         if !self.scope_identities.contains_key(&binding.scope)
             || binding.channel.is_empty()
             || binding.nonce.is_empty()
-            || self.records.len()
-                + self.revocations.len()
+            || occupied_pairing_count(&self.records, &self.revocations)
                 + self
                     .pending
                     .values()
@@ -786,13 +819,13 @@ impl DevicePairingOwner {
         if record.scope != binding.scope || record.user != binding.user {
             return Err(Error::DeviceDenied);
         }
-        let tombstone = Revocation {
-            scope: record.scope.clone(),
-            user: record.user.clone(),
-            channel: record.channel.clone(),
-        };
-        if !self.revocations.contains(&tombstone)
-            && self.revocations.len() >= self.config.max_pairings as usize
+        if self.channel_claimed(&binding, id) {
+            return Err(Error::DeviceDenied);
+        }
+        if self
+            .revocations
+            .iter()
+            .any(|revocation| revocation.channel == binding.channel)
         {
             return Err(Error::DeviceDenied);
         }
@@ -877,6 +910,27 @@ impl DevicePairingOwner {
     ) -> Result<PreparedConfirmation> {
         self.check_time(now)?;
         let binding = self.context(context, DevicePairingSource2::RegisteredSocket)?;
+        let pairing_id = self
+            .pending
+            .get(receipt)
+            .ok_or(Error::DeviceDenied)?
+            .pairing_id
+            .clone();
+        if self.records.values().any(|existing| {
+            Some(existing.id.as_str()) != pairing_id.as_deref()
+                && existing.channels.contains(&binding.channel)
+        }) || self
+            .revocations
+            .iter()
+            .any(|revocation| revocation.channel == binding.channel)
+        {
+            return Err(Error::DeviceDenied);
+        }
+        let mut channels = pairing_id
+            .as_deref()
+            .and_then(|id| self.records.get(id))
+            .map_or_else(BTreeSet::new, |old| old.channels.clone());
+        channels.insert(binding.channel.clone());
         let record = {
             let pending = self.pending.get_mut(receipt).ok_or(Error::DeviceDenied)?;
             validate_pending(pending, &binding, now)?;
@@ -897,6 +951,7 @@ impl DevicePairingOwner {
                 user: binding.user.clone(),
                 device_key: handshake.device_key.clone(),
                 channel: binding.channel.clone(),
+                channels: channels.clone(),
                 nonce: binding.nonce.clone(),
                 identity_id: pending.identity_id.clone(),
             }
@@ -1115,13 +1170,18 @@ impl DevicePairingOwner {
         if record.scope != binding.scope || record.user != binding.user {
             return Err(Error::DeviceDenied);
         }
-        let tombstone = Revocation {
-            scope: record.scope.clone(),
-            user: record.user.clone(),
-            channel: record.channel.clone(),
-        };
-        if !self.revocations.contains(&tombstone)
-            && self.revocations.len() >= self.config.max_pairings as usize
+        let tombstones = record
+            .channels
+            .iter()
+            .map(|channel| Revocation {
+                scope: record.scope.clone(),
+                user: record.user.clone(),
+                channel: channel.clone(),
+                pairing_id: record.id.clone(),
+            })
+            .collect::<Vec<_>>();
+        if occupied_pairing_count(&self.records, &self.revocations).saturating_sub(1) + 1
+            > self.config.max_pairings as usize
         {
             return Err(Error::DeviceDenied);
         }
@@ -1138,7 +1198,7 @@ impl DevicePairingOwner {
             self.session_expiries.remove(&session);
         }
         let record = self.records.remove(id).ok_or(Error::DeviceDenied)?;
-        self.revocations.insert(tombstone);
+        self.revocations.extend(tombstones);
         self.remove_unreferenced_identity(&record.identity_id);
         self.snapshot(&self.records)
     }
@@ -1321,8 +1381,7 @@ impl DevicePairingOwner {
             pairings: records.values().cloned().collect(),
             revocations: self.revocations.iter().cloned().collect(),
         };
-        if records.len().saturating_add(self.revocations.len()) > self.config.max_pairings as usize
-        {
+        if occupied_pairing_count(records, &self.revocations) > self.config.max_pairings as usize {
             return Err(Error::DeviceDenied);
         }
         let bytes = serde_json::to_vec(&snapshot).map_err(|_| Error::DeviceDenied)?;
@@ -1330,6 +1389,16 @@ impl DevicePairingOwner {
             return Err(Error::DeviceDenied);
         }
         Ok(Zeroizing::new(bytes))
+    }
+
+    fn channel_claimed(&self, binding: &Binding, except_id: &str) -> bool {
+        self.records
+            .values()
+            .any(|record| record.id != except_id && record.channels.contains(&binding.channel))
+            || self
+                .revocations
+                .iter()
+                .any(|revocation| revocation.channel == binding.channel)
     }
 
     fn remove_unreferenced_identity(&mut self, identity_id: &str) {
@@ -1420,6 +1489,22 @@ fn to_result(r: &Record, session_id: String, expires_at_ms: u64) -> PairingResul
         expires_at_ms,
     }
 }
+fn occupied_pairing_count(
+    records: &BTreeMap<String, Record>,
+    revocations: &BTreeSet<Revocation>,
+) -> usize {
+    let mut retired_ids = BTreeSet::new();
+    let mut legacy_tombstones = 0usize;
+    for revocation in revocations {
+        if revocation.pairing_id.is_empty() {
+            legacy_tombstones += 1;
+        } else {
+            retired_ids.insert(revocation.pairing_id.as_str());
+        }
+    }
+    records.len() + retired_ids.len() + legacy_tombstones
+}
+
 fn random_id() -> Result<String> {
     let mut bytes = [0; 16];
     getrandom::fill(&mut bytes).map_err(|_| Error::Entropy)?;

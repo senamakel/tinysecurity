@@ -568,6 +568,84 @@ fn restore_preserves_public_identity_and_rejects_corrupt_or_foreign_state() {
 }
 
 #[test]
+fn renewal_cannot_claim_another_pairings_or_revoked_channel() {
+    let mut owner = owner();
+    let first_secret = Zeroizing::new([0x51; 32]);
+    let second_secret = Zeroizing::new([0x62; 32]);
+    let first_device = KeyPair::generate().unwrap();
+    let second_device = KeyPair::generate().unwrap();
+    let imported = owner
+        .import_legacy_identities(
+            &context(
+                DevicePairingSource2::AuthenticatedUserController,
+                "",
+                "",
+                10_000,
+            ),
+            vec![
+                LegacyDeviceIdentity {
+                    channel_id: "channel-first".into(),
+                    device_public_key: first_device.public_key().encode(),
+                    core_private_key: first_secret,
+                    revoked: false,
+                },
+                LegacyDeviceIdentity {
+                    channel_id: "channel-second".into(),
+                    device_public_key: second_device.public_key().encode(),
+                    core_private_key: second_secret,
+                    revoked: false,
+                },
+            ],
+            time(1_010),
+        )
+        .unwrap();
+    let first_id = &imported[0].pairing_id;
+    let second_id = &imported[1].pairing_id;
+    assert!(
+        owner
+            .renew(
+                first_id,
+                &context(
+                    DevicePairingSource2::BackendReconnect,
+                    "channel-second",
+                    "renew-collision",
+                    10_000,
+                ),
+                5_000,
+                time(1_020),
+            )
+            .is_err()
+    );
+    owner
+        .revoke(
+            second_id,
+            &context(
+                DevicePairingSource2::AuthenticatedUserController,
+                "channel-second",
+                "revoke",
+                10_000,
+            ),
+            time(1_030),
+        )
+        .unwrap();
+    assert!(
+        owner
+            .renew(
+                first_id,
+                &context(
+                    DevicePairingSource2::BackendReconnect,
+                    "channel-second",
+                    "renew-tombstone",
+                    10_000,
+                ),
+                5_000,
+                time(1_040),
+            )
+            .is_err()
+    );
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn imported_channel_identities_survive_reload_and_select_the_original_wire_key() {
     let mut owner = owner();
@@ -638,7 +716,7 @@ fn imported_channel_identities_survive_reload_and_select_the_original_wire_key()
         (0_u64, first, &first_device, &first_public),
         (1_u64, second, &second_device, &second_public),
     ] {
-        assert_legacy_wire_renewal(
+        let _ = assert_legacy_wire_renewal(
             &mut restored,
             imported,
             device,
@@ -654,7 +732,7 @@ fn assert_legacy_wire_renewal(
     device: &KeyPair,
     expected_public: &str,
     start: u64,
-) {
+) -> String {
     let channel = format!("legacy-renewal-{start}");
     let nonce = format!("legacy-nonce-{start}");
     let (receipt, core_public, _) = owner
@@ -697,6 +775,85 @@ fn assert_legacy_wire_renewal(
     owner
         .commit_confirmation(prepared, time(start + 3))
         .unwrap();
+    channel
+}
+
+#[test]
+fn renewed_pairing_keeps_legacy_channel_claim_until_every_channel_is_revoked() {
+    let mut owner = owner();
+    let secret = Zeroizing::new([0x73; 32]);
+    let device = KeyPair::generate().unwrap();
+    let device_public_key = device.public_key().encode();
+    let authorized = context(
+        DevicePairingSource2::AuthenticatedUserController,
+        "",
+        "",
+        30_000,
+    );
+    let imported = owner
+        .import_legacy_identities(
+            &authorized,
+            vec![LegacyDeviceIdentity {
+                channel_id: "legacy-original".into(),
+                device_public_key: device_public_key.clone(),
+                core_private_key: Zeroizing::new(*secret),
+                revoked: false,
+            }],
+            time(1_010),
+        )
+        .unwrap();
+    let migrated_channel = assert_legacy_wire_renewal(
+        &mut owner,
+        &imported[0],
+        &device,
+        &imported[0].core_public_key,
+        1_020,
+    );
+    let reimported = owner
+        .import_legacy_identities(
+            &authorized,
+            vec![LegacyDeviceIdentity {
+                channel_id: "legacy-original".into(),
+                device_public_key,
+                core_private_key: Zeroizing::new(*secret),
+                revoked: false,
+            }],
+            time(1_030),
+        )
+        .unwrap();
+    assert_eq!(reimported[0].pairing_id, imported[0].pairing_id);
+    assert_eq!(owner.records.len(), 1);
+
+    let renewed_context = context(
+        DevicePairingSource2::AuthenticatedUserController,
+        &migrated_channel,
+        "revoke",
+        30_000,
+    );
+    owner
+        .revoke(&imported[0].pairing_id, &renewed_context, time(1_031))
+        .unwrap();
+    let snapshot = owner.snapshot_state().unwrap();
+    let mut restored = DevicePairingOwner::restore(config(), 1, time(1_040), &snapshot).unwrap();
+    for (channel, nonce) in [
+        ("legacy-original", "new-original"),
+        (&migrated_channel, "new-migrated"),
+    ] {
+        assert!(
+            restored
+                .begin(
+                    &context(
+                        DevicePairingSource2::AuthenticatedUserController,
+                        channel,
+                        nonce,
+                        30_000
+                    ),
+                    5_000,
+                    time(1_041),
+                )
+                .is_err()
+        );
+    }
 }
 
 #[test]
