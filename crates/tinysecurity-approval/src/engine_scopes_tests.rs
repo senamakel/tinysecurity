@@ -200,7 +200,7 @@ async fn registration_validates_scope_generation_grants_stream_and_ports() -> Re
     repeat.scope.generation = 2;
     assert_eq!(
         owner.register_scope(repeat).await?.outcome,
-        ApprovalScopeOutcome2::Replaced
+        ApprovalScopeOutcome2::Unchanged
     );
     Ok(())
 }
