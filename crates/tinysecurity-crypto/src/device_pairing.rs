@@ -494,15 +494,12 @@ impl DevicePairingOwner {
     }
 
     fn restore_revocations(owner: &mut Self, revocations: Vec<Revocation>) -> Result<()> {
-        if revocations.len() > owner.config.max_pairings as usize {
-            return Err(Error::DeviceDenied);
-        }
+        let mut candidate = owner.revocations.clone();
         for revocation in revocations {
             if !owner.scope_identities.contains_key(&revocation.scope)
                 || revocation.user.is_empty()
                 || !valid_channel(&revocation.channel)
-                || owner
-                    .revocations
+                || candidate
                     .iter()
                     .any(|existing| existing.channel == revocation.channel)
                 || owner
@@ -512,8 +509,12 @@ impl DevicePairingOwner {
             {
                 return Err(Error::DeviceDenied);
             }
-            owner.revocations.insert(revocation);
+            candidate.insert(revocation);
         }
+        if occupied_pairing_count(&owner.records, &candidate) > owner.config.max_pairings as usize {
+            return Err(Error::DeviceDenied);
+        }
+        owner.revocations = candidate;
         Ok(())
     }
 
@@ -700,7 +701,7 @@ impl DevicePairingOwner {
         let bytes =
             Zeroizing::new(serde_json::to_vec(&candidate).map_err(|_| Error::DeviceDenied)?);
         if bytes.len() > self.config.max_state_bytes as usize
-            || records.len().saturating_add(revocations.len()) > self.config.max_pairings as usize
+            || occupied_pairing_count(&records, &revocations) > self.config.max_pairings as usize
         {
             return Err(Error::DeviceDenied);
         }

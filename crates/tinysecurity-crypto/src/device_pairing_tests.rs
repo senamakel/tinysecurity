@@ -293,8 +293,7 @@ fn renewal_requires_same_static_key_and_fresh_context() {
     );
 }
 
-#[test]
-fn renewal_is_rejected_when_its_future_revocation_would_overflow_state() {
+fn renewed_owner_with_history() -> (DevicePairingOwner, KeyPair, PairingResult) {
     let mut owner = owner();
     let device = KeyPair::generate().unwrap();
     let (receipt, _, _) = owner
@@ -361,6 +360,10 @@ fn renewal_is_rejected_when_its_future_revocation_would_overflow_state() {
         owner.commit_confirmation(prepared, time(now + 3)).unwrap();
     }
 
+    (owner, device, paired)
+}
+
+fn install_second_long_record(owner: &mut DevicePairingOwner, pairing_id: &str) -> String {
     let second_key = KeyPair::from_secret(Zeroizing::new([0x42; 32])).unwrap();
     let second_identity = "independent-identity".to_string();
     owner.identities.insert(
@@ -370,7 +373,7 @@ fn renewal_is_rejected_when_its_future_revocation_would_overflow_state() {
             key: KeyPair::from_secret(Zeroizing::new([0x42; 32])).unwrap(),
         },
     );
-    let mut second_record = owner.records.get(&paired.pairing_id).unwrap().clone();
+    let mut second_record = owner.records.get(pairing_id).unwrap().clone();
     second_record.id = random_id().unwrap();
     second_record.device_key = second_key.public_key().encode();
     second_record.identity_id = second_identity;
@@ -383,23 +386,65 @@ fn renewal_is_rejected_when_its_future_revocation_would_overflow_state() {
     owner
         .records
         .insert(second_pairing_id.clone(), second_record);
+    second_pairing_id
+}
 
+fn candidate_snapshot_sizes(
+    owner: &DevicePairingOwner,
+    pairing_id: &str,
+) -> (usize, usize, usize, BTreeMap<String, Record>) {
     let compact = owner.snapshot_state().unwrap();
-    let mut renewed_record = owner.records.get(&paired.pairing_id).unwrap().clone();
+    let mut renewed_record = owner.records.get(pairing_id).unwrap().clone();
     renewed_record.channel = "channel-b".into();
     renewed_record.channels.insert("channel-b".into());
     renewed_record.nonce = "nonce-b".into();
     let mut renewed_records = owner.records.clone();
-    renewed_records.insert(paired.pairing_id.clone(), renewed_record);
+    renewed_records.insert(pairing_id.into(), renewed_record);
     let candidate_bytes = owner.snapshot(&renewed_records).unwrap().len();
     let revocable_bytes = owner
-        .snapshot_after_revoking(&renewed_records, &paired.pairing_id)
+        .snapshot_after_revoking(&renewed_records, pairing_id)
         .unwrap()
         .len();
     assert!(compact.len() <= candidate_bytes);
     assert!(revocable_bytes > candidate_bytes);
+    (
+        compact.len(),
+        candidate_bytes,
+        revocable_bytes,
+        renewed_records,
+    )
+}
+
+fn revocation_reserve(records: &BTreeMap<String, Record>) -> usize {
+    records.values().fold(0usize, |total, record| {
+        let tombstones = record
+            .channels
+            .iter()
+            .map(|channel| Revocation {
+                scope: record.scope.clone(),
+                user: record.user.clone(),
+                channel: channel.clone(),
+                pairing_id: record.id.clone(),
+            })
+            .collect::<Vec<_>>();
+        let tombstone_bytes = serde_json::to_vec(&tombstones)
+            .unwrap()
+            .len()
+            .saturating_sub(2)
+            .saturating_add(tombstones.len());
+        let record_bytes = serde_json::to_vec(record).unwrap().len();
+        total.saturating_add(tombstone_bytes.saturating_sub(record_bytes))
+    })
+}
+
+#[test]
+fn renewal_is_rejected_when_its_future_revocation_would_overflow_state() {
+    let (mut owner, device, paired) = renewed_owner_with_history();
+    let second_pairing_id = install_second_long_record(&mut owner, &paired.pairing_id);
+    let (compact_bytes, candidate_bytes, revocable_bytes, renewed_records) =
+        candidate_snapshot_sizes(&owner, &paired.pairing_id);
     owner.config.max_state_bytes = u32::try_from(candidate_bytes).unwrap();
-    assert!(compact.len() <= owner.config.max_state_bytes as usize);
+    assert!(compact_bytes <= owner.config.max_state_bytes as usize);
     assert!(revocable_bytes > owner.config.max_state_bytes as usize);
 
     let (renewal, _, _) = owner
@@ -447,25 +492,7 @@ fn renewal_is_rejected_when_its_future_revocation_would_overflow_state() {
     );
     assert!(owner.records.contains_key(&paired.pairing_id));
 
-    let reserve = renewed_records.values().fold(0usize, |total, record| {
-        let tombstones = record
-            .channels
-            .iter()
-            .map(|channel| Revocation {
-                scope: record.scope.clone(),
-                user: record.user.clone(),
-                channel: channel.clone(),
-                pairing_id: record.id.clone(),
-            })
-            .collect::<Vec<_>>();
-        let tombstone_bytes = serde_json::to_vec(&tombstones)
-            .unwrap()
-            .len()
-            .saturating_sub(2)
-            .saturating_add(tombstones.len());
-        let record_bytes = serde_json::to_vec(record).unwrap().len();
-        total.saturating_add(tombstone_bytes.saturating_sub(record_bytes))
-    });
+    let reserve = revocation_reserve(&renewed_records);
     owner.config.max_state_bytes = u32::try_from(candidate_bytes + reserve).unwrap();
     let prepared = owner
         .prepare_confirmation(
@@ -995,7 +1022,15 @@ fn assert_legacy_wire_renewal(
 
 #[test]
 fn renewed_pairing_keeps_legacy_channel_claim_until_every_channel_is_revoked() {
-    let mut owner = owner();
+    let mut one_pairing_config = config();
+    one_pairing_config.max_pairings = 1;
+    let mut owner = DevicePairingOwner::new(
+        one_pairing_config.clone(),
+        1,
+        time(1_000),
+        [(SCOPE.into(), Zeroizing::new([0x41; 32]))].into(),
+    )
+    .unwrap();
     let secret = Zeroizing::new([0x73; 32]);
     let device = KeyPair::generate().unwrap();
     let device_public_key = device.public_key().encode();
@@ -1049,7 +1084,20 @@ fn renewed_pairing_keeps_legacy_channel_claim_until_every_channel_is_revoked() {
         .revoke(&imported[0].pairing_id, &renewed_context, time(1_031))
         .unwrap();
     let snapshot = owner.snapshot_state().unwrap();
-    let mut restored = DevicePairingOwner::restore(config(), 1, time(1_040), &snapshot).unwrap();
+    let mut restored =
+        DevicePairingOwner::restore(one_pairing_config.clone(), 1, time(1_040), &snapshot).unwrap();
+    let mut merged = DevicePairingOwner::new(
+        one_pairing_config,
+        1,
+        time(1_040),
+        [(SCOPE.into(), Zeroizing::new([0x41; 32]))].into(),
+    )
+    .unwrap();
+    merged
+        .merge_durable_state(&snapshot, &authorized, time(1_040))
+        .unwrap();
+    assert!(merged.records.is_empty());
+    assert_eq!(merged.revocations.len(), 2);
     for (channel, nonce) in [
         ("legacy-original", "new-original"),
         (&migrated_channel, "new-migrated"),
