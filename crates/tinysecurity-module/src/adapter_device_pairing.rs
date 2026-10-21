@@ -163,15 +163,14 @@ fn finish_refresh<T>(
     registry: &Registry,
     session_id: &str,
 ) -> tinybus::Result<T> {
-    match result {
-        Ok(value) => Ok(value),
-        Err(_) => {
-            owner.retire_session(session_id);
-            registry
-                .retire_paired_tunnel(session_id)
-                .map_err(|_| denied())?;
-            Err(denied())
-        }
+    if let Ok(value) = result {
+        Ok(value)
+    } else {
+        owner.retire_session(session_id);
+        registry
+            .retire_paired_tunnel(session_id)
+            .map_err(|_| denied())?;
+        Err(denied())
     }
 }
 

@@ -37,10 +37,14 @@ async fn unlock_master_authority_is_checked_after_waiting_for_scope_lock() -> Te
 
 const SCOPE_ID: &str = "0123456789abcdef0123456789abcdef";
 const FRAME_HANDLE: &str = "abcdef0123456789abcdef0123456789";
+const SECOND_FRAME_HANDLE: &str = "bcdef0123456789abcdef0123456789a";
 
 fn registry_with_frame()
 -> Result<Arc<tinysecurity::crypto::device_handles::Registry>, Box<dyn std::error::Error>> {
-    use tinysecurity::crypto::{device::Tunnel, device_handles::PairedTunnelRegistration};
+    use tinysecurity::crypto::{
+        device::{KeyPair, Tunnel},
+        device_handles::PairedTunnelRegistration,
+    };
     use tinysecurity_bus::{
         AccessTier, ApprovalScope2, DeviceConfig2, DeviceScope2, Origin, SubjectScope,
     };
@@ -99,15 +103,46 @@ fn registry_with_frame()
             monotonic: 1_000,
         },
     })?;
+    let second_key = KeyPair::generate()?;
+    let second_public = second_key.public_key();
+    let second_keys = second_key.session_keys(
+        second_public,
+        &second_key,
+        second_public,
+        second_public,
+        second_public,
+    )?;
+    registry.register_paired_tunnel(PairedTunnelRegistration {
+        scope_id: SCOPE_ID,
+        handle: SECOND_FRAME_HANDLE,
+        tunnel: Arc::new(std::sync::Mutex::new(Tunnel::new(
+            tinysecurity::crypto::device::Role::Server,
+            second_keys,
+        ))),
+        generation: 1,
+        expires_wall: 5_000,
+        expires_monotonic: 5_000,
+        now: tinysecurity::crypto::device_handles::Time {
+            wall: 1_000,
+            monotonic: 1_000,
+        },
+    })?;
     Ok(registry)
 }
 
 fn frame_seal(registry: &tinysecurity::crypto::device_handles::Registry) -> bool {
+    frame_seal_handle(registry, FRAME_HANDLE)
+}
+
+fn frame_seal_handle(
+    registry: &tinysecurity::crypto::device_handles::Registry,
+    handle: &str,
+) -> bool {
     registry
         .execute_frame(
             &tinysecurity_bus::DeviceFrameRequest2 {
                 scope_id: SCOPE_ID.into(),
-                handle: FRAME_HANDLE.into(),
+                handle: handle.into(),
                 call_id: "pairing-test-call".into(),
                 operation: tinysecurity_bus::DeviceFrameOperation2::Seal {
                     plaintext: b"live frame".to_vec(),
@@ -217,6 +252,28 @@ fn failed_refresh_retires_the_paired_tunnel() -> TestResult {
     let result = finish_refresh::<()>(Err(denied()), &mut owner, &registry, FRAME_HANDLE);
     assert!(result.is_err());
     assert!(!frame_seal(&registry));
+    Ok(())
+}
+
+#[test]
+fn clock_rollback_retires_every_tunnel_in_the_scope() -> TestResult {
+    let registry = registry_with_frame()?;
+    assert!(frame_seal_handle(&registry, FRAME_HANDLE));
+    assert!(frame_seal_handle(&registry, SECOND_FRAME_HANDLE));
+    let mut owner = owner()?;
+    let context = controller("clock-rollback");
+    let result = owner.refresh_session(
+        "missing-session",
+        &context,
+        Time {
+            wall: 999,
+            monotonic: 999,
+        },
+    );
+    assert!(result.is_err());
+    assert!(finish_refresh(result, &mut owner, &registry, FRAME_HANDLE).is_err());
+    assert!(!frame_seal_handle(&registry, FRAME_HANDLE));
+    assert!(!frame_seal_handle(&registry, SECOND_FRAME_HANDLE));
     Ok(())
 }
 
