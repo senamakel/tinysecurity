@@ -51,8 +51,10 @@ impl Engine {
         let key = trust_key(tool);
         rows.iter().any(|row| {
             is_trust_row(row)
-                && row.binding.call_sha256 == key
                 && row.binding.content_sha256 == key
+                && (row.binding.call_sha256 == key
+                    || row.attribution.as_deref() == Some(IMPORT_ATTRIBUTION))
+                && row.tool_name == tool
                 && row.expires_at_ms > now
                 && Self::current(reg, row).is_ok()
         })
@@ -66,8 +68,10 @@ impl Engine {
     ) -> Option<&'a ApprovalRow2> {
         rows.iter().find(|row| {
             is_trust_row(row)
-                && row.binding.call_sha256 == key
                 && row.binding.content_sha256 == key
+                && (row.binding.call_sha256 == key
+                    || row.attribution.as_deref() == Some(IMPORT_ATTRIBUTION))
+                && row.tool_name == key_tool_placeholder
                 && row.expires_at_ms > now
                 && Self::current(reg, row).is_ok()
         })
