@@ -18,9 +18,12 @@ Granting a live tool again returns `unchanged`; revoking a missing or expired
 grant returns `absent`. Both operations are serialized per scope, and a scope
 with at least 960 approval rows refuses any new grant row, including a renewed
 revoked or expired tool. A still-live repeat remains `unchanged` without adding
-a row. Listing returns only live grants, ordered by exact tool name. Names
-must be nonblank, contain no control characters, fit within 256 bytes, and must
-not name a human-only or `native_*` tool.
+a row. Listing returns only live grants, ordered by their redacted display labels.
+The entry's `tool` field is a display value and may differ from the exact name when
+the active redaction policy matches it; the module matches, revokes and evaluates
+grants using the exact domain-separated digest in the binding. Names must be
+nonblank, contain no control characters, fit within 256 bytes, and must not name
+a human-only or `native_*` tool.
 
 `EvaluateApproval2` consults durable whole-tool trust only for an eligible
 required approval (`Rule::Approval`) or an unlabelled call (`Rule::GrantOnly`),

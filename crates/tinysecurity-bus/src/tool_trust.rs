@@ -106,7 +106,8 @@ pub struct ListToolTrustRequest2 {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolTrustEntry2 {
-    /// Exact tool name trusted in this scope.
+    /// Redacted display label of the trusted tool. The exact identity remains in
+    /// the row's digest binding and is not returned by this listing.
     pub tool: String,
     /// Durable row identity.
     pub request_id: String,
@@ -114,7 +115,7 @@ pub struct ToolTrustEntry2 {
     pub granted_at_ms: u64,
 }
 
-/// The live whole-tool grants of a scope, ordered by tool name.
+/// The live whole-tool grants of a scope, ordered by redacted display label.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolTrustList2 {

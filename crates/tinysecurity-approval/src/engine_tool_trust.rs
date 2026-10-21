@@ -56,7 +56,6 @@ impl Engine {
                 && row.binding.content_sha256 == key
                 && (row.binding.call_sha256 == key
                     || row.attribution.as_deref() == Some(IMPORT_ATTRIBUTION))
-                && row.tool_name == tool
                 && row.expires_at_ms > now
                 && Self::current(reg, row).is_ok()
         })
@@ -74,7 +73,6 @@ impl Engine {
                 && row.binding.content_sha256 == key
                 && (row.binding.call_sha256 == key
                     || row.attribution.as_deref() == Some(IMPORT_ATTRIBUTION))
-                && row.tool_name == tool
                 && row.expires_at_ms > now
                 && Self::current(reg, row).is_ok()
         })
