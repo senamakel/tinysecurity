@@ -1,7 +1,8 @@
 # Durable whole-tool trust
 
 Contract 1.25 gives the authenticated host three approval members:
-`GrantTool2`, `RevokeTool2` and `ListToolTrust2`. Each request is bound to a
+`GrantTool2`, `RevokeTool2` and `ListToolTrust2`. The private host-only
+`ImportTrustSource2` member records legacy migration receipts. Each request is bound to a
 registered `scope_id`; tool names are exact and never pattern-matched. The host
 allocates an `AuditCorrelation2` for every grant and revocation.
 
@@ -33,3 +34,16 @@ At consume, the module reloads the subject's live grants. Revocation after
 evaluation therefore denies a queued approval before execution. Store, audit or
 clock failures fail closed. This API owns durable module state; migration from
 host configuration remains the host's responsibility.
+
+`ImportTrustSource2` accepts one exact whole-tool or flow-tool item per call, with a
+stable host source identifier and source version. TinySecurity writes the import
+marker into the same durable approval row as the imported grant, keyed by the
+approval subject, source/version and exact item. Calling once per item means a host
+can retry after a partial migration: existing markers return their original row
+identity, while missing items can still be imported.
+
+Revocation cancels the imported row but keeps its marker, including after its grant
+expiry and across module restarts. Re-import therefore cannot resurrect a cancelled
+legacy item. A new explicit `GrantTool2` or `GrantFlowTool2` remains independent and
+can create fresh authority after revocation. The source identifier and version are
+not stored in plaintext; the row contains a domain-separated digest.
