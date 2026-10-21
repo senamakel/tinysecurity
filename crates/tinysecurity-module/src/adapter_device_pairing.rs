@@ -401,6 +401,11 @@ impl<T> Persisted<T> {
         self.fence.complete();
         self.value
     }
+
+    fn fail(self, owner: &mut DevicePairingOwner) {
+        owner.fail_persistence();
+        drop(self);
+    }
 }
 impl<T> std::fmt::Debug for Persisted<T> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -911,7 +916,11 @@ impl PairingState {
                     loaded.owner.fail_persistence();
                     return Err(denied());
                 }
-                self.validate_live_scope(&mut loaded, &context)?;
+                if let Err(error) = self.validate_live_scope(&mut loaded, &context) {
+                    revision.fail(&mut loaded.owner);
+                    loaded.pending_master_aliases.clear();
+                    return Err(error);
+                }
                 loaded.revision = revision.complete();
                 // The bus result intentionally contains no private material. Existing
                 // host channel metadata already owns the public pairing presentation.
@@ -1135,11 +1144,15 @@ impl PairingState {
                 )
                 .is_err()
         {
-            loaded.owner.fail_persistence();
+            revision.fail(&mut loaded.owner);
             loaded.pending_master_aliases.clear();
             return Err(denied());
         }
-        self.validate_live_scope(&mut loaded, &context)?;
+        if let Err(error) = self.validate_live_scope(&mut loaded, &context) {
+            revision.fail(&mut loaded.owner);
+            loaded.pending_master_aliases.clear();
+            return Err(error);
+        }
         loaded.revision.clone_from(&revision.value);
         loaded.pending_master_aliases.remove(&receipt);
         for previous in previous_sessions {
