@@ -32,6 +32,7 @@ serde = { workspace = true }
 zeroize.workspace = true
 # Independent opaque aliases and operation correlations; no key export.
 getrandom.workspace = true
+# URL-safe encoding for host-issued pairing receipts and opaque callback handles.
 base64.workspace = true
 # Stable module-derived original-content correlation for redacted audit retries.
 sha2.workspace = true
