@@ -34,8 +34,10 @@ pub(super) fn trust_key(flow_id: &str, tool: &str) -> String {
 }
 
 pub(super) fn is_trust_row(row: &ApprovalRow2) -> bool {
-    matches!(row.attribution.as_deref(), Some(ATTRIBUTION | IMPORT_ATTRIBUTION))
-        && row.choice == Some(ApprovalChoice2::Flow)
+    matches!(
+        row.attribution.as_deref(),
+        Some(ATTRIBUTION | IMPORT_ATTRIBUTION)
+    ) && row.choice == Some(ApprovalChoice2::Flow)
         && row.state == ApprovalLifecycle2::Approved
         && row.decision_ticket_sha256.is_none()
 }

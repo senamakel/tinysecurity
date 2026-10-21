@@ -5,8 +5,8 @@
 //! so a later startup retry cannot recreate revoked authority.
 use super::{
     ApprovalChoice2, ApprovalLifecycle2, ApprovalRow2, ApprovalScope2, CallerContext, Engine,
-    Error, EvaluateRequest, Origin, RedactMode, Result, binding,
-    engine_flow_trust as flow_trust, engine_tool_trust as tool_trust,
+    Error, EvaluateRequest, Origin, RedactMode, Result, binding, engine_flow_trust as flow_trust,
+    engine_tool_trust as tool_trust,
 };
 use tinysecurity_bus::{
     FLOW_TRUST_LIFETIME_MS2, ImportTrustItem2, ImportTrustOutcome2, ImportTrustReceipt2,
@@ -39,7 +39,10 @@ fn source_marker(reg: &ApprovalScope2, request: &ImportTrustSourceRequest2) -> R
     }
     bytes.extend_from_slice(&(item.len() as u64).to_be_bytes());
     bytes.extend_from_slice(&item);
-    Ok(binding::digest(b"tinysecurity/trust-source-item/v1\0", &bytes))
+    Ok(binding::digest(
+        b"tinysecurity/trust-source-item/v1\0",
+        &bytes,
+    ))
 }
 
 fn marker_exists(rows: &[ApprovalRow2], marker: &str, attribution: &str) -> Option<&ApprovalRow2> {
@@ -96,11 +99,8 @@ impl Engine {
                         return Err(Error::Invalid);
                     }
                     let key = flow_trust::trust_key(flow_id, tool);
-                    let flow_text = binding::text(
-                        &self.redactor()?,
-                        flow_id,
-                        RedactMode::IdentifierHash,
-                    )?;
+                    let flow_text =
+                        binding::text(&self.redactor()?, flow_id, RedactMode::IdentifierHash)?;
                     let existing = Engine::durable_flow_trust(
                         &reg,
                         &rows,

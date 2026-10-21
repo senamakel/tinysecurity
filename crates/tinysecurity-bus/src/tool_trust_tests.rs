@@ -45,7 +45,10 @@ fn source_trust_import_items_keep_exact_tagged_wire_shapes() {
         flow_id: "flow-1".into(),
         tool: "search".into(),
     };
-    assert_eq!(serde_json::to_value(tool).ok(), Some(json!({"kind":"tool", "tool":"search"})));
+    assert_eq!(
+        serde_json::to_value(tool).ok(),
+        Some(json!({"kind":"tool", "tool":"search"}))
+    );
     assert_eq!(
         serde_json::to_value(flow).ok(),
         Some(json!({"kind":"flow_tool", "flow_id":"flow-1", "tool":"search"}))
