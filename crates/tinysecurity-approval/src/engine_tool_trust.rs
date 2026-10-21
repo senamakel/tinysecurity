@@ -63,15 +63,16 @@ impl Engine {
     pub(super) fn live_tool_trust<'a>(
         reg: &ApprovalScope2,
         rows: &'a [ApprovalRow2],
-        key: &str,
+        tool: &str,
         now: u64,
     ) -> Option<&'a ApprovalRow2> {
+        let key = trust_key(tool);
         rows.iter().find(|row| {
             is_trust_row(row)
                 && row.binding.content_sha256 == key
                 && (row.binding.call_sha256 == key
                     || row.attribution.as_deref() == Some(IMPORT_ATTRIBUTION))
-                && row.tool_name == key_tool_placeholder
+                && row.tool_name == tool
                 && row.expires_at_ms > now
                 && Self::current(reg, row).is_ok()
         })
@@ -91,7 +92,7 @@ impl Engine {
         let key = trust_key(&request.tool);
         let rows = self.rows(&reg).await?;
         let now = self.now()?;
-        if let Some(existing) = Self::live_tool_trust(&reg, &rows, &key, now) {
+        if let Some(existing) = Self::live_tool_trust(&reg, &rows, &request.tool, now) {
             self.audit_row(existing.clone()).await?;
             return Ok(ToolTrustReceipt2 {
                 scope_id: request.scope_id,
@@ -172,7 +173,7 @@ impl Engine {
         let key = trust_key(&request.tool);
         let rows = self.rows(&reg).await?;
         let now = self.now()?;
-        let Some(live) = Self::live_tool_trust(&reg, &rows, &key, now) else {
+        let Some(live) = Self::live_tool_trust(&reg, &rows, &request.tool, now) else {
             return Ok(ToolTrustReceipt2 {
                 scope_id: request.scope_id,
                 outcome: ToolTrustOutcome2::Absent,

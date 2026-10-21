@@ -287,7 +287,9 @@ fn lifecycle_valid(row: &ApprovalRow2) -> bool {
                                 | "auto:tool-grant"
                                 | "auto:flow-grant"
                                 | "flow-trust-grant"
+                                | "flow-trust-import"
                                 | "tool-trust-grant"
+                                | "tool-trust-import"
                                 | "exact-reviewed-grant"
                         )
                     )
