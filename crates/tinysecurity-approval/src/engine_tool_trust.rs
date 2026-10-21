@@ -102,14 +102,9 @@ impl Engine {
                 request_id: Some(existing.request_id.clone()),
             });
         }
-        let known = rows.iter().any(|row| {
-            matches!(
-                row.attribution.as_deref(),
-                Some(ATTRIBUTION | IMPORT_ATTRIBUTION)
-            ) && row.binding.content_sha256 == key
-                && row.tool_name == request.tool
-        });
-        if rows.len() >= MAX_SCOPE_ROWS && !known {
+        // Revoked and expired grants still occupy durable rows. Reissuing them would
+        // append another row and eventually exceed the module's load bound.
+        if rows.len() >= MAX_SCOPE_ROWS {
             return Err(Error::Unavailable);
         }
         let redactor = self.redactor()?;
