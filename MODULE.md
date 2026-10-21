@@ -334,7 +334,7 @@ cannot bind the call answers an error, never an allow. Latency budgets are per c
   [credential roots](docs/module-credential-roots.md). Filesystem canonicalization runs on a
   blocking worker so the module's async bus executor remains responsive.
 
-## Approval origin classes, durable flow trust and scored prompt screening (contract 1.22)
+## Approval origin classes, durable trust and scored prompt screening (contracts 1.22 and 1.25)
 
 Additive: every new member and enum value is absent from a 1.21 host's traffic, and a 1.22 host
 refuses a 1.21 module.
@@ -381,6 +381,10 @@ automatic one attributed `auto:flow-grant`.
   durable rows are additional.
 - Latency budget: one `Load` plus one `Cas` and one audit append, so the host's store latency plus
   about 1 ms. `ListFlowTrust2` is one `Load`.
+
+Contract 1.25 adds durable whole-tool trust through `GrantTool2`, `RevokeTool2` and
+`ListToolTrust2`. Its Standard-scope eligibility and lifecycle rules are in
+[`docs/specs/durable-tool-trust.md`](docs/specs/durable-tool-trust.md).
 
 ### Scored prompt screening: `ScanPrompt2`
 
