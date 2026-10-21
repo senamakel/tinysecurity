@@ -13,8 +13,8 @@ fn whole_tool_trust_payloads_have_stable_wire_shapes() {
         },
     };
     assert_eq!(
-        serde_json::to_value(request).unwrap(),
-        json!({
+        serde_json::to_value(request).ok(),
+        Some(json!({
             "scope_id": "scope",
             "tool": "shell",
             "audit": {
@@ -22,7 +22,7 @@ fn whole_tool_trust_payloads_have_stable_wire_shapes() {
                 "expected_tail": 4,
                 "generation": 7
             }
-        })
+        }))
     );
     assert_eq!(
         serde_json::to_value(ToolTrustReceipt2 {
@@ -30,8 +30,8 @@ fn whole_tool_trust_payloads_have_stable_wire_shapes() {
             outcome: ToolTrustOutcome2::Unchanged,
             request_id: Some("request".into()),
         })
-        .unwrap(),
-        json!({"scope_id": "scope", "outcome": "unchanged", "request_id": "request"})
+        .ok(),
+        Some(json!({"scope_id": "scope", "outcome": "unchanged", "request_id": "request"}))
     );
 }
 
