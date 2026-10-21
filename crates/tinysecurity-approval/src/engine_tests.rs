@@ -279,6 +279,40 @@ impl Ports for Fixture {
         }
     }
 }
+#[derive(Debug)]
+struct ForeignRowsPorts(Arc<Fixture>);
+#[async_trait::async_trait]
+impl Ports for ForeignRowsPorts {
+    async fn load(&self, request: ApprovalLoadRequest2) -> Result<ApprovalLoadResponse2> {
+        // Deliberately misbehaving store: echo the requested scope but return every row.
+        Ok(ApprovalLoadResponse2 {
+            scope: request.scope,
+            records: self
+                .0
+                .rows
+                .lock()
+                .map_err(|_| Error::Unavailable)?
+                .values()
+                .cloned()
+                .collect(),
+        })
+    }
+    async fn cas(&self, request: ApprovalCasRequest2) -> Result<ApprovalCasResponse2> {
+        self.0.cas(request).await
+    }
+    async fn prompt(
+        &self,
+        request: ApprovalDeliveryRequest2,
+    ) -> Result<ApprovalDeliveryResponse2> {
+        self.0.prompt(request).await
+    }
+    async fn human(&self, request: VerifyHumanRequest2) -> Result<HumanDecisionReceipt2> {
+        self.0.human(request).await
+    }
+    async fn audit(&self, row: ApprovalRow2) -> Result<()> {
+        self.0.audit(row).await
+    }
+}
 fn config() -> ApprovalConfig2 {
     ApprovalConfig2 {
         timeout_ms: 100,
@@ -774,11 +808,11 @@ async fn wrong_registration_agent_access_ceiling_and_unverified_human_inputs_den
     other.scopes[0].subject.user = "other-user".into();
     let other = Engine::new(
         other,
-        f,
+        Arc::new(ForeignRowsPorts(f.clone())),
         Arc::new(TestClock::default()),
         Redactor::new(&RedactorConfig::default()).map_err(|_| Error::Invalid)?,
     )?;
-    assert_eq!(other.list(&request().scope_id).await?.len(), 0);
+    assert!(other.list(&request().scope_id).await.is_err());
     let f = Arc::new(Fixture::default());
     let mut ceiling = config();
     ceiling.scopes[0].ceiling = AccessTier::Read;
