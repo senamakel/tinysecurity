@@ -512,9 +512,7 @@ async fn whole_tool_trust_survives_restart_and_is_exactly_scoped() -> Result<()>
     let first = engine(fixture.clone(), clock.clone())?;
     first.register_scope(register(7)).await?;
     first.register_scope(register(8)).await?;
-    let granted = first
-        .grant_tool(tool_grant(7, "shell", 1))
-        .await?;
+    let granted = first.grant_tool(tool_grant(7, "shell", 1)).await?;
     assert_eq!(granted.outcome, ToolTrustOutcome2::Granted);
     assert!(granted.request_id.is_some());
     let repeated = first.grant_tool(tool_grant(7, "shell", 2)).await?;
