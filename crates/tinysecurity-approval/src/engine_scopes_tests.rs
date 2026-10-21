@@ -200,7 +200,7 @@ async fn registration_validates_scope_generation_grants_stream_and_ports() -> Re
     repeat.scope.generation = 2;
     assert_eq!(
         owner.register_scope(repeat).await?.outcome,
-        ApprovalScopeOutcome2::Unchanged
+        ApprovalScopeOutcome2::Replaced
     );
     Ok(())
 }
@@ -933,7 +933,7 @@ async fn policy_replaced_while_consume_awaits_never_reserves_the_old_approval() 
 }
 
 #[tokio::test]
-async fn grant_revoked_while_the_reservation_is_written_burns_it() -> Result<()> {
+async fn scope_replacement_waits_for_a_trusted_reservation_to_commit() -> Result<()> {
     let (fixture, owner) = owner()?;
     let owner = Arc::new(owner);
     let mut req = register(7);
@@ -956,11 +956,17 @@ async fn grant_revoked_while_the_reservation_is_written_burns_it() -> Result<()>
         let owner = owner.clone();
         async move { owner.consume(act).await }
     });
-    // The CAS is parked on the barrier; replace the scope, then let the write finish.
+    // The CAS is parked on the barrier; replacement must wait for the trusted
+    // reservation to finish before changing the scope.
     while fixture.cas_calls.load(Ordering::SeqCst) == before {
         tokio::task::yield_now().await;
     }
-    owner.replace_scope(register(7)).await?;
+    let replacing = tokio::spawn({
+        let owner = owner.clone();
+        async move { owner.replace_scope(register(7)).await }
+    });
+    tokio::task::yield_now().await;
+    assert!(!replacing.is_finished());
     let barrier = fixture
         .barrier
         .lock()
@@ -969,8 +975,12 @@ async fn grant_revoked_while_the_reservation_is_written_burns_it() -> Result<()>
         .ok_or(Error::Unavailable)?;
     barrier.wait().await;
     assert_eq!(
-        racing.await.map_err(|_| Error::Unavailable)?.err(),
-        Some(Error::Denied)
+        racing.await.map_err(|_| Error::Unavailable)??.state,
+        ApprovalLifecycle2::Reserved
+    );
+    assert_eq!(
+        replacing.await.map_err(|_| Error::Unavailable)??.outcome,
+        ApprovalScopeOutcome2::Replaced
     );
     Ok(())
 }
