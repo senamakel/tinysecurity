@@ -354,6 +354,9 @@ impl DevicePairingStateCipher {
     /// Denies stale generation/registration authority and invalid ciphertext.
     pub fn decrypt(&self, ciphertext: &str) -> Result<Zeroizing<String>> {
         self.validate()?;
+        if !ciphertext.starts_with("enc2:") {
+            return Err(Error::NativeDenied);
+        }
         SecretCipher::new(Zeroizing::new(*self.key), true).decrypt(ciphertext)
     }
 }
