@@ -91,6 +91,7 @@ impl Engine {
         let _serial = self.tool_trust_lock.lock().await;
         let reg = self.registration(&request.scope_id)?;
         Self::correlation(&request.audit, reg.generation)?;
+        let key = trust_key(&request.tool);
         let rows = self.rows(&reg).await?;
         let now = self.now()?;
         if let Some(existing) = Self::live_tool_trust(&reg, &rows, &request.tool, now) {
@@ -171,7 +172,6 @@ impl Engine {
         let _serial = self.tool_trust_lock.lock().await;
         let reg = self.registration(&request.scope_id)?;
         Self::correlation(&request.audit, reg.generation)?;
-        let key = trust_key(&request.tool);
         let rows = self.rows(&reg).await?;
         let now = self.now()?;
         let Some(live) = Self::live_tool_trust(&reg, &rows, &request.tool, now) else {
