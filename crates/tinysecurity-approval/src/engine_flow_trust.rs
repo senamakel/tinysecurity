@@ -34,12 +34,22 @@ pub(super) fn trust_key(flow_id: &str, tool: &str) -> String {
 }
 
 pub(super) fn is_trust_row(row: &ApprovalRow2) -> bool {
+    is_trust_identity(row) && row.state == ApprovalLifecycle2::Approved
+}
+
+fn is_trust_identity(row: &ApprovalRow2) -> bool {
     matches!(
         row.attribution.as_deref(),
         Some(ATTRIBUTION | IMPORT_ATTRIBUTION)
     ) && row.choice == Some(ApprovalChoice2::Flow)
-        && row.state == ApprovalLifecycle2::Approved
         && row.decision_ticket_sha256.is_none()
+}
+
+fn matches_trust_binding(row: &ApprovalRow2, key: &str) -> bool {
+    is_trust_identity(row)
+        && (row.binding.call_sha256 == key
+            || (row.attribution.as_deref() == Some(IMPORT_ATTRIBUTION)
+                && row.binding.content_sha256 == key))
 }
 
 impl Engine {
@@ -76,9 +86,7 @@ impl Engine {
     ) -> Option<&'a ApprovalRow2> {
         rows.iter().find(|row| {
             is_trust_row(row)
-                && (row.binding.call_sha256 == key
-                    || (row.attribution.as_deref() == Some(IMPORT_ATTRIBUTION)
-                        && row.binding.content_sha256 == key))
+                && matches_trust_binding(row, key)
                 && row.expires_at_ms > now
                 && Self::current(reg, row).is_ok()
         })
@@ -201,6 +209,25 @@ impl Engine {
         let rows = self.rows(&reg).await?;
         let now = self.now()?;
         let Some(live) = Self::live_trust(&reg, &rows, &key, now) else {
+            if let Some(cancelled) = rows.iter().find(|row| {
+                row.state == ApprovalLifecycle2::Cancelled
+                    && matches_trust_binding(row, &key)
+                    && row.audit == request.audit
+                    && Self::current(&reg, row).is_ok()
+            }) {
+                let request_id = cancelled.request_id.clone();
+                self.cancel(ApprovalRecordRequest2 {
+                    scope_id: request.scope_id.clone(),
+                    request_id: request_id.clone(),
+                    audit: request.audit,
+                })
+                .await?;
+                return Ok(FlowTrustReceipt2 {
+                    scope_id: request.scope_id,
+                    outcome: FlowTrustOutcome2::Revoked,
+                    request_id: Some(request_id),
+                });
+            }
             return Ok(FlowTrustReceipt2 {
                 scope_id: request.scope_id,
                 outcome: FlowTrustOutcome2::Absent,
