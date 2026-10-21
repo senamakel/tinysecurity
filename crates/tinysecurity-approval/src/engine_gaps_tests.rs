@@ -628,6 +628,68 @@ async fn whole_tool_grant_fails_closed_when_the_store_cannot_persist() -> Result
 }
 
 #[tokio::test]
+async fn whole_tool_trust_rejects_invalid_names_and_expires_with_its_generation() -> Result<()> {
+    let (_, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    let too_long = "x".repeat(257);
+    for tool in [
+        "",
+        "  ",
+        "shell\n",
+        &too_long,
+        "policy_change",
+        "native_tool",
+    ] {
+        assert_eq!(
+            owner.grant_tool(tool_grant(7, tool, 1)).await.err(),
+            Some(Error::Invalid),
+            "{tool:?}"
+        );
+    }
+    owner.grant_tool(tool_grant(7, "shell", 1)).await?;
+    assert_eq!(
+        owner.list_tool_trust(tool_listing(7)).await?.entries.len(),
+        1
+    );
+
+    owner.advance_generation(2)?;
+    assert!(
+        owner
+            .list_tool_trust(tool_listing(7))
+            .await?
+            .entries
+            .is_empty()
+    );
+    let mut request = shell(7, None, Origin::Operator, "new-generation");
+    request.audit = AuditCorrelation2 {
+        generation: 2,
+        ..at(2)
+    };
+    assert_eq!(
+        owner.begin(request).await?.state,
+        ApprovalLifecycle2::Pending
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn whole_tool_trust_fails_closed_when_the_store_cannot_be_loaded() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    owner.grant_tool(tool_grant(7, "shell", 1)).await?;
+    fixture.load_fail.store(1, Ordering::SeqCst);
+
+    let mut request = shell(7, None, Origin::Operator, "store-unavailable");
+    request.audit = at(2);
+    assert_eq!(owner.begin(request).await.err(), Some(Error::Unavailable));
+    assert_eq!(
+        owner.list_tool_trust(tool_listing(7)).await.err(),
+        Some(Error::Unavailable)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_unlabelled_approval_dies_when_only_a_flow_grant_remains() -> Result<()> {
     let (_, owner) = owner()?;
     let mut req = register(7);

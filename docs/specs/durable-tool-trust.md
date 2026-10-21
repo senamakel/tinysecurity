@@ -20,13 +20,14 @@ tool row. Listing returns only live grants, ordered by exact tool name. Names
 must be nonblank, contain no control characters, fit within 256 bytes, and must
 not name a human-only or `native_*` tool.
 
-`EvaluateApproval2` consults durable whole-tool trust only for an otherwise
-eligible required approval (`Rule::Approval`). It records the resulting decision
-as an audited, once-only row attributed `auto:tool-grant`. It does not consult
-the grant for a denial, a Cron external effect, an unlabelled origin, an
-automatic posture, or a human-only/native tool. Hosts keep Forced and FlowStrict
-subjects in their own registered scopes and issue whole-tool grants only for
-Standard subjects, so those scopes cannot borrow Standard trust.
+`EvaluateApproval2` consults durable whole-tool trust only for an eligible
+required approval (`Rule::Approval`) or an unlabelled call (`Rule::GrantOnly`),
+which can be approved only by an exact whole-tool grant without a prompt or
+judge. It records the resulting decision as an audited, once-only row attributed
+`auto:tool-grant`. It does not consult the grant for a denial, a Cron external
+effect, an automatic posture, or a human-only/native tool. Hosts keep Forced and
+FlowStrict subjects in their own registered scopes and issue whole-tool grants
+only for Standard subjects, so those scopes cannot borrow Standard trust.
 
 At consume, the module reloads the subject's live grants. Revocation after
 evaluation therefore denies a queued approval before execution. Store, audit or
