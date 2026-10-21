@@ -193,7 +193,10 @@ async fn whole_tool_trust_survives_a_module_restart_and_is_revoked_before_consum
         .proxy
         .call(names::methods::EVALUATE_APPROVAL2, (begin(2, 2),))
         .await?;
-    assert_eq!(approved.record.attribution.as_deref(), Some("auto:tool-grant"));
+    assert_eq!(
+        approved.record.attribution.as_deref(),
+        Some("auto:tool-grant")
+    );
 
     let revoked: ToolTrustReceipt2 = second
         .proxy
@@ -213,11 +216,13 @@ async fn whole_tool_trust_survives_a_module_restart_and_is_revoked_before_consum
         request: begin(2, 2).request,
         audit: audit(4),
     };
-    assert!(second
-        .proxy
-        .call::<ApprovalRow2>(names::methods::CONSUME_APPROVAL2, (consume,))
-        .await
-        .is_err());
+    assert!(
+        second
+            .proxy
+            .call::<ApprovalRow2>(names::methods::CONSUME_APPROVAL2, (consume,))
+            .await
+            .is_err()
+    );
     let listed: ToolTrustList2 = second
         .proxy
         .call(

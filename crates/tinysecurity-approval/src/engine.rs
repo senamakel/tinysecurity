@@ -603,12 +603,7 @@ impl Engine {
             return None;
         }
         let durable_flow = Self::durable_flow_trust(reg, rows, &request.request, now);
-        let durable_tool = Self::durable_tool_trust(
-            reg,
-            rows,
-            &request.request.call.tool,
-            now,
-        );
+        let durable_tool = Self::durable_tool_trust(reg, rows, &request.request.call.tool, now);
         entry.grant_for(request, rule, durable_flow, durable_tool)
     }
     /// The origin's shortcut for this call, or a denial: a Cron external effect is
@@ -1644,12 +1639,8 @@ impl Engine {
             // execution. Reload it at the consume boundary so queued approvals die.
             let reg = self.registered(&entry);
             let rows = self.rows(&reg).await?;
-            granted = Self::durable_tool_trust(
-                &reg,
-                &rows,
-                &request.request.call.tool,
-                self.now()?,
-            );
+            granted =
+                Self::durable_tool_trust(&reg, &rows, &request.request.call.tool, self.now()?);
         }
         let automatic = posture
             && tinysecurity_auto::rules::evaluate(
@@ -1921,8 +1912,8 @@ fn reusable_grant<'a>(
 
 #[path = "engine_flow_trust.rs"]
 mod flow_trust;
-#[path = "engine_tool_trust.rs"]
-mod tool_trust;
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 mod tests;
+#[path = "engine_tool_trust.rs"]
+mod tool_trust;

@@ -334,6 +334,8 @@ cannot bind the call answers an error, never an allow. Latency budgets are per c
   [credential roots](docs/module-credential-roots.md). Filesystem canonicalization runs on a
   blocking worker so the module's async bus executor remains responsive.
 
+<a id="approval-origin-classes-durable-flow-trust-and-scored-prompt-screening-contract-122"></a>
+
 ## Approval origin classes, durable trust and scored prompt screening (contracts 1.22 and 1.25)
 
 Additive: every new member and enum value is absent from a 1.21 host's traffic, and a 1.22 host

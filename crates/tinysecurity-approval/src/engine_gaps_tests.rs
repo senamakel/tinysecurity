@@ -521,13 +521,23 @@ async fn whole_tool_trust_survives_restart_and_is_exactly_scoped() -> Result<()>
     let mut other_tool = shell(7, None, Origin::Operator, "other-tool");
     other_tool.request.call.tool = "http_request".into();
     other_tool.audit = at(3);
-    assert_eq!(restarted.begin(other_tool).await?.state, ApprovalLifecycle2::Pending);
+    assert_eq!(
+        restarted.begin(other_tool).await?.state,
+        ApprovalLifecycle2::Pending
+    );
 
     let other_scope = restarted
         .begin(shell(8, None, Origin::Operator, "other-scope"))
         .await?;
     assert_eq!(other_scope.state, ApprovalLifecycle2::Pending);
-    assert_eq!(restarted.list_tool_trust(tool_listing(8)).await?.entries.len(), 0);
+    assert_eq!(
+        restarted
+            .list_tool_trust(tool_listing(8))
+            .await?
+            .entries
+            .len(),
+        0
+    );
     let listed = restarted.list_tool_trust(tool_listing(7)).await?.entries;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].tool, "shell");
@@ -575,8 +585,16 @@ async fn whole_tool_trust_keeps_cron_unlabelled_and_human_only_boundaries() -> R
             .err(),
         Some(Error::Denied)
     );
-    for (index, tool) in ["policy_change", "native_test_action"].into_iter().enumerate() {
-        assert!(owner.grant_tool(tool_grant(7, tool, index as u64 + 2)).await.is_err());
+    for (index, tool) in ["policy_change", "native_test_action"]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(
+            owner
+                .grant_tool(tool_grant(7, tool, index as u64 + 2))
+                .await
+                .is_err()
+        );
     }
     Ok(())
 }
@@ -590,7 +608,13 @@ async fn whole_tool_grant_fails_closed_when_the_store_cannot_persist() -> Result
         owner.grant_tool(tool_grant(7, "shell", 1)).await.err(),
         Some(Error::Unavailable)
     );
-    assert!(owner.list_tool_trust(tool_listing(7)).await?.entries.is_empty());
+    assert!(
+        owner
+            .list_tool_trust(tool_listing(7))
+            .await?
+            .entries
+            .is_empty()
+    );
     Ok(())
 }
 

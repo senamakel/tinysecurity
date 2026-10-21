@@ -95,8 +95,7 @@ impl Engine {
             });
         }
         let known = rows.iter().any(|row| {
-            row.attribution.as_deref() == Some(ATTRIBUTION)
-                && row.binding.call_sha256 == key
+            row.attribution.as_deref() == Some(ATTRIBUTION) && row.binding.call_sha256 == key
         });
         if rows.len() >= MAX_SCOPE_ROWS && !known {
             return Err(Error::Unavailable);
