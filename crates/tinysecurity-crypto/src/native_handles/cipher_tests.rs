@@ -367,6 +367,19 @@ async fn pairing_state_cipher_keeps_plaintext_inside_module_without_host_deliver
 }
 
 #[tokio::test]
+async fn pairing_state_cipher_rejects_plaintext_persistence() -> TestResult {
+    let f = Fixture::new(true, Limits::default()).await?;
+    let internal = f.owner.retain_device_pairing_state(
+        f.pending(CipherKind::Encrypt, b"seed")?,
+        "scope-a",
+        "backend-a",
+    )?;
+
+    assert!(internal.decrypt(r#"{"version":1,"records":[]}"#).is_err());
+    Ok(())
+}
+
+#[tokio::test]
 async fn retained_pairing_cipher_outlives_alias_expiry_but_not_generation() -> TestResult {
     let f = Fixture::new(true, Limits::default()).await?;
     let internal = f.owner.retain_device_pairing_state(
