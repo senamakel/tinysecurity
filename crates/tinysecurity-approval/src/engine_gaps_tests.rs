@@ -1,7 +1,8 @@
 //! Contract 1.22: origin classes for approval evaluation and durable flow trust.
 use super::*;
 use tinysecurity_bus::{
-    FlowTrustOutcome2, GrantFlowToolRequest2, ListFlowTrustRequest2, RevokeFlowToolRequest2,
+    FlowTrustOutcome2, GrantFlowToolRequest2, GrantToolRequest2, ListFlowTrustRequest2,
+    ListToolTrustRequest2, RevokeFlowToolRequest2, RevokeToolRequest2, ToolTrustOutcome2,
 };
 
 fn shell(n: u64, flow: Option<&str>, origin: Origin, call: &str) -> EvaluateApprovalRequest2 {
@@ -40,6 +41,23 @@ fn listing(n: u64, flow: Option<&str>) -> ListFlowTrustRequest2 {
         scope_id: id(n),
         flow_id: flow.map(Into::into),
     }
+}
+fn tool_grant(n: u64, tool: &str, tail: u64) -> GrantToolRequest2 {
+    GrantToolRequest2 {
+        scope_id: id(n),
+        tool: tool.into(),
+        audit: at(tail),
+    }
+}
+fn tool_revoke(n: u64, tool: &str, tail: u64) -> RevokeToolRequest2 {
+    RevokeToolRequest2 {
+        scope_id: id(n),
+        tool: tool.into(),
+        audit: at(tail),
+    }
+}
+fn tool_listing(n: u64) -> ListToolTrustRequest2 {
+    ListToolTrustRequest2 { scope_id: id(n) }
 }
 fn prompts(fixture: &Fixture) -> Result<usize> {
     Ok(fixture
@@ -473,6 +491,106 @@ async fn a_flow_trust_row_cannot_be_preauthorized_decided_or_consumed_as_a_human
         audit: at(2),
     };
     assert!(owner.consume(consume).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn whole_tool_trust_survives_restart_and_is_exactly_scoped() -> Result<()> {
+    let fixture = Arc::new(Fixture::default());
+    let clock = Arc::new(TestClock::default());
+    clock.wall.store(1000, Ordering::SeqCst);
+    let first = engine(fixture.clone(), clock.clone())?;
+    first.register_scope(register(7)).await?;
+    first.register_scope(register(8)).await?;
+    let granted = first.grant_tool(tool_grant(7, "shell", 1)).await?;
+    assert_eq!(granted.outcome, ToolTrustOutcome2::Granted);
+    assert!(granted.request_id.is_some());
+    let repeated = first.grant_tool(tool_grant(7, "shell", 2)).await?;
+    assert_eq!(repeated.outcome, ToolTrustOutcome2::Unchanged);
+    assert_eq!(repeated.request_id, granted.request_id);
+
+    let restarted = engine(fixture, clock)?;
+    restarted.register_scope(register(7)).await?;
+    restarted.register_scope(register(8)).await?;
+    let approved = restarted
+        .begin(shell(7, None, Origin::Operator, "matching-tool"))
+        .await?;
+    assert_eq!(approved.state, ApprovalLifecycle2::Approved);
+    assert_eq!(approved.attribution.as_deref(), Some("auto:tool-grant"));
+
+    let mut other_tool = shell(7, None, Origin::Operator, "other-tool");
+    other_tool.request.call.tool = "http_request".into();
+    other_tool.audit = at(3);
+    assert_eq!(restarted.begin(other_tool).await?.state, ApprovalLifecycle2::Pending);
+
+    let other_scope = restarted
+        .begin(shell(8, None, Origin::Operator, "other-scope"))
+        .await?;
+    assert_eq!(other_scope.state, ApprovalLifecycle2::Pending);
+    assert_eq!(restarted.list_tool_trust(tool_listing(8)).await?.entries.len(), 0);
+    let listed = restarted.list_tool_trust(tool_listing(7)).await?.entries;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].tool, "shell");
+    Ok(())
+}
+
+#[tokio::test]
+async fn whole_tool_revocation_before_consume_revokes_queued_automatic_approval() -> Result<()> {
+    let (_, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    owner.grant_tool(tool_grant(7, "shell", 1)).await?;
+    let mut request = shell(7, None, Origin::Operator, "queued-call");
+    request.audit = at(2);
+    let row = owner.begin(request.clone()).await?;
+    assert_eq!(row.attribution.as_deref(), Some("auto:tool-grant"));
+
+    owner.revoke_tool(tool_revoke(7, "shell", 3)).await?;
+    let consume = ApprovalActionRequest2 {
+        scope_id: id(7),
+        request_id: row.request_id,
+        request: request.request,
+        audit: at(4),
+    };
+    assert_eq!(owner.consume(consume).await.err(), Some(Error::Denied));
+    Ok(())
+}
+
+#[tokio::test]
+async fn whole_tool_trust_keeps_cron_unlabelled_and_human_only_boundaries() -> Result<()> {
+    let (_, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    owner.grant_tool(tool_grant(7, "shell", 1)).await?;
+
+    assert_eq!(
+        owner
+            .begin(shell(7, None, Origin::Cron, "cron-external"))
+            .await
+            .err(),
+        Some(Error::Denied)
+    );
+    assert_eq!(
+        owner
+            .begin(shell(7, None, Origin::Unlabelled, "unlabelled"))
+            .await
+            .err(),
+        Some(Error::Denied)
+    );
+    for (index, tool) in ["policy_change", "native_test_action"].into_iter().enumerate() {
+        assert!(owner.grant_tool(tool_grant(7, tool, index as u64 + 2)).await.is_err());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn whole_tool_grant_fails_closed_when_the_store_cannot_persist() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    fixture.fail.store(1, Ordering::SeqCst);
+    assert_eq!(
+        owner.grant_tool(tool_grant(7, "shell", 1)).await.err(),
+        Some(Error::Unavailable)
+    );
+    assert!(owner.list_tool_trust(tool_listing(7)).await?.entries.is_empty());
     Ok(())
 }
 

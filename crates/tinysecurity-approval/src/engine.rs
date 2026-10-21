@@ -1639,6 +1639,18 @@ impl Engine {
             let rows = self.rows(&reg).await?;
             granted = Self::durable_flow_trust(&reg, &rows, &request.request, self.now()?);
         }
+        if !granted && row.attribution.as_deref() == Some("auto:tool-grant") {
+            // A durable whole-tool grant may be revoked after evaluation but before
+            // execution. Reload it at the consume boundary so queued approvals die.
+            let reg = self.registered(&entry);
+            let rows = self.rows(&reg).await?;
+            granted = Self::durable_tool_trust(
+                &reg,
+                &rows,
+                &request.request.call.tool,
+                self.now()?,
+            );
+        }
         let automatic = posture
             && tinysecurity_auto::rules::evaluate(
                 &entry.scope,
