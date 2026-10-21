@@ -1003,27 +1003,66 @@ async fn a_full_scope_takes_no_new_flow_trust_but_still_answers_for_a_live_one()
 }
 
 #[tokio::test]
-async fn a_revoked_pair_can_be_granted_again_even_on_a_full_scope() -> Result<()> {
-    let (_, owner) = owner()?;
+async fn a_revoked_pair_cannot_cross_the_scope_row_cap_when_regranted() -> Result<()> {
+    let (fixture, owner) = owner()?;
     owner.register_scope(register(7)).await?;
     for n in 0..960u64 {
         owner
             .grant_flow_tool(grant(7, &format!("flow-{n}"), "shell", n + 1))
             .await?;
     }
+    assert_eq!(
+        fixture.rows.lock().map_err(|_| Error::Unavailable)?.len(),
+        960
+    );
     let revoked = owner
         .revoke_flow_tool(revoke(7, "flow-0", "shell", 961))
         .await?;
     assert_eq!(revoked.outcome, FlowTrustOutcome2::Revoked);
-    let again = owner
-        .grant_flow_tool(grant(7, "flow-0", "shell", 962))
-        .await?;
-    assert_eq!(again.outcome, FlowTrustOutcome2::Granted);
-    assert!(
+    assert_eq!(
+        fixture.rows.lock().map_err(|_| Error::Unavailable)?.len(),
+        960
+    );
+    assert_eq!(
         owner
-            .grant_flow_tool(grant(7, "brand-new", "shell", 963))
+            .grant_flow_tool(grant(7, "flow-0", "shell", 962))
             .await
-            .is_err()
+            .err(),
+        Some(Error::Unavailable)
+    );
+    assert_eq!(
+        fixture.rows.lock().map_err(|_| Error::Unavailable)?.len(),
+        960
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_revoked_tool_cannot_cross_the_scope_row_cap_when_regranted() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    for n in 0..960u64 {
+        owner
+            .grant_tool(tool_grant(7, &format!("tool-{n}"), n + 1))
+            .await?;
+    }
+    assert_eq!(
+        fixture.rows.lock().map_err(|_| Error::Unavailable)?.len(),
+        960
+    );
+    let revoked = owner.revoke_tool(tool_revoke(7, "tool-0", 961)).await?;
+    assert_eq!(revoked.outcome, ToolTrustOutcome2::Revoked);
+    assert_eq!(
+        fixture.rows.lock().map_err(|_| Error::Unavailable)?.len(),
+        960
+    );
+    assert_eq!(
+        owner.grant_tool(tool_grant(7, "tool-0", 962)).await.err(),
+        Some(Error::Unavailable)
+    );
+    assert_eq!(
+        fixture.rows.lock().map_err(|_| Error::Unavailable)?.len(),
+        960
     );
     Ok(())
 }
