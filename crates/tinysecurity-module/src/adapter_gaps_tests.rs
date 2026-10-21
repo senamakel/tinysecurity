@@ -2,9 +2,9 @@
 //! across a module restart over the host-served store, and scored prompt screening.
 use super::*;
 use tinysecurity_bus::{
-    FlowTrustList2, FlowTrustOutcome2, FlowTrustReceipt2, GrantFlowToolRequest2,
-    ListFlowTrustRequest2, PromptTier2, RevokeFlowToolRequest2, ScanPromptScoredRequest2,
-    ScanPromptScoredResponse2,
+    ApprovalActionRequest2, ApprovalRow2, FlowTrustList2, FlowTrustOutcome2, FlowTrustReceipt2,
+    GrantFlowToolRequest2, ListFlowTrustRequest2, PromptTier2, RevokeFlowToolRequest2,
+    ScanPromptScoredRequest2, ScanPromptScoredResponse2,
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
@@ -203,11 +203,25 @@ async fn whole_tool_trust_survives_a_module_restart_and_is_revoked_before_consum
         )
         .await?;
     assert_eq!(revoked["outcome"], "revoked");
+    let consume = ApprovalActionRequest2 {
+        scope_id: "a".repeat(32),
+        request_id: approved.record.request_id,
+        request: begin(2, 2).request,
+        audit: audit(4),
+    };
     assert!(second
         .proxy
-        .call::<EvaluateApprovalResponse2>(names::methods::EVALUATE_APPROVAL2, (begin(4, 4),))
+        .call::<ApprovalRow2>(names::methods::CONSUME_APPROVAL2, (consume,))
         .await
         .is_err());
+    let listed: serde_json::Value = second
+        .proxy
+        .call(
+            "ListToolTrust2",
+            (serde_json::json!({ "scope_id": "a".repeat(32) }),),
+        )
+        .await?;
+    assert_eq!(listed["entries"].as_array().map(Vec::len), Some(0));
     second.broker.abort();
     Ok(())
 }
