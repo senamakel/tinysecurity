@@ -458,6 +458,7 @@ async fn canceled_legacy_import_callback_faults_the_mutated_owner() -> TestResul
 #[tokio::test]
 async fn successful_store_remains_fenced_until_post_store_validation_finishes() -> TestResult {
     let mut owner = owner()?;
+    import_one(&mut owner, "post-store-validation")?;
     let registry = registry_with_frame()?;
     let faulted = Arc::new(AtomicBool::new(false));
     let stored = persist_fenced(
@@ -470,8 +471,18 @@ async fn successful_store_remains_fenced_until_post_store_validation_finishes() 
     )
     .await?;
     // A context expiry or generation change rejects publication after the CAS has committed.
-    drop(stored);
-    assert!(check_persistence_fault(&mut owner, &faulted).is_err());
+    stored.fail(&mut owner);
+    assert!(faulted.load(Ordering::Acquire));
+    assert!(owner
+        .recover_channel(
+            "post-store-validation",
+            &controller("post-store-validation"),
+            Time {
+                wall: 1001,
+                monotonic: 1001,
+            },
+        )
+        .is_err());
     assert!(!frame_seal(&registry));
     Ok(())
 }
@@ -498,8 +509,18 @@ async fn imported_store_remains_fenced_until_master_revalidation_finishes() -> T
         |_snapshot| async { Ok("committed-import-revision".into()) },
     )
     .await?;
-    drop(stored);
-    assert!(check_persistence_fault(&mut owner, &faulted).is_err());
+    stored.fail(&mut owner);
+    assert!(faulted.load(Ordering::Acquire));
+    assert!(owner
+        .recover_channel(
+            "channel-import",
+            &context,
+            Time {
+                wall: 1002,
+                monotonic: 1002,
+            },
+        )
+        .is_err());
     assert!(!frame_seal(&registry));
     Ok(())
 }
