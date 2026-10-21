@@ -300,10 +300,7 @@ impl Ports for ForeignRowsPorts {
     async fn cas(&self, request: ApprovalCasRequest2) -> Result<ApprovalCasResponse2> {
         self.0.cas(request).await
     }
-    async fn prompt(
-        &self,
-        request: ApprovalDeliveryRequest2,
-    ) -> Result<ApprovalDeliveryResponse2> {
+    async fn prompt(&self, request: ApprovalDeliveryRequest2) -> Result<ApprovalDeliveryResponse2> {
         self.0.prompt(request).await
     }
     async fn human(&self, request: VerifyHumanRequest2) -> Result<HumanDecisionReceipt2> {

@@ -303,10 +303,18 @@ async fn redacted_tool_labels_do_not_break_exact_flow_grant_identity() -> Result
             .outcome,
         FlowTrustOutcome2::Granted
     );
-    let mut direct = shell(7, Some("flow-direct"), Origin::Operator, "redacted-flow-direct");
+    let mut direct = shell(
+        7,
+        Some("flow-direct"),
+        Origin::Operator,
+        "redacted-flow-direct",
+    );
     direct.request.call.tool = tool.into();
     direct.audit = at(2);
-    assert_eq!(owner.begin(direct).await?.state, ApprovalLifecycle2::Approved);
+    assert_eq!(
+        owner.begin(direct).await?.state,
+        ApprovalLifecycle2::Approved
+    );
     assert_eq!(
         owner
             .revoke_flow_tool(revoke(7, "flow-direct", tool, 3))
