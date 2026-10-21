@@ -204,6 +204,9 @@ impl Engine {
         let rows = self.rows(&reg).await?;
         let plan = import_plan(self, &reg, &rows, &request.item)?;
         if let Some(existing) = marker_exists(&rows, &marker, plan.attribution) {
+            // A prior CAS may have committed while its audit acknowledgement was
+            // lost. Reconcile that exact durable row before acknowledging the retry.
+            self.audit_row(existing.clone()).await?;
             return Ok(ImportTrustReceipt2 {
                 scope_id: request.scope_id,
                 outcome: ImportTrustOutcome2::AlreadyImported,
