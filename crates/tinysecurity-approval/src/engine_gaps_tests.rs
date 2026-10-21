@@ -1,8 +1,9 @@
 //! Contract 1.22: origin classes for approval evaluation and durable flow trust.
 use super::*;
 use tinysecurity_bus::{
-    FlowTrustOutcome2, GrantFlowToolRequest2, GrantToolRequest2, ListFlowTrustRequest2,
-    ListToolTrustRequest2, RevokeFlowToolRequest2, RevokeToolRequest2, ToolTrustOutcome2,
+    FlowTrustOutcome2, GrantFlowToolRequest2, GrantToolRequest2, ImportTrustItem2,
+    ImportTrustOutcome2, ImportTrustSourceRequest2, ListFlowTrustRequest2, ListToolTrustRequest2,
+    RevokeFlowToolRequest2, RevokeToolRequest2, ToolTrustOutcome2,
 };
 
 fn shell(n: u64, flow: Option<&str>, origin: Origin, call: &str) -> EvaluateApprovalRequest2 {
@@ -58,6 +59,15 @@ fn tool_revoke(n: u64, tool: &str, tail: u64) -> RevokeToolRequest2 {
 }
 fn tool_listing(n: u64) -> ListToolTrustRequest2 {
     ListToolTrustRequest2 { scope_id: id(n) }
+}
+fn import_tool_source(n: u64, source_id: &str, tool: &str, tail: u64) -> ImportTrustSourceRequest2 {
+    ImportTrustSourceRequest2 {
+        scope_id: id(n),
+        source_id: source_id.into(),
+        source_version: "v1".into(),
+        item: ImportTrustItem2::Tool { tool: tool.into() },
+        audit: at(tail),
+    }
 }
 fn prompts(fixture: &Fixture) -> Result<usize> {
     Ok(fixture
@@ -685,6 +695,67 @@ async fn whole_tool_trust_fails_closed_when_the_store_cannot_be_loaded() -> Resu
     assert_eq!(
         owner.list_tool_trust(tool_listing(7)).await.err(),
         Some(Error::Unavailable)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn source_import_retries_only_items_missing_from_a_partial_import() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    let first = owner
+        .import_trust_source(import_tool_source(
+            7,
+            "legacy-autonomy-auto-approve",
+            "shell",
+            1,
+        ))
+        .await?;
+    assert_eq!(first.outcome, ImportTrustOutcome2::Imported);
+
+    fixture.fail.store(1, Ordering::SeqCst);
+    assert_eq!(
+        owner
+            .import_trust_source(import_tool_source(
+                7,
+                "legacy-autonomy-auto-approve",
+                "http_request",
+                2,
+            ))
+            .await
+            .err(),
+        Some(Error::Unavailable)
+    );
+    fixture.fail.store(0, Ordering::SeqCst);
+
+    let restarted = engine(fixture, Arc::new(TestClock::default()))?;
+    restarted.register_scope(register(7)).await?;
+    let first_retry = restarted
+        .import_trust_source(import_tool_source(
+            7,
+            "legacy-autonomy-auto-approve",
+            "shell",
+            3,
+        ))
+        .await?;
+    assert_eq!(first_retry.outcome, ImportTrustOutcome2::AlreadyImported);
+    assert_eq!(first_retry.request_id, first.request_id);
+    let second_retry = restarted
+        .import_trust_source(import_tool_source(
+            7,
+            "legacy-autonomy-auto-approve",
+            "http_request",
+            4,
+        ))
+        .await?;
+    assert_eq!(second_retry.outcome, ImportTrustOutcome2::Imported);
+    assert_eq!(
+        restarted
+            .list_tool_trust(tool_listing(7))
+            .await?
+            .entries
+            .len(),
+        2
     );
     Ok(())
 }
