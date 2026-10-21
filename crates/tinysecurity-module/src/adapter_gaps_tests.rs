@@ -346,6 +346,31 @@ async fn imported_trust_stays_revoked_after_restart_and_reimport() -> TestResult
         )
         .await?;
     assert!(flows.entries.is_empty());
+    let explicit_tool: ToolTrustReceipt2 = third
+        .proxy
+        .call(
+            names::methods::GRANT_TOOL2,
+            (GrantToolRequest2 {
+                scope_id: "a".repeat(32),
+                tool: "local_diagnostic".into(),
+                audit: audit(7),
+            },),
+        )
+        .await?;
+    assert_eq!(explicit_tool.outcome, ToolTrustOutcome2::Granted);
+    let explicit_flow: FlowTrustReceipt2 = third
+        .proxy
+        .call(
+            names::methods::GRANT_FLOW_TOOL2,
+            (GrantFlowToolRequest2 {
+                scope_id: "a".repeat(32),
+                flow_id: "flow".into(),
+                tool: "local_diagnostic".into(),
+                audit: audit(8),
+            },),
+        )
+        .await?;
+    assert_eq!(explicit_flow.outcome, FlowTrustOutcome2::Granted);
     third.broker.abort();
     Ok(())
 }
