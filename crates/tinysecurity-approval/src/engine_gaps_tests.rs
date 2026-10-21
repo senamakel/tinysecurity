@@ -804,6 +804,100 @@ async fn expired_import_receipts_do_not_recreate_legacy_trust() -> Result<()> {
 }
 
 #[tokio::test]
+async fn source_import_receipts_are_bound_to_subject_version_and_exact_item() -> Result<()> {
+    let (_, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    owner.register_scope(register(8)).await?;
+    let first = owner
+        .import_trust_source(import_tool_source(
+            7,
+            "legacy-autonomy-auto-approve",
+            "shell",
+            1,
+        ))
+        .await?;
+    assert_eq!(first.outcome, ImportTrustOutcome2::Imported);
+
+    let mut other_subject = import_tool_source(8, "legacy-autonomy-auto-approve", "shell", 2);
+    other_subject.source_version = "v1".into();
+    assert_eq!(
+        owner.import_trust_source(other_subject).await?.outcome,
+        ImportTrustOutcome2::Imported
+    );
+    let mut new_item = import_tool_source(7, "legacy-autonomy-auto-approve", "http_request", 3);
+    assert_eq!(
+        owner.import_trust_source(new_item.clone()).await?.outcome,
+        ImportTrustOutcome2::Imported
+    );
+    new_item.source_version = "v2".into();
+    new_item.audit = at(4);
+    assert_eq!(
+        owner.import_trust_source(new_item).await?.outcome,
+        ImportTrustOutcome2::Imported
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn source_import_validation_and_store_errors_fail_closed() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    for (source_id, source_version, item) in [
+        (
+            "",
+            "v1",
+            ImportTrustItem2::Tool {
+                tool: "shell".into(),
+            },
+        ),
+        (
+            "legacy-source",
+            "bad version",
+            ImportTrustItem2::Tool {
+                tool: "shell".into(),
+            },
+        ),
+        (
+            "legacy-source",
+            "v1",
+            ImportTrustItem2::Tool {
+                tool: "policy_change".into(),
+            },
+        ),
+    ] {
+        let mut request = import_tool_source(7, source_id, "shell", 1);
+        request.source_version = source_version.into();
+        request.item = item;
+        assert_eq!(
+            owner.import_trust_source(request).await.err(),
+            Some(Error::Invalid)
+        );
+    }
+    fixture.fail.store(1, Ordering::SeqCst);
+    assert_eq!(
+        owner
+            .import_trust_source(import_tool_source(
+                7,
+                "legacy-autonomy-auto-approve",
+                "shell",
+                1,
+            ))
+            .await
+            .err(),
+        Some(Error::Unavailable)
+    );
+    fixture.fail.store(0, Ordering::SeqCst);
+    assert!(
+        owner
+            .list_tool_trust(tool_listing(7))
+            .await?
+            .entries
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_unlabelled_approval_dies_when_only_a_flow_grant_remains() -> Result<()> {
     let (_, owner) = owner()?;
     let mut req = register(7);
