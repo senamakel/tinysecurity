@@ -1,10 +1,70 @@
-//! Durable whole-tool trust (contract 1.25).
+//! Durable whole-tool trust and imported-source receipts (contract 1.25).
 //!
 //! A host can grant, revoke and list an exact tool grant through the authenticated
 //! approval interface. Grants live as audited approval-store rows under one
 //! registered subject and become stale with that subject's policy generation.
 use crate::AuditCorrelation2;
 use serde::{Deserialize, Serialize};
+
+/// One exact legacy trust item, imported under an immutable source receipt.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImportTrustItem2 {
+    /// A whole-tool grant.
+    Tool {
+        /// Exact registered tool name.
+        tool: String,
+    },
+    /// A tool grant restricted to one exact workflow identity.
+    FlowTool {
+        /// Exact workflow identity.
+        flow_id: String,
+        /// Exact registered tool name.
+        tool: String,
+    },
+}
+
+/// Import one item from a stable host-owned trust source.
+///
+/// The host calls once per item so each durable grant and immutable import receipt
+/// share a single approval-store write and audit correlation.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportTrustSourceRequest2 {
+    /// Trusted registration whose approval subject owns the receipt.
+    pub scope_id: String,
+    /// Stable host identifier for this legacy source, at most 128 bytes.
+    pub source_id: String,
+    /// Stable source schema/version, at most 64 bytes.
+    pub source_version: String,
+    /// Exact item whose import is recorded once.
+    pub item: ImportTrustItem2,
+    /// Exact audit phase of the import write.
+    pub audit: AuditCorrelation2,
+}
+
+/// Result of importing one source item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ImportTrustOutcome2 {
+    /// The source item has never been imported and its grant row was persisted.
+    Imported,
+    /// Its immutable receipt already exists; no grant was recreated.
+    AlreadyImported,
+}
+
+/// Durable receipt for importing one source item.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportTrustReceipt2 {
+    /// Affected registration.
+    pub scope_id: String,
+    /// Whether a new receipt was recorded.
+    pub outcome: ImportTrustOutcome2,
+    /// Stable row identity, including after grant revocation.
+    pub request_id: String,
+}
 
 /// Longest a whole-tool trust row stays live, in milliseconds (ten years). A later
 /// grant of the same tool renews an expired row.
@@ -98,6 +158,9 @@ macro_rules! redacted_debug {
     })+};
 }
 redacted_debug!(
+    ImportTrustItem2,
+    ImportTrustSourceRequest2,
+    ImportTrustReceipt2,
     GrantToolRequest2,
     RevokeToolRequest2,
     ListToolTrustRequest2,
