@@ -1,6 +1,5 @@
 use super::*;
 use serde_json::json;
-use serde_json::json;
 
 #[test]
 fn whole_tool_trust_payloads_have_stable_wire_shapes() {
