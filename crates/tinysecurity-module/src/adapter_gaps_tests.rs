@@ -156,6 +156,63 @@ async fn flow_trust_survives_a_module_restart_through_the_host_store() -> TestRe
 }
 
 #[tokio::test]
+async fn whole_tool_trust_survives_a_module_restart_and_is_revoked_before_consume() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("ledger");
+    std::fs::write(&path, [])?;
+    let first = start(&path).await?;
+    let grant: serde_json::Value = first
+        .proxy
+        .call(
+            "GrantTool2",
+            (serde_json::json!({
+                "scope_id": "a".repeat(32),
+                "tool": "local_diagnostic",
+                "audit": audit(1),
+            }),),
+        )
+        .await?;
+    assert_eq!(grant["outcome"], "granted");
+    first.broker.abort();
+
+    let second = start(&path).await?;
+    let listed: serde_json::Value = second
+        .proxy
+        .call(
+            "ListToolTrust2",
+            (serde_json::json!({ "scope_id": "a".repeat(32) }),),
+        )
+        .await?;
+    assert_eq!(listed["entries"].as_array().map(Vec::len), Some(1));
+
+    let approved: EvaluateApprovalResponse2 = second
+        .proxy
+        .call(names::methods::EVALUATE_APPROVAL2, (begin(2, 2),))
+        .await?;
+    assert_eq!(approved.record.attribution.as_deref(), Some("auto:tool-grant"));
+
+    let revoked: serde_json::Value = second
+        .proxy
+        .call(
+            "RevokeTool2",
+            (serde_json::json!({
+                "scope_id": "a".repeat(32),
+                "tool": "local_diagnostic",
+                "audit": audit(3),
+            }),),
+        )
+        .await?;
+    assert_eq!(revoked["outcome"], "revoked");
+    assert!(second
+        .proxy
+        .call::<EvaluateApprovalResponse2>(names::methods::EVALUATE_APPROVAL2, (begin(4, 4),))
+        .await
+        .is_err());
+    second.broker.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn scored_prompt_scan_returns_tier_score_and_content_free_rules() -> TestResult {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("ledger");
