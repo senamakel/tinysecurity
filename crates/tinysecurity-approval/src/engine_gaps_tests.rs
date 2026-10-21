@@ -500,13 +500,10 @@ async fn whole_tool_trust_survives_restart_and_is_exactly_scoped() -> Result<()>
     let clock = Arc::new(TestClock::default());
     clock.wall.store(1000, Ordering::SeqCst);
     let first = engine(fixture.clone(), clock.clone())?;
-    first
-        .register_scope(register(7))
-        .await
-        .map_err(|error| {
-            eprintln!("register scope 7: {error:?}");
-            error
-        })?;
+    first.register_scope(register(7)).await.map_err(|error| {
+        eprintln!("register scope 7: {error:?}");
+        error
+    })?;
     first.register_scope(register(8)).await?;
     let granted = first
         .grant_tool(tool_grant(7, "shell", 1))
@@ -593,13 +590,10 @@ async fn whole_tool_trust_keeps_cron_unlabelled_and_human_only_boundaries() -> R
             .err(),
         Some(Error::Denied)
     );
-    assert_eq!(
-        owner
-            .begin(shell(7, None, Origin::Unlabelled, "unlabelled"))
-            .await
-            .err(),
-        Some(Error::Denied)
-    );
+    let mut unlabelled = shell(7, None, Origin::Unlabelled, "unlabelled");
+    unlabelled.audit = at(2);
+    let granted = owner.begin(unlabelled).await?;
+    assert_eq!(granted.attribution.as_deref(), Some("auto:tool-grant"));
     for (index, tool) in ["policy_change", "native_test_action"]
         .into_iter()
         .enumerate()

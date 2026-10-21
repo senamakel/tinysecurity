@@ -263,9 +263,9 @@ impl ScopeEntry {
                 )
                 .or_else(|| durable_tool.then_some("auto:tool-grant"))
                 .or_else(|| durable_flow.then_some("auto:flow-grant")),
-            tinysecurity_auto::rules::Rule::GrantOnly => {
-                self.tool_grant(&request.request.call.tool)
-            }
+            tinysecurity_auto::rules::Rule::GrantOnly => self
+                .tool_grant(&request.request.call.tool)
+                .or_else(|| durable_tool.then_some("auto:tool-grant")),
             _ => None,
         }
     }
@@ -486,7 +486,10 @@ impl Engine {
         let reg = self.registered(&entry);
         let (bound, args_redacted, external_effect) =
             binding::original(&reg, &request.request, &self.redactor()?)?;
-        let rule = Self::origin_rule(&entry, &reg, &bound.origin, &request, external_effect)?;
+        let raw_rule = tinysecurity_auto::rules::evaluate(&reg, &bound.origin, external_effect);
+        if raw_rule == tinysecurity_auto::rules::Rule::Deny {
+            return Err(Error::Denied);
+        }
         let now = self.now()?;
         let ttl = match bound.origin {
             Origin::Copilot | Origin::SubAgent => 180_000,
@@ -501,6 +504,15 @@ impl Engine {
         }
         Self::correlation(&request.audit, reg.generation)?;
         let rows = self.rows(&reg).await?;
+        let durable_tool = Self::durable_tool_trust(&reg, &rows, &request.request.call.tool, now);
+        let rule = Self::origin_rule(
+            &entry,
+            &reg,
+            &bound.origin,
+            &request,
+            external_effect,
+            durable_tool,
+        )?;
         self.reconcile_creations(&rows)?;
         if let Some(row) = self
             .existing_begin(&reg, &bound, &rows, now, deadline)
@@ -615,11 +627,14 @@ impl Engine {
         origin: &Origin,
         request: &EvaluateApprovalRequest2,
         external_effect: bool,
+        durable_tool: bool,
     ) -> Result<tinysecurity_auto::rules::Rule> {
         use tinysecurity_auto::rules::Rule;
         match tinysecurity_auto::rules::evaluate(reg, origin, external_effect) {
             Rule::Deny => Err(Error::Denied),
-            Rule::GrantOnly if entry.tool_grant(&request.request.call.tool).is_none() => {
+            Rule::GrantOnly
+                if entry.tool_grant(&request.request.call.tool).is_none() && !durable_tool =>
+            {
                 Err(Error::Denied)
             }
             // A human-only tool needs a fresh human decision under every origin: the
