@@ -473,16 +473,18 @@ async fn successful_store_remains_fenced_until_post_store_validation_finishes() 
     // A context expiry or generation change rejects publication after the CAS has committed.
     stored.fail(&mut owner);
     assert!(faulted.load(Ordering::Acquire));
-    assert!(owner
-        .recover_channel(
-            "post-store-validation",
-            &controller("post-store-validation"),
-            Time {
-                wall: 1001,
-                monotonic: 1001,
-            },
-        )
-        .is_err());
+    assert!(
+        owner
+            .recover_channel(
+                "post-store-validation",
+                &controller("post-store-validation"),
+                Time {
+                    wall: 1001,
+                    monotonic: 1001,
+                },
+            )
+            .is_err()
+    );
     assert!(!frame_seal(&registry));
     Ok(())
 }
@@ -511,16 +513,18 @@ async fn imported_store_remains_fenced_until_master_revalidation_finishes() -> T
     .await?;
     stored.fail(&mut owner);
     assert!(faulted.load(Ordering::Acquire));
-    assert!(owner
-        .recover_channel(
-            "channel-import",
-            &context,
-            Time {
-                wall: 1002,
-                monotonic: 1002,
-            },
-        )
-        .is_err());
+    assert!(
+        owner
+            .recover_channel(
+                "channel-import",
+                &context,
+                Time {
+                    wall: 1002,
+                    monotonic: 1002,
+                },
+            )
+            .is_err()
+    );
     assert!(!frame_seal(&registry));
     Ok(())
 }
