@@ -242,45 +242,58 @@ async fn imported_trust_stays_revoked_after_restart_and_reimport() -> TestResult
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("ledger");
     std::fs::write(&path, [])?;
-    let import = |source_id: &'static str, item: serde_json::Value, sequence: u64| {
-        serde_json::json!({
-            "scope_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "source_id": source_id,
-            "source_version": "v1",
-            "item": item,
-            "audit": audit(sequence),
-        })
-    };
     let first = start(&path).await?;
-    let whole: serde_json::Value = first
-        .proxy
-        .call(
-            "ImportTrustSource2",
-            (import(
-                "legacy-autonomy-auto-approve",
-                serde_json::json!({"kind":"tool", "tool":"local_diagnostic"}),
-                1,
-            ),),
-        )
-        .await?;
-    assert_eq!(whole["outcome"], "imported");
-    let flow: serde_json::Value = first
-        .proxy
-        .call(
-            "ImportTrustSource2",
-            (import(
-                "legacy-approval-db-flow-trust",
-                serde_json::json!({"kind":"flow_tool", "flow_id":"flow", "tool":"local_diagnostic"}),
-                2,
-            ),),
-        )
-        .await?;
-    assert_eq!(flow["outcome"], "imported");
+    import_legacy_sources(&first.proxy).await?;
     first.broker.abort();
 
     let second = start(&path).await?;
-    let revoked_tool: ToolTrustReceipt2 = second
-        .proxy
+    revoke_imported_sources(&second.proxy).await?;
+    second.broker.abort();
+
+    let third = start(&path).await?;
+    reimport_keeps_revocations(&third.proxy).await?;
+    explicit_grants_can_follow_revocation(&third.proxy).await?;
+    third.broker.abort();
+    Ok(())
+}
+
+fn import_request(source_id: &str, item: serde_json::Value, sequence: u64) -> serde_json::Value {
+    serde_json::json!({
+        "scope_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": source_id,
+        "source_version": "v1",
+        "item": item,
+        "audit": audit(sequence),
+    })
+}
+
+async fn import_legacy_sources(proxy: &tinybus::Proxy) -> TestResult {
+    let items = [
+        (
+            "legacy-autonomy-auto-approve",
+            serde_json::json!({"kind":"tool", "tool":"local_diagnostic"}),
+            1,
+        ),
+        (
+            "legacy-approval-db-flow-trust",
+            serde_json::json!({"kind":"flow_tool", "flow_id":"flow", "tool":"local_diagnostic"}),
+            2,
+        ),
+    ];
+    for (source, item, sequence) in items {
+        let receipt: serde_json::Value = proxy
+            .call(
+                "ImportTrustSource2",
+                (import_request(source, item, sequence),),
+            )
+            .await?;
+        assert_eq!(receipt["outcome"], "imported");
+    }
+    Ok(())
+}
+
+async fn revoke_imported_sources(proxy: &tinybus::Proxy) -> TestResult {
+    let tool: ToolTrustReceipt2 = proxy
         .call(
             names::methods::REVOKE_TOOL2,
             (RevokeToolRequest2 {
@@ -290,9 +303,8 @@ async fn imported_trust_stays_revoked_after_restart_and_reimport() -> TestResult
             },),
         )
         .await?;
-    assert_eq!(revoked_tool.outcome, ToolTrustOutcome2::Revoked);
-    let revoked_flow: FlowTrustReceipt2 = second
-        .proxy
+    assert_eq!(tool.outcome, ToolTrustOutcome2::Revoked);
+    let flow: FlowTrustReceipt2 = proxy
         .call(
             names::methods::REVOKE_FLOW_TOOL2,
             (RevokeFlowToolRequest2 {
@@ -303,11 +315,12 @@ async fn imported_trust_stays_revoked_after_restart_and_reimport() -> TestResult
             },),
         )
         .await?;
-    assert_eq!(revoked_flow.outcome, FlowTrustOutcome2::Revoked);
-    second.broker.abort();
+    assert_eq!(flow.outcome, FlowTrustOutcome2::Revoked);
+    Ok(())
+}
 
-    let third = start(&path).await?;
-    for (source_id, item, sequence) in [
+async fn reimport_keeps_revocations(proxy: &tinybus::Proxy) -> TestResult {
+    let items = [
         (
             "legacy-autonomy-auto-approve",
             serde_json::json!({"kind":"tool", "tool":"local_diagnostic"}),
@@ -318,15 +331,17 @@ async fn imported_trust_stays_revoked_after_restart_and_reimport() -> TestResult
             serde_json::json!({"kind":"flow_tool", "flow_id":"flow", "tool":"local_diagnostic"}),
             6,
         ),
-    ] {
-        let receipt: serde_json::Value = third
-            .proxy
-            .call("ImportTrustSource2", (import(source_id, item, sequence),))
+    ];
+    for (source, item, sequence) in items {
+        let receipt: serde_json::Value = proxy
+            .call(
+                "ImportTrustSource2",
+                (import_request(source, item, sequence),),
+            )
             .await?;
         assert_eq!(receipt["outcome"], "already_imported");
     }
-    let tools: ToolTrustList2 = third
-        .proxy
+    let tools: ToolTrustList2 = proxy
         .call(
             names::methods::LIST_TOOL_TRUST2,
             (ListToolTrustRequest2 {
@@ -334,9 +349,7 @@ async fn imported_trust_stays_revoked_after_restart_and_reimport() -> TestResult
             },),
         )
         .await?;
-    assert!(tools.entries.is_empty());
-    let flows: FlowTrustList2 = third
-        .proxy
+    let flows: FlowTrustList2 = proxy
         .call(
             names::methods::LIST_FLOW_TRUST2,
             (ListFlowTrustRequest2 {
@@ -345,9 +358,13 @@ async fn imported_trust_stays_revoked_after_restart_and_reimport() -> TestResult
             },),
         )
         .await?;
-    assert!(flows.entries.is_empty());
-    let explicit_tool: ToolTrustReceipt2 = third
-        .proxy
+    assert_eq!(tools.entries.len(), 0);
+    assert_eq!(flows.entries.len(), 0);
+    Ok(())
+}
+
+async fn explicit_grants_can_follow_revocation(proxy: &tinybus::Proxy) -> TestResult {
+    let tool: ToolTrustReceipt2 = proxy
         .call(
             names::methods::GRANT_TOOL2,
             (GrantToolRequest2 {
@@ -357,9 +374,8 @@ async fn imported_trust_stays_revoked_after_restart_and_reimport() -> TestResult
             },),
         )
         .await?;
-    assert_eq!(explicit_tool.outcome, ToolTrustOutcome2::Granted);
-    let explicit_flow: FlowTrustReceipt2 = third
-        .proxy
+    assert_eq!(tool.outcome, ToolTrustOutcome2::Granted);
+    let flow: FlowTrustReceipt2 = proxy
         .call(
             names::methods::GRANT_FLOW_TOOL2,
             (GrantFlowToolRequest2 {
@@ -370,8 +386,7 @@ async fn imported_trust_stays_revoked_after_restart_and_reimport() -> TestResult
             },),
         )
         .await?;
-    assert_eq!(explicit_flow.outcome, FlowTrustOutcome2::Granted);
-    third.broker.abort();
+    assert_eq!(flow.outcome, FlowTrustOutcome2::Granted);
     Ok(())
 }
 
