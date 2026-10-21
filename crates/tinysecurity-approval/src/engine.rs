@@ -488,17 +488,7 @@ impl Engine {
             binding::original(&reg, &request.request, &self.redactor()?)?;
         Self::reject_raw_deny(&reg, &bound.origin, external_effect)?;
         let now = self.now()?;
-        let ttl = match bound.origin {
-            Origin::Copilot | Origin::SubAgent => 180_000,
-            _ => 600_000,
-        };
-        let ttl = request.ttl_ms.unwrap_or(ttl).min(ttl);
-        if let Some(deadline) = deadline {
-            self.check_native_deadline(&bound, deadline, now, ttl)?;
-        }
-        if ttl == 0 {
-            return Err(Error::Denied);
-        }
+        let ttl = self.begin_ttl(&request, &bound, deadline, now)?;
         Self::correlation(&request.audit, reg.generation)?;
         let (rows, rule) = self
             .begin_rows_and_rule(&entry, &reg, &request, &bound.origin, external_effect, now)
@@ -607,6 +597,26 @@ impl Engine {
             return Err(Error::Denied);
         }
         Ok(())
+    }
+    fn begin_ttl(
+        &self,
+        request: &EvaluateApprovalRequest2,
+        bound: &tinysecurity_bus::ApprovalBinding2,
+        deadline: Option<u64>,
+        now: u64,
+    ) -> Result<u64> {
+        let maximum = match bound.origin {
+            Origin::Copilot | Origin::SubAgent => 180_000,
+            _ => 600_000,
+        };
+        let ttl = request.ttl_ms.unwrap_or(maximum).min(maximum);
+        if let Some(deadline) = deadline {
+            self.check_native_deadline(bound, deadline, now, ttl)?;
+        }
+        if ttl == 0 {
+            return Err(Error::Denied);
+        }
+        Ok(ttl)
     }
     /// The judge never qualifies a human-only tool, however the tool is named.
     fn judge_barred(tool: &str) -> bool {
