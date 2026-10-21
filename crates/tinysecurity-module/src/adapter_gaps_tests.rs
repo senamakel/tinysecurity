@@ -3,8 +3,9 @@
 use super::*;
 use tinysecurity_bus::{
     ApprovalActionRequest2, ApprovalRow2, FlowTrustList2, FlowTrustOutcome2, FlowTrustReceipt2,
-    GrantFlowToolRequest2, ListFlowTrustRequest2, PromptTier2, RevokeFlowToolRequest2,
-    ScanPromptScoredRequest2, ScanPromptScoredResponse2,
+    GrantFlowToolRequest2, GrantToolRequest2, ListFlowTrustRequest2, ListToolTrustRequest2,
+    PromptTier2, RevokeFlowToolRequest2, RevokeToolRequest2, ScanPromptScoredRequest2,
+    ScanPromptScoredResponse2, ToolTrustList2, ToolTrustOutcome2, ToolTrustReceipt2,
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
@@ -161,29 +162,32 @@ async fn whole_tool_trust_survives_a_module_restart_and_is_revoked_before_consum
     let path = dir.path().join("ledger");
     std::fs::write(&path, [])?;
     let first = start(&path).await?;
-    let grant: serde_json::Value = first
+    let grant: ToolTrustReceipt2 = first
         .proxy
         .call(
-            "GrantTool2",
-            (serde_json::json!({
-                "scope_id": "a".repeat(32),
-                "tool": "local_diagnostic",
-                "audit": audit(1),
-            }),),
+            names::methods::GRANT_TOOL2,
+            (GrantToolRequest2 {
+                scope_id: "a".repeat(32),
+                tool: "local_diagnostic".into(),
+                audit: audit(1),
+            },),
         )
         .await?;
-    assert_eq!(grant["outcome"], "granted");
+    assert_eq!(grant.outcome, ToolTrustOutcome2::Granted);
     first.broker.abort();
 
     let second = start(&path).await?;
-    let listed: serde_json::Value = second
+    let listed: ToolTrustList2 = second
         .proxy
         .call(
-            "ListToolTrust2",
-            (serde_json::json!({ "scope_id": "a".repeat(32) }),),
+            names::methods::LIST_TOOL_TRUST2,
+            (ListToolTrustRequest2 {
+                scope_id: "a".repeat(32),
+            },),
         )
         .await?;
-    assert_eq!(listed["entries"].as_array().map(Vec::len), Some(1));
+    assert_eq!(listed.entries.len(), 1);
+    assert_eq!(listed.entries[0].tool, "local_diagnostic");
 
     let approved: EvaluateApprovalResponse2 = second
         .proxy
@@ -191,18 +195,18 @@ async fn whole_tool_trust_survives_a_module_restart_and_is_revoked_before_consum
         .await?;
     assert_eq!(approved.record.attribution.as_deref(), Some("auto:tool-grant"));
 
-    let revoked: serde_json::Value = second
+    let revoked: ToolTrustReceipt2 = second
         .proxy
         .call(
-            "RevokeTool2",
-            (serde_json::json!({
-                "scope_id": "a".repeat(32),
-                "tool": "local_diagnostic",
-                "audit": audit(3),
-            }),),
+            names::methods::REVOKE_TOOL2,
+            (RevokeToolRequest2 {
+                scope_id: "a".repeat(32),
+                tool: "local_diagnostic".into(),
+                audit: audit(3),
+            },),
         )
         .await?;
-    assert_eq!(revoked["outcome"], "revoked");
+    assert_eq!(revoked.outcome, ToolTrustOutcome2::Revoked);
     let consume = ApprovalActionRequest2 {
         scope_id: "a".repeat(32),
         request_id: approved.record.request_id,
@@ -214,14 +218,16 @@ async fn whole_tool_trust_survives_a_module_restart_and_is_revoked_before_consum
         .call::<ApprovalRow2>(names::methods::CONSUME_APPROVAL2, (consume,))
         .await
         .is_err());
-    let listed: serde_json::Value = second
+    let listed: ToolTrustList2 = second
         .proxy
         .call(
-            "ListToolTrust2",
-            (serde_json::json!({ "scope_id": "a".repeat(32) }),),
+            names::methods::LIST_TOOL_TRUST2,
+            (ListToolTrustRequest2 {
+                scope_id: "a".repeat(32),
+            },),
         )
         .await?;
-    assert_eq!(listed["entries"].as_array().map(Vec::len), Some(0));
+    assert!(listed.entries.is_empty());
     second.broker.abort();
     Ok(())
 }
