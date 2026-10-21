@@ -31,6 +31,18 @@ pub(super) fn is_trust_row(row: &ApprovalRow2) -> bool {
         && row.binding.caller.flow.is_none()
 }
 
+fn matches_tool_trust_binding(row: &ApprovalRow2, key: &str) -> bool {
+    matches!(
+        row.attribution.as_deref(),
+        Some(ATTRIBUTION | IMPORT_ATTRIBUTION)
+    ) && row.choice == Some(ApprovalChoice2::Tool)
+        && row.decision_ticket_sha256.is_none()
+        && row.binding.caller.flow.is_none()
+        && row.binding.content_sha256 == key
+        && (row.binding.call_sha256 == key
+            || row.attribution.as_deref() == Some(IMPORT_ATTRIBUTION))
+}
+
 pub(super) fn valid_tool(tool: &str) -> bool {
     ApprovalGrants2 {
         tools: vec![tool.to_owned()],
@@ -70,9 +82,7 @@ impl Engine {
         let key = trust_key(tool);
         rows.iter().find(|row| {
             is_trust_row(row)
-                && row.binding.content_sha256 == key
-                && (row.binding.call_sha256 == key
-                    || row.attribution.as_deref() == Some(IMPORT_ATTRIBUTION))
+                && matches_tool_trust_binding(row, &key)
                 && row.expires_at_ms > now
                 && Self::current(reg, row).is_ok()
         })
@@ -172,6 +182,26 @@ impl Engine {
         let rows = self.rows(&reg).await?;
         let now = self.now()?;
         let Some(live) = Self::live_tool_trust(&reg, &rows, &request.tool, now) else {
+            let key = trust_key(&request.tool);
+            if let Some(cancelled) = rows.iter().find(|row| {
+                row.state == ApprovalLifecycle2::Cancelled
+                    && matches_tool_trust_binding(row, &key)
+                    && row.audit == request.audit
+                    && Self::current(&reg, row).is_ok()
+            }) {
+                let request_id = cancelled.request_id.clone();
+                self.cancel(ApprovalRecordRequest2 {
+                    scope_id: request.scope_id.clone(),
+                    request_id: request_id.clone(),
+                    audit: request.audit,
+                })
+                .await?;
+                return Ok(ToolTrustReceipt2 {
+                    scope_id: request.scope_id,
+                    outcome: ToolTrustOutcome2::Revoked,
+                    request_id: Some(request_id),
+                });
+            }
             return Ok(ToolTrustReceipt2 {
                 scope_id: request.scope_id,
                 outcome: ToolTrustOutcome2::Absent,

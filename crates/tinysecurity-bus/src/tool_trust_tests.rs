@@ -62,6 +62,8 @@ fn trust_payload_debug_output_redacts_every_field() {
         assert!(!output.contains("scope-secret"));
         assert!(!output.contains("tool-secret"));
         assert!(!output.contains("flow-secret"));
+        assert!(!output.contains("source-secret"));
+        assert!(!output.contains("request-secret"));
     }
 
     let audit = AuditCorrelation2 {
