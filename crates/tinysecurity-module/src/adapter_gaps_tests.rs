@@ -238,6 +238,119 @@ async fn whole_tool_trust_survives_a_module_restart_and_is_revoked_before_consum
 }
 
 #[tokio::test]
+async fn imported_trust_stays_revoked_after_restart_and_reimport() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("ledger");
+    std::fs::write(&path, [])?;
+    let import = |source_id: &'static str, item: serde_json::Value, sequence: u64| {
+        serde_json::json!({
+            "scope_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "source_id": source_id,
+            "source_version": "v1",
+            "item": item,
+            "audit": audit(sequence),
+        })
+    };
+    let first = start(&path).await?;
+    let whole: serde_json::Value = first
+        .proxy
+        .call(
+            "ImportTrustSource2",
+            (import(
+                "legacy-autonomy-auto-approve",
+                serde_json::json!({"kind":"tool", "tool":"local_diagnostic"}),
+                1,
+            ),),
+        )
+        .await?;
+    assert_eq!(whole["outcome"], "imported");
+    let flow: serde_json::Value = first
+        .proxy
+        .call(
+            "ImportTrustSource2",
+            (import(
+                "legacy-approval-db-flow-trust",
+                serde_json::json!({"kind":"flow_tool", "flow_id":"flow", "tool":"local_diagnostic"}),
+                2,
+            ),),
+        )
+        .await?;
+    assert_eq!(flow["outcome"], "imported");
+    first.broker.abort();
+
+    let second = start(&path).await?;
+    let revoked_tool: ToolTrustReceipt2 = second
+        .proxy
+        .call(
+            names::methods::REVOKE_TOOL2,
+            (RevokeToolRequest2 {
+                scope_id: "a".repeat(32),
+                tool: "local_diagnostic".into(),
+                audit: audit(3),
+            },),
+        )
+        .await?;
+    assert_eq!(revoked_tool.outcome, ToolTrustOutcome2::Revoked);
+    let revoked_flow: FlowTrustReceipt2 = second
+        .proxy
+        .call(
+            names::methods::REVOKE_FLOW_TOOL2,
+            (RevokeFlowToolRequest2 {
+                scope_id: "a".repeat(32),
+                flow_id: "flow".into(),
+                tool: "local_diagnostic".into(),
+                audit: audit(4),
+            },),
+        )
+        .await?;
+    assert_eq!(revoked_flow.outcome, FlowTrustOutcome2::Revoked);
+    second.broker.abort();
+
+    let third = start(&path).await?;
+    for (source_id, item, sequence) in [
+        (
+            "legacy-autonomy-auto-approve",
+            serde_json::json!({"kind":"tool", "tool":"local_diagnostic"}),
+            5,
+        ),
+        (
+            "legacy-approval-db-flow-trust",
+            serde_json::json!({"kind":"flow_tool", "flow_id":"flow", "tool":"local_diagnostic"}),
+            6,
+        ),
+    ] {
+        let receipt: serde_json::Value = third
+            .proxy
+            .call("ImportTrustSource2", (import(source_id, item, sequence),))
+            .await?;
+        assert_eq!(receipt["outcome"], "already_imported");
+    }
+    let tools: ToolTrustList2 = third
+        .proxy
+        .call(
+            names::methods::LIST_TOOL_TRUST2,
+            (ListToolTrustRequest2 {
+                scope_id: "a".repeat(32),
+            },),
+        )
+        .await?;
+    assert!(tools.entries.is_empty());
+    let flows: FlowTrustList2 = third
+        .proxy
+        .call(
+            names::methods::LIST_FLOW_TRUST2,
+            (ListFlowTrustRequest2 {
+                scope_id: "a".repeat(32),
+                flow_id: Some("flow".into()),
+            },),
+        )
+        .await?;
+    assert!(flows.entries.is_empty());
+    third.broker.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn scored_prompt_scan_returns_tier_score_and_content_free_rules() -> TestResult {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("ledger");
