@@ -787,6 +787,43 @@ async fn expired_import_receipts_do_not_recreate_legacy_trust() -> Result<()> {
 }
 
 #[tokio::test]
+async fn imported_source_retry_reconciles_a_committed_row_after_audit_failure() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    let request = import_tool_source(7, "legacy-autonomy-auto-approve", "shell", 1);
+
+    fixture.fail.store(2, Ordering::SeqCst);
+    assert_eq!(
+        owner.import_trust_source(request.clone()).await.err(),
+        Some(Error::Unavailable)
+    );
+    assert_eq!(
+        fixture.rows.lock().map_err(|_| Error::Unavailable)?.len(),
+        1
+    );
+    assert!(
+        fixture
+            .audit_receipts
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .is_empty()
+    );
+
+    fixture.fail.store(0, Ordering::SeqCst);
+    let retry = owner.import_trust_source(request).await?;
+    assert_eq!(retry.outcome, ImportTrustOutcome2::AlreadyImported);
+    assert_eq!(
+        fixture
+            .audit_receipts
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .len(),
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn source_import_receipts_are_bound_to_subject_version_and_exact_item() -> Result<()> {
     let (_, owner) = owner()?;
     owner.register_scope(register(7)).await?;
