@@ -334,6 +334,15 @@ struct LoadedScope {
     persistence_faulted: Arc<AtomicBool>,
 }
 
+async fn lock_and_validate_scope<T>(
+    scope: &tokio::sync::Mutex<T>,
+    validate: impl FnOnce(&mut T) -> tinybus::Result<()>,
+) -> tinybus::Result<tokio::sync::MutexGuard<'_, T>> {
+    let mut scope = scope.lock().await;
+    validate(&mut scope)?;
+    Ok(scope)
+}
+
 #[derive(Clone)]
 struct PersistenceContext {
     faulted: Arc<AtomicBool>,
@@ -647,14 +656,16 @@ impl PairingState {
                     context.expires_at_ms,
                 )?;
                 let loaded = self.load_scope(&context).await?;
-                let mut loaded = loaded.lock().await;
-                self.validate_live_scope(&mut loaded, &context)?;
-                self.secret.validate_cipher_master(
-                    &scope.secret_registration_id,
-                    alias,
-                    generation,
-                    context.expires_at_ms,
-                )?;
+                let mut loaded = lock_and_validate_scope(loaded.as_ref(), |loaded| {
+                    self.validate_live_scope(loaded, &context)?;
+                    self.secret.validate_cipher_master(
+                        &scope.secret_registration_id,
+                        alias,
+                        generation,
+                        context.expires_at_ms,
+                    )
+                })
+                .await?;
                 let public = loaded
                     .owner
                     .public_key(&context.scope_id, time(self.clock.as_ref())?)

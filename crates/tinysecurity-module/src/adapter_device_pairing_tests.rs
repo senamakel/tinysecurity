@@ -6,6 +6,35 @@ use std::sync::{
 use tinysecurity::crypto::device_pairing::{DevicePairingOwner, LegacyDeviceIdentity, Time};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[tokio::test]
+async fn unlock_master_authority_is_checked_after_waiting_for_scope_lock() -> TestResult {
+    let scope = Arc::new(tokio::sync::Mutex::new(()));
+    let held = scope.lock().await;
+    let now = Arc::new(std::sync::atomic::AtomicU64::new(9));
+    let task_now = Arc::clone(&now);
+    let task_scope = Arc::clone(&scope);
+    let task = tokio::spawn(async move {
+        lock_and_validate_scope(&task_scope, move |()| {
+            if task_now.load(Ordering::SeqCst) >= 10 {
+                Err(denied())
+            } else {
+                Ok(())
+            }
+        })
+        .await
+        .map(|_| ())
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        !task.is_finished(),
+        "validation must wait for the scope lock"
+    );
+    now.store(10, Ordering::SeqCst);
+    drop(held);
+    assert!(task.await?.is_err());
+    Ok(())
+}
+
 const SCOPE_ID: &str = "0123456789abcdef0123456789abcdef";
 const FRAME_HANDLE: &str = "abcdef0123456789abcdef0123456789";
 
