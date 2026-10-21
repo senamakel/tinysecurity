@@ -646,6 +646,48 @@ async fn whole_tool_trust_survives_restart_and_is_exactly_scoped() -> Result<()>
 }
 
 #[tokio::test]
+async fn whole_tool_revoke_retry_reconciles_a_committed_cancellation_audit() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    let granted = owner.grant_tool(tool_grant(7, "shell", 1)).await?;
+    let request = tool_revoke(7, "shell", 2);
+
+    // The cancellation CAS succeeds, then the required terminal audit sink fails.
+    fixture.fail_cancelled_audit.store(1, Ordering::SeqCst);
+    assert_eq!(
+        owner.revoke_tool(request.clone()).await.err(),
+        Some(Error::Unavailable)
+    );
+    let request_id = granted.request_id.clone().ok_or(Error::Invalid)?;
+    let cancelled = owner
+        .list(&id(7))
+        .await?
+        .into_iter()
+        .find(|row| row.request_id == request_id)
+        .ok_or(Error::Invalid)?;
+    assert_eq!(cancelled.state, ApprovalLifecycle2::Cancelled);
+    assert!(
+        !fixture
+            .audit_receipts
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .contains_key(&(cancelled.request_id.clone(), cancelled.version))
+    );
+
+    let retry = owner.revoke_tool(request).await?;
+    assert_eq!(retry.outcome, ToolTrustOutcome2::Revoked);
+    assert_eq!(retry.request_id.as_deref(), granted.request_id.as_deref());
+    assert!(
+        fixture
+            .audit_receipts
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .contains_key(&(cancelled.request_id.clone(), cancelled.version))
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn redacted_tool_labels_do_not_break_exact_grant_identity() -> Result<()> {
     let tool = "private-tool-label";
     let mut redactor = RedactorConfig::default();

@@ -44,6 +44,7 @@ struct Fixture {
     audit_receipts: Mutex<std::collections::BTreeMap<(String, u64), ApprovalRow2>>,
     barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
     native_receipt_mode: AtomicU64,
+    fail_cancelled_audit: AtomicU64,
     admitted: Mutex<Vec<(String, String)>>,
     released: Mutex<Vec<String>>,
     admit_fails: AtomicU64,
@@ -253,6 +254,11 @@ impl Ports for Fixture {
             .lock()
             .map_err(|_| Error::Unavailable)?
             .push(_r.clone());
+        if _r.state == ApprovalLifecycle2::Cancelled
+            && self.fail_cancelled_audit.swap(0, Ordering::SeqCst) != 0
+        {
+            return Err(Error::Unavailable);
+        }
         let key = (_r.request_id.clone(), _r.version);
         let mut receipts = self.audit_receipts.lock().map_err(|_| Error::Unavailable)?;
         if let Some(prior) = receipts.get(&key) {
