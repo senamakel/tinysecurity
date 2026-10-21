@@ -98,7 +98,7 @@ impl Engine {
                     )
                 }
                 ImportTrustItem2::FlowTool { flow_id, tool } => {
-                    if !flow_trust::trust_pair_valid(flow_id, tool) {
+                    if !Engine::trust_pair_valid(flow_id, tool) {
                         return Err(Error::Invalid);
                     }
                     let key = flow_trust::trust_key(flow_id, tool);

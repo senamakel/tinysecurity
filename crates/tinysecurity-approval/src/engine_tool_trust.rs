@@ -31,7 +31,7 @@ pub(super) fn is_trust_row(row: &ApprovalRow2) -> bool {
         && row.binding.caller.flow.is_none()
 }
 
-fn valid_tool(tool: &str) -> bool {
+pub(super) fn valid_tool(tool: &str) -> bool {
     ApprovalGrants2 {
         tools: vec![tool.to_owned()],
         flows: Vec::new(),
