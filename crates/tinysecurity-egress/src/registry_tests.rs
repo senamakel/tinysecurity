@@ -193,9 +193,8 @@ fn browser_dial_rejects_grant_expired_before_retention()
     configured
         .data_categories
         .push(DataCategory::OpaqueBrowserTraffic);
-    let mut registry = EgressPolicyRegistry::with_clock(Arc::new(RetentionRaceClock(
-        AtomicUsize::new(0),
-    )));
+    let mut registry =
+        EgressPolicyRegistry::with_clock(Arc::new(RetentionRaceClock(AtomicUsize::new(0))));
     let id = registry.register(configured)?;
     registry.advance_generation(1)?;
     let resolver = Dns {
@@ -203,9 +202,10 @@ fn browser_dial_rejects_grant_expired_before_retention()
         answers: vec!["8.8.8.8".parse()?],
     };
 
-    let response = registry
-        .get_owned(&id)?
-        .authorize_browser_dial(&browser_request(id), 1, &resolver);
+    let response =
+        registry
+            .get_owned(&id)?
+            .authorize_browser_dial(&browser_request(id), 1, &resolver);
 
     assert_eq!(response.denial, Some(EgressDenial::Stale));
     assert_eq!(response.authorization, None);
