@@ -42,6 +42,7 @@ mod prompt;
 mod prompt_score;
 mod redact;
 mod scoped_policy;
+mod tool_trust;
 pub use audit::*;
 pub use audited::*;
 pub use budget::*;
@@ -61,9 +62,10 @@ pub use prompt_score::*;
 pub use redact::RedactWithRequest;
 pub use redact::RedactorConfig;
 pub use scoped_policy::*;
+pub use tool_trust::*;
 pub mod names;
 /// Current wire vocabulary version, independent of the artifact version.
-pub const CONTRACT_VERSION: (u32, u32) = (1, 25);
+pub const CONTRACT_VERSION: (u32, u32) = (1, 26);
 /// Whether a remote module's advertised version supplies this host's vocabulary.
 ///
 /// `version` is the provider version received by the host, not a host requirement

@@ -62,7 +62,8 @@ pub struct ListFlowTrustRequest2 {
 pub struct FlowTrustEntry2 {
     /// Sanitized flow identity, the identifier hash the module stores.
     pub flow: String,
-    /// Tool trusted in that flow.
+    /// Redacted display label of the trusted tool; the exact identity remains in
+    /// the row's digest binding and is not returned by this listing.
     pub tool: String,
     /// Durable row identity.
     pub request_id: String,
@@ -70,7 +71,7 @@ pub struct FlowTrustEntry2 {
     pub granted_at_ms: u64,
 }
 
-/// The live grants of a scope, ordered by flow then tool.
+/// The live grants of a scope, ordered by stored flow identity then redacted tool label.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FlowTrustList2 {

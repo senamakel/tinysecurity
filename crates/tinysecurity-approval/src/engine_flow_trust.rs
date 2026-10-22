@@ -18,13 +18,14 @@ use tinysecurity_bus::{
 };
 
 const ATTRIBUTION: &str = "flow-trust-grant";
+pub(super) const IMPORT_ATTRIBUTION: &str = "flow-trust-import";
 
 /// Rows a scope may hold before a new grant is refused, below the 1024 the module's
 /// load contract accepts so ordinary approvals keep a margin.
 const MAX_SCOPE_ROWS: usize = 960;
 
 /// Digest of the exact `(flow, tool)` pair, domain-separated from every call digest.
-fn trust_key(flow_id: &str, tool: &str) -> String {
+pub(super) fn trust_key(flow_id: &str, tool: &str) -> String {
     let mut bytes = Vec::with_capacity(flow_id.len() + tool.len() + 8);
     bytes.extend_from_slice(&(flow_id.len() as u64).to_be_bytes());
     bytes.extend_from_slice(flow_id.as_bytes());
@@ -32,11 +33,23 @@ fn trust_key(flow_id: &str, tool: &str) -> String {
     binding::digest(b"tinysecurity/flow-trust/v1\0", &bytes)
 }
 
-fn is_trust_row(row: &ApprovalRow2) -> bool {
-    row.attribution.as_deref() == Some(ATTRIBUTION)
-        && row.choice == Some(ApprovalChoice2::Flow)
-        && row.state == ApprovalLifecycle2::Approved
+pub(super) fn is_trust_row(row: &ApprovalRow2) -> bool {
+    is_trust_identity(row) && row.state == ApprovalLifecycle2::Approved
+}
+
+fn is_trust_identity(row: &ApprovalRow2) -> bool {
+    matches!(
+        row.attribution.as_deref(),
+        Some(ATTRIBUTION | IMPORT_ATTRIBUTION)
+    ) && row.choice == Some(ApprovalChoice2::Flow)
         && row.decision_ticket_sha256.is_none()
+}
+
+fn matches_trust_binding(row: &ApprovalRow2, key: &str) -> bool {
+    is_trust_identity(row)
+        && (row.binding.call_sha256 == key
+            || (row.attribution.as_deref() == Some(IMPORT_ATTRIBUTION)
+                && row.binding.content_sha256 == key))
 }
 
 impl Engine {
@@ -57,13 +70,15 @@ impl Engine {
         let key = trust_key(flow, tool);
         rows.iter().any(|row| {
             is_trust_row(row)
-                && row.binding.call_sha256 == key
+                && row.binding.content_sha256 == key
+                && (row.binding.call_sha256 == key
+                    || row.attribution.as_deref() == Some(IMPORT_ATTRIBUTION))
                 && row.expires_at_ms > now
                 && Self::current(reg, row).is_ok()
         })
     }
 
-    fn live_trust<'a>(
+    pub(super) fn live_trust<'a>(
         reg: &ApprovalScope2,
         rows: &'a [ApprovalRow2],
         key: &str,
@@ -71,7 +86,7 @@ impl Engine {
     ) -> Option<&'a ApprovalRow2> {
         rows.iter().find(|row| {
             is_trust_row(row)
-                && row.binding.call_sha256 == key
+                && matches_trust_binding(row, key)
                 && row.expires_at_ms > now
                 && Self::current(reg, row).is_ok()
         })
@@ -80,7 +95,7 @@ impl Engine {
     /// Whether a flow and a tool name could ever name a grant: the flow may be as
     /// long as a caller's flow identity (1024 bytes), the tool follows the shared
     /// grant-name rules.
-    fn trust_pair_valid(flow_id: &str, tool: &str) -> bool {
+    pub(super) fn trust_pair_valid(flow_id: &str, tool: &str) -> bool {
         !flow_id.trim().is_empty()
             && flow_id.len() <= 1024
             && !flow_id.chars().any(char::is_control)
@@ -117,14 +132,9 @@ impl Engine {
                 request_id: Some(existing.request_id.clone()),
             });
         }
-        // A scope's whole row set must stay loadable (`ApprovalLoadRequest2` caps it),
-        // so a long-lived grant never takes the last slot of a full scope.
-        // A pair that already has a record (revoked or expired) renews without
-        // pushing the scope far past its margin, so it is never locked out.
-        let known = rows
-            .iter()
-            .any(|r| r.attribution.as_deref() == Some(ATTRIBUTION) && r.binding.call_sha256 == key);
-        if rows.len() >= MAX_SCOPE_ROWS && !known {
+        // Revoked and expired grants still occupy durable rows. Reissuing them would
+        // append another row and eventually exceed the module's load bound.
+        if rows.len() >= MAX_SCOPE_ROWS {
             return Err(Error::Unavailable);
         }
         let redactor = self.redactor()?;
@@ -199,6 +209,25 @@ impl Engine {
         let rows = self.rows(&reg).await?;
         let now = self.now()?;
         let Some(live) = Self::live_trust(&reg, &rows, &key, now) else {
+            if let Some(cancelled) = rows.iter().find(|row| {
+                row.state == ApprovalLifecycle2::Cancelled
+                    && matches_trust_binding(row, &key)
+                    && row.audit == request.audit
+                    && Self::current(&reg, row).is_ok()
+            }) {
+                let request_id = cancelled.request_id.clone();
+                self.cancel(ApprovalRecordRequest2 {
+                    scope_id: request.scope_id.clone(),
+                    request_id: request_id.clone(),
+                    audit: request.audit,
+                })
+                .await?;
+                return Ok(FlowTrustReceipt2 {
+                    scope_id: request.scope_id,
+                    outcome: FlowTrustOutcome2::Revoked,
+                    request_id: Some(request_id),
+                });
+            }
             return Ok(FlowTrustReceipt2 {
                 scope_id: request.scope_id,
                 outcome: FlowTrustOutcome2::Absent,

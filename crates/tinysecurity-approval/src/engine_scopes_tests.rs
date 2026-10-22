@@ -236,11 +236,11 @@ async fn replace_changes_posture_atomically_and_keeps_subject_and_stream() -> Re
     let mut auto = register(7);
     auto.scope.auto_approve_all = true;
     assert_eq!(
-        owner.replace_scope(auto.clone())?.outcome,
+        owner.replace_scope(auto.clone()).await?.outcome,
         ApprovalScopeOutcome2::Replaced
     );
     assert_eq!(
-        owner.replace_scope(auto)?.outcome,
+        owner.replace_scope(auto).await?.outcome,
         ApprovalScopeOutcome2::Unchanged
     );
     let approved = owner
@@ -250,14 +250,23 @@ async fn replace_changes_posture_atomically_and_keeps_subject_and_stream() -> Re
     assert_eq!(approved.attribution.as_deref(), Some("auto:host-policy"));
     let mut moved = register(7);
     moved.scope.subject = subject(99);
-    assert_eq!(owner.replace_scope(moved).err(), Some(Error::Denied));
+    assert_eq!(owner.replace_scope(moved).await.err(), Some(Error::Denied));
     let mut other_stream = register(7);
     other_stream.audit_stream_id = "6".repeat(32);
-    assert_eq!(owner.replace_scope(other_stream).err(), Some(Error::Denied));
-    assert_eq!(owner.replace_scope(register(40)).err(), Some(Error::Denied));
+    assert_eq!(
+        owner.replace_scope(other_stream).await.err(),
+        Some(Error::Denied)
+    );
+    assert_eq!(
+        owner.replace_scope(register(40)).await.err(),
+        Some(Error::Denied)
+    );
     let mut invalid = register(7);
     invalid.grants = grants(&["policy_change"], &[]);
-    assert_eq!(owner.replace_scope(invalid).err(), Some(Error::Invalid));
+    assert_eq!(
+        owner.replace_scope(invalid).await.err(),
+        Some(Error::Invalid)
+    );
     Ok(())
 }
 
@@ -266,12 +275,14 @@ async fn init_scope_can_be_replaced_and_keeps_the_base_stream() -> Result<()> {
     let (_, owner) = owner()?;
     let mut operator = config().scopes[0].clone();
     operator.auto_approve_all = true;
-    let receipt = owner.replace_scope(RegisterApprovalScopeRequest2 {
-        scope: operator,
-        grants: ApprovalGrants2::default(),
-        audit_stream_id: STREAM.into(),
-        report_handle: false,
-    })?;
+    let receipt = owner
+        .replace_scope(RegisterApprovalScopeRequest2 {
+            scope: operator,
+            grants: ApprovalGrants2::default(),
+            audit_stream_id: STREAM.into(),
+            report_handle: false,
+        })
+        .await?;
     assert_eq!(receipt.outcome, ApprovalScopeOutcome2::Replaced);
     assert_eq!(
         owner.begin(request()).await?.state,
@@ -772,7 +783,7 @@ async fn revoking_a_grant_blocks_consumption_of_its_unconsumed_approval() -> Res
     let row = owner.begin(call.clone()).await?;
     assert_eq!(row.state, ApprovalLifecycle2::Approved);
     // The grant is removed before the approved row is consumed.
-    owner.replace_scope(register(7))?;
+    owner.replace_scope(register(7)).await?;
     let mut act = action(&row, 3);
     act.scope_id = id(7);
     act.request = call.request;
@@ -797,7 +808,7 @@ async fn grant_revoked_while_the_ports_await_never_publishes_an_approval() -> Re
         }
     });
     fixture.loaded.notified().await;
-    owner.replace_scope(register(7))?;
+    owner.replace_scope(register(7)).await?;
     fixture.release_load.notify_one();
     assert_eq!(
         racing.await.map_err(|_| Error::Unavailable)?.err(),
@@ -824,7 +835,7 @@ async fn tightening_posture_blocks_consumption_of_an_unconsumed_automatic_approv
     let call = begin_for(7, "shell", None, Origin::Operator);
     let row = owner.begin(call.clone()).await?;
     assert_eq!(row.attribution.as_deref(), Some("auto:host-policy"));
-    owner.replace_scope(register(7))?;
+    owner.replace_scope(register(7)).await?;
     let mut act = action(&row, 3);
     act.scope_id = id(7);
     act.request = call.request;
@@ -847,7 +858,7 @@ async fn posture_tightened_while_the_ports_await_never_publishes_an_automatic_ro
         }
     });
     fixture.loaded.notified().await;
-    owner.replace_scope(register(7))?;
+    owner.replace_scope(register(7)).await?;
     fixture.release_load.notify_one();
     assert_eq!(
         racing.await.map_err(|_| Error::Unavailable)?.err(),
@@ -875,7 +886,7 @@ async fn replacement_and_generation_advance_serialize_on_the_scope_table() -> Re
     let mut stale = register(7);
     stale.scope.auto_approve_all = true;
     assert_eq!(
-        owner.replace_scope(stale.clone()).err(),
+        owner.replace_scope(stale.clone()).await.err(),
         Some(Error::Denied)
     );
     let mut call = begin_for(7, "shell", None, Origin::Operator);
@@ -883,7 +894,7 @@ async fn replacement_and_generation_advance_serialize_on_the_scope_table() -> Re
     assert_eq!(owner.begin(call).await?.state, ApprovalLifecycle2::Pending);
     stale.scope.generation = 2;
     assert_eq!(
-        owner.replace_scope(stale)?.outcome,
+        owner.replace_scope(stale).await?.outcome,
         ApprovalScopeOutcome2::Replaced
     );
     Ok(())
@@ -910,7 +921,7 @@ async fn policy_replaced_while_consume_awaits_never_reserves_the_old_approval() 
     let mut next = automatic_scope(7);
     next.scope.policy_ref = "runtime-policy-v2".into();
     assert_eq!(
-        owner.replace_scope(next)?.outcome,
+        owner.replace_scope(next).await?.outcome,
         ApprovalScopeOutcome2::Replaced
     );
     fixture.release_load.notify_one();
@@ -922,7 +933,7 @@ async fn policy_replaced_while_consume_awaits_never_reserves_the_old_approval() 
 }
 
 #[tokio::test]
-async fn grant_revoked_while_the_reservation_is_written_burns_it() -> Result<()> {
+async fn scope_replacement_waits_for_a_trusted_reservation_to_commit() -> Result<()> {
     let (fixture, owner) = owner()?;
     let owner = Arc::new(owner);
     let mut req = register(7);
@@ -945,11 +956,17 @@ async fn grant_revoked_while_the_reservation_is_written_burns_it() -> Result<()>
         let owner = owner.clone();
         async move { owner.consume(act).await }
     });
-    // The CAS is parked on the barrier; replace the scope, then let the write finish.
+    // The CAS is parked on the barrier; replacement must wait for the trusted
+    // reservation to finish before changing the scope.
     while fixture.cas_calls.load(Ordering::SeqCst) == before {
         tokio::task::yield_now().await;
     }
-    owner.replace_scope(register(7))?;
+    let replacing = tokio::spawn({
+        let owner = owner.clone();
+        async move { owner.replace_scope(register(7)).await }
+    });
+    tokio::task::yield_now().await;
+    assert!(!replacing.is_finished());
     let barrier = fixture
         .barrier
         .lock()
@@ -958,8 +975,12 @@ async fn grant_revoked_while_the_reservation_is_written_burns_it() -> Result<()>
         .ok_or(Error::Unavailable)?;
     barrier.wait().await;
     assert_eq!(
-        racing.await.map_err(|_| Error::Unavailable)?.err(),
-        Some(Error::Denied)
+        racing.await.map_err(|_| Error::Unavailable)??.state,
+        ApprovalLifecycle2::Reserved
+    );
+    assert_eq!(
+        replacing.await.map_err(|_| Error::Unavailable)??.outcome,
+        ApprovalScopeOutcome2::Replaced
     );
     Ok(())
 }
@@ -1016,7 +1037,7 @@ async fn grant_revoked_while_the_approval_is_published_is_not_returned() -> Resu
     while fixture.cas_calls.load(Ordering::SeqCst) == before {
         tokio::task::yield_now().await;
     }
-    owner.replace_scope(register(7))?;
+    owner.replace_scope(register(7)).await?;
     let barrier = fixture
         .barrier
         .lock()
@@ -1046,7 +1067,7 @@ async fn a_receipt_reports_the_subject_handle_only_when_asked() -> Result<()> {
     assert_eq!(same.scope_handle, Some(handle.clone()));
 
     asking.grants.tools = vec!["shell".into()];
-    let replaced = owner.replace_scope(asking)?;
+    let replaced = owner.replace_scope(asking).await?;
     assert_eq!(replaced.outcome, ApprovalScopeOutcome2::Replaced);
     assert_eq!(replaced.scope_handle, Some(handle));
 

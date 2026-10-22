@@ -28,6 +28,7 @@ struct Fixture {
     ledger: Mutex<std::collections::BTreeMap<String, (ApprovalCasRequest2, ApprovalCasResponse2)>>,
     order: Mutex<Vec<&'static str>>,
     fail: AtomicU64,
+    load_fail: AtomicU64,
     pause_load: AtomicU64,
     pause_nth_load: AtomicU64,
     load_calls: AtomicU64,
@@ -43,6 +44,7 @@ struct Fixture {
     audit_receipts: Mutex<std::collections::BTreeMap<(String, u64), ApprovalRow2>>,
     barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
     native_receipt_mode: AtomicU64,
+    fail_cancelled_audit: AtomicU64,
     admitted: Mutex<Vec<(String, String)>>,
     released: Mutex<Vec<String>>,
     admit_fails: AtomicU64,
@@ -106,13 +108,21 @@ impl Ports for Fixture {
         NativeAuditAcknowledgement::from_verified_sink(row, expected_scope, receipt)
     }
     async fn load(&self, r: ApprovalLoadRequest2) -> Result<ApprovalLoadResponse2> {
+        if self.load_fail.load(Ordering::SeqCst) != 0 {
+            return Err(Error::Unavailable);
+        }
+        let requested_scope = r.scope.clone();
         let response = ApprovalLoadResponse2 {
-            scope: r.scope.clone(),
+            scope: requested_scope.clone(),
             records: self
                 .rows
                 .lock()
                 .map_err(|_| Error::Unavailable)?
                 .values()
+                .filter(|record| {
+                    serde_json::from_str::<ApprovalRow2>(&record.record_json)
+                        .is_ok_and(|row| row.binding.scope == requested_scope)
+                })
                 .cloned()
                 .collect(),
         };
@@ -244,6 +254,11 @@ impl Ports for Fixture {
             .lock()
             .map_err(|_| Error::Unavailable)?
             .push(_r.clone());
+        if _r.state == ApprovalLifecycle2::Cancelled
+            && self.fail_cancelled_audit.swap(0, Ordering::SeqCst) != 0
+        {
+            return Err(Error::Unavailable);
+        }
         let key = (_r.request_id.clone(), _r.version);
         let mut receipts = self.audit_receipts.lock().map_err(|_| Error::Unavailable)?;
         if let Some(prior) = receipts.get(&key) {
@@ -268,6 +283,37 @@ impl Ports for Fixture {
             receipts.insert(key, _r);
             Ok(())
         }
+    }
+}
+#[derive(Debug)]
+struct ForeignRowsPorts(Arc<Fixture>);
+#[async_trait::async_trait]
+impl Ports for ForeignRowsPorts {
+    async fn load(&self, request: ApprovalLoadRequest2) -> Result<ApprovalLoadResponse2> {
+        // Deliberately misbehaving store: echo the requested scope but return every row.
+        Ok(ApprovalLoadResponse2 {
+            scope: request.scope,
+            records: self
+                .0
+                .rows
+                .lock()
+                .map_err(|_| Error::Unavailable)?
+                .values()
+                .cloned()
+                .collect(),
+        })
+    }
+    async fn cas(&self, request: ApprovalCasRequest2) -> Result<ApprovalCasResponse2> {
+        self.0.cas(request).await
+    }
+    async fn prompt(&self, request: ApprovalDeliveryRequest2) -> Result<ApprovalDeliveryResponse2> {
+        self.0.prompt(request).await
+    }
+    async fn human(&self, request: VerifyHumanRequest2) -> Result<HumanDecisionReceipt2> {
+        self.0.human(request).await
+    }
+    async fn audit(&self, row: ApprovalRow2) -> Result<()> {
+        self.0.audit(row).await
     }
 }
 fn config() -> ApprovalConfig2 {
@@ -765,7 +811,7 @@ async fn wrong_registration_agent_access_ceiling_and_unverified_human_inputs_den
     other.scopes[0].subject.user = "other-user".into();
     let other = Engine::new(
         other,
-        f,
+        Arc::new(ForeignRowsPorts(f.clone())),
         Arc::new(TestClock::default()),
         Redactor::new(&RedactorConfig::default()).map_err(|_| Error::Invalid)?,
     )?;

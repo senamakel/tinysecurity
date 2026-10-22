@@ -253,6 +253,7 @@ impl ScopeEntry {
         request: &EvaluateApprovalRequest2,
         rule: tinysecurity_auto::rules::Rule,
         durable_flow: bool,
+        durable_tool: bool,
     ) -> Option<&'static str> {
         match rule {
             tinysecurity_auto::rules::Rule::Approval => self
@@ -260,10 +261,11 @@ impl ScopeEntry {
                     &request.request.call.tool,
                     request.request.caller.flow.as_deref(),
                 )
+                .or_else(|| durable_tool.then_some("auto:tool-grant"))
                 .or_else(|| durable_flow.then_some("auto:flow-grant")),
-            tinysecurity_auto::rules::Rule::GrantOnly => {
-                self.tool_grant(&request.request.call.tool)
-            }
+            tinysecurity_auto::rules::Rule::GrantOnly => self
+                .tool_grant(&request.request.call.tool)
+                .or_else(|| durable_tool.then_some("auto:tool-grant")),
             _ => None,
         }
     }
@@ -306,6 +308,8 @@ pub struct Engine {
     lifecycle: tokio::sync::Mutex<()>,
     /// Serializes flow-trust grants and revocations so one pair has one live row.
     flow_trust_lock: tokio::sync::Mutex<()>,
+    /// Serializes whole-tool trust grants and revocations so one tool has one live row.
+    tool_trust_lock: tokio::sync::Mutex<()>,
     ports: Arc<dyn Ports>,
     clock: Arc<dyn Clock>,
     redactor: RwLock<Redactor>,
@@ -360,6 +364,7 @@ impl Engine {
             scopes: RwLock::new(entries),
             lifecycle: tokio::sync::Mutex::new(()),
             flow_trust_lock: tokio::sync::Mutex::new(()),
+            tool_trust_lock: tokio::sync::Mutex::new(()),
             ports,
             clock,
             redactor: RwLock::new(redactor),
@@ -481,21 +486,13 @@ impl Engine {
         let reg = self.registered(&entry);
         let (bound, args_redacted, external_effect) =
             binding::original(&reg, &request.request, &self.redactor()?)?;
-        let rule = Self::origin_rule(&entry, &reg, &bound.origin, &request, external_effect)?;
+        Self::reject_raw_deny(&reg, &bound.origin, external_effect)?;
         let now = self.now()?;
-        let ttl = match bound.origin {
-            Origin::Copilot | Origin::SubAgent => 180_000,
-            _ => 600_000,
-        };
-        let ttl = request.ttl_ms.unwrap_or(ttl).min(ttl);
-        if let Some(deadline) = deadline {
-            self.check_native_deadline(&bound, deadline, now, ttl)?;
-        }
-        if ttl == 0 {
-            return Err(Error::Denied);
-        }
+        let ttl = self.begin_ttl(&request, &bound, deadline, now)?;
         Self::correlation(&request.audit, reg.generation)?;
-        let rows = self.rows(&reg).await?;
+        let (rows, rule) = self
+            .begin_rows_and_rule(&entry, &reg, &request, &bound.origin, external_effect, now)
+            .await?;
         self.reconcile_creations(&rows)?;
         if let Some(row) = self
             .existing_begin(&reg, &bound, &rows, now, deadline)
@@ -579,6 +576,48 @@ impl Engine {
         }
         Ok(row)
     }
+    async fn begin_rows_and_rule(
+        &self,
+        entry: &ScopeEntry,
+        reg: &ApprovalScope2,
+        request: &EvaluateApprovalRequest2,
+        origin: &Origin,
+        external_effect: bool,
+        now: u64,
+    ) -> Result<(Vec<ApprovalRow2>, tinysecurity_auto::rules::Rule)> {
+        let rows = self.rows(reg).await?;
+        let durable_tool = Self::durable_tool_trust(reg, &rows, &request.request.call.tool, now);
+        let rule = Self::origin_rule(entry, reg, origin, request, external_effect, durable_tool)?;
+        Ok((rows, rule))
+    }
+    fn reject_raw_deny(reg: &ApprovalScope2, origin: &Origin, external_effect: bool) -> Result<()> {
+        if tinysecurity_auto::rules::evaluate(reg, origin, external_effect)
+            == tinysecurity_auto::rules::Rule::Deny
+        {
+            return Err(Error::Denied);
+        }
+        Ok(())
+    }
+    fn begin_ttl(
+        &self,
+        request: &EvaluateApprovalRequest2,
+        bound: &tinysecurity_bus::ApprovalBinding2,
+        deadline: Option<u64>,
+        now: u64,
+    ) -> Result<u64> {
+        let maximum = match bound.origin {
+            Origin::Copilot | Origin::SubAgent => 180_000,
+            _ => 600_000,
+        };
+        let ttl = request.ttl_ms.unwrap_or(maximum).min(maximum);
+        if let Some(deadline) = deadline {
+            self.check_native_deadline(bound, deadline, now, ttl)?;
+        }
+        if ttl == 0 {
+            return Err(Error::Denied);
+        }
+        Ok(ttl)
+    }
     /// The judge never qualifies a human-only tool, however the tool is named.
     fn judge_barred(tool: &str) -> bool {
         binding::is_native(tool) || HUMAN_ONLY_TOOLS2.contains(&tool)
@@ -597,8 +636,9 @@ impl Engine {
         if !eligible {
             return None;
         }
-        let durable = Self::durable_flow_trust(reg, rows, &request.request, now);
-        entry.grant_for(request, rule, durable)
+        let durable_flow = Self::durable_flow_trust(reg, rows, &request.request, now);
+        let durable_tool = Self::durable_tool_trust(reg, rows, &request.request.call.tool, now);
+        entry.grant_for(request, rule, durable_flow, durable_tool)
     }
     /// The origin's shortcut for this call, or a denial: a Cron external effect is
     /// refused outright, and an origin nobody labelled is refused unless the scope
@@ -609,11 +649,14 @@ impl Engine {
         origin: &Origin,
         request: &EvaluateApprovalRequest2,
         external_effect: bool,
+        durable_tool: bool,
     ) -> Result<tinysecurity_auto::rules::Rule> {
         use tinysecurity_auto::rules::Rule;
         match tinysecurity_auto::rules::evaluate(reg, origin, external_effect) {
             Rule::Deny => Err(Error::Denied),
-            Rule::GrantOnly if entry.tool_grant(&request.request.call.tool).is_none() => {
+            Rule::GrantOnly
+                if entry.tool_grant(&request.request.call.tool).is_none() && !durable_tool =>
+            {
                 Err(Error::Denied)
             }
             // A human-only tool needs a fresh human decision under every origin: the
@@ -1254,16 +1297,18 @@ impl Engine {
         }
     }
     /// Atomically replace the posture, grants or policy reference of a live scope.
+    /// Replacement waits for any in-flight whole-tool trust mutation to finish.
     /// The subject and, for runtime scopes, the audit stream cannot change. Pending
     /// rows bound to a different `policy_ref` stop being decidable, which is the
     /// intended invalidation.
     /// # Errors
     /// Rejects unknown scopes, a changed subject or stream, and invalid input.
-    pub fn replace_scope(
+    pub async fn replace_scope(
         &self,
         request: RegisterApprovalScopeRequest2,
     ) -> Result<ApprovalScopeReceipt2> {
         self.validate_runtime(&request)?;
+        let _tool_trust = self.tool_trust_lock.lock().await;
         let report = request.report_handle;
         let candidate = ScopeEntry::runtime(request);
         let mut scopes = self.scopes.write().map_err(|_| Error::Unavailable)?;
@@ -1628,6 +1673,14 @@ impl Engine {
             let rows = self.rows(&reg).await?;
             granted = Self::durable_flow_trust(&reg, &rows, &request.request, self.now()?);
         }
+        if !granted && row.attribution.as_deref() == Some("auto:tool-grant") {
+            // A durable whole-tool grant may be revoked after evaluation but before
+            // execution. Reload it at the consume boundary so queued approvals die.
+            let reg = self.registered(&entry);
+            let rows = self.rows(&reg).await?;
+            granted =
+                Self::durable_tool_trust(&reg, &rows, &request.request.call.tool, self.now()?);
+        }
         let automatic = posture
             && tinysecurity_auto::rules::evaluate(
                 &entry.scope,
@@ -1664,6 +1717,11 @@ impl Engine {
         if row.state != ApprovalLifecycle2::Approved || row.host_instance != self.instance {
             return Err(Error::Denied);
         }
+        let _tool_trust_serial = if row.attribution.as_deref() == Some("auto:tool-grant") {
+            Some(self.tool_trust_lock.lock().await)
+        } else {
+            None
+        };
         self.grant_still_holds(&request, &row).await?;
         // The loads and audit above awaited; judge the live scope, not the snapshot.
         let live = self.registration(&request.scope_id)?;
@@ -1898,6 +1956,10 @@ fn reusable_grant<'a>(
 
 #[path = "engine_flow_trust.rs"]
 mod flow_trust;
+#[path = "engine_import_trust.rs"]
+mod import_trust;
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 mod tests;
+#[path = "engine_tool_trust.rs"]
+mod tool_trust;
