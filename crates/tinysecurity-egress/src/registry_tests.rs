@@ -4,7 +4,10 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
-use tinysecurity_bus::{AccessTier, DestinationRule, LocalEgressCapability, PrivacyMode};
+use tinysecurity_bus::{
+    AccessTier, BrowserDialRequest, ConsumeBrowserDialRequest, DataCategory, DestinationRule,
+    LocalEgressCapability, PrivacyMode, ValidateBrowserDialRequest,
+};
 #[derive(Debug)]
 struct Clock;
 impl EgressClock for Clock {
@@ -68,6 +71,16 @@ fn request(id: EgressPolicyId) -> ScopedEgressRequest {
         transformation: None,
     }
 }
+fn browser_request(id: EgressPolicyId) -> BrowserDialRequest {
+    BrowserDialRequest {
+        policy_id: id,
+        expected_generation: 1,
+        session_id: "browser-session-1".into(),
+        scheme: "https".into(),
+        hostname: "example.com".into(),
+        port: 443,
+    }
+}
 #[derive(Debug)]
 struct Failed;
 impl Resolver for Failed {
@@ -105,6 +118,247 @@ fn url_guard_returns_scoped_exact_vetted_transport_authorization()
     assert_eq!(auth.generation, 7);
     assert_eq!(auth.expires_at_ms, 1042);
     assert_eq!(dns.calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+#[test]
+fn browser_dial_returns_exact_resolved_sockets_and_consumes_once()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut configured = policy();
+    configured.destinations = vec![DestinationRule {
+        scheme: "https".into(),
+        hostname: "example.com".into(),
+        port: 443,
+        include_subdomains: false,
+    }];
+    configured
+        .data_categories
+        .push(DataCategory::OpaqueBrowserTraffic);
+    let mut registry = EgressPolicyRegistry::with_clock(Arc::new(Clock));
+    let id = registry.register(configured)?;
+    registry.advance_generation(7)?;
+    let resolver = Dns {
+        calls: AtomicUsize::new(0),
+        answers: vec!["8.8.8.8".parse()?, "2606:4700:4700::1111".parse()?],
+    };
+    let mut request = browser_request(id.clone());
+    request.expected_generation = 7;
+    let result = registry
+        .get_owned(&id)?
+        .authorize_browser_dial(&request, 7, &resolver);
+    assert_eq!(result.denial, None);
+    let authorization = result.authorization.ok_or("missing dial grant")?;
+    assert_eq!(authorization.hostname, "example.com");
+    assert_eq!(authorization.scheme, "https");
+    assert_eq!(authorization.port, 443);
+    assert_eq!(authorization.addresses.len(), 2);
+    assert_eq!(authorization.generation, 7);
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
+    let consume = ConsumeBrowserDialRequest {
+        request: request.clone(),
+        address: authorization.addresses[0],
+        authorization: authorization.clone(),
+    };
+    let policy = registry.get_owned(&id)?;
+    assert!(policy.consume_browser_dial(&consume, 7));
+    assert!(!policy.consume_browser_dial(&consume, 7));
+    let lease = ValidateBrowserDialRequest { authorization };
+    assert!(policy.validate_browser_dial(&lease, 7));
+    registry.advance_generation(8)?;
+    assert!(!policy.validate_browser_dial(&lease, 8));
+    Ok(())
+}
+#[test]
+fn browser_dial_denies_private_dns_answers_and_sensitive_opaque_traffic()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut configured = policy();
+    configured.open_public = true;
+    configured.destinations.clear();
+    configured
+        .data_categories
+        .push(DataCategory::OpaqueBrowserTraffic);
+    let mut registry = EgressPolicyRegistry::with_clock(Arc::new(Clock));
+    let id = registry.register(configured.clone())?;
+    let request = browser_request(id.clone());
+    let private_dns = Dns {
+        calls: AtomicUsize::new(0),
+        answers: vec!["169.254.169.254".parse()?],
+    };
+    assert_eq!(
+        registry
+            .get_owned(&id)?
+            .authorize_browser_dial(
+                &BrowserDialRequest {
+                    expected_generation: 2,
+                    session_id: request.session_id.clone(),
+                    ..request.clone()
+                },
+                1,
+                &private_dns
+            )
+            .denial,
+        Some(EgressDenial::Stale)
+    );
+    assert_eq!(
+        registry
+            .get_owned(&id)?
+            .authorize_browser_dial(&request, 1, &private_dns)
+            .denial,
+        Some(EgressDenial::Address)
+    );
+
+    configured.privacy = PrivacyMode::Sensitive;
+    let mut sensitive_registry = EgressPolicyRegistry::with_clock(Arc::new(Clock));
+    let sensitive_id = sensitive_registry.register(configured)?;
+    let public_dns = Dns {
+        calls: AtomicUsize::new(0),
+        answers: vec!["8.8.8.8".parse()?],
+    };
+    assert_eq!(
+        sensitive_registry
+            .get_owned(&sensitive_id)?
+            .authorize_browser_dial(&browser_request(sensitive_id), 1, &public_dns)
+            .denial,
+        Some(EgressDenial::Privacy)
+    );
+    Ok(())
+}
+
+#[test]
+fn browser_dial_accepts_canonical_public_ipv6_literal()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut configured = policy();
+    configured.destinations = vec![DestinationRule {
+        scheme: "https".into(),
+        hostname: "2606:4700:4700::1111".into(),
+        port: 443,
+        include_subdomains: false,
+    }];
+    configured
+        .data_categories
+        .push(DataCategory::OpaqueBrowserTraffic);
+    let mut registry = EgressPolicyRegistry::with_clock(Arc::new(Clock));
+    let id = registry.register(configured)?;
+    let request = BrowserDialRequest {
+        policy_id: id.clone(),
+        expected_generation: 1,
+        session_id: "browser-session-v6".into(),
+        scheme: "https".into(),
+        hostname: "2606:4700:4700::1111".into(),
+        port: 443,
+    };
+    let result = registry.get_owned(&id)?.authorize_browser_dial(
+        &request,
+        1,
+        &Dns {
+            calls: AtomicUsize::new(0),
+            answers: Vec::new(),
+        },
+    );
+    assert_eq!(result.denial, None);
+    assert_eq!(
+        result.authorization.ok_or("missing grant")?.addresses,
+        vec!["[2606:4700:4700::1111]:443".parse()?]
+    );
+    Ok(())
+}
+
+#[test]
+fn live_browser_dial_leases_are_bounded() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut configured = policy();
+    configured.open_public = true;
+    configured.destinations.clear();
+    configured
+        .data_categories
+        .push(DataCategory::OpaqueBrowserTraffic);
+    let mut registry = EgressPolicyRegistry::with_clock(Arc::new(Clock));
+    let id = registry.register(configured)?;
+    let scope = registry.get_owned(&id)?;
+    let dns = Dns {
+        calls: AtomicUsize::new(0),
+        answers: vec!["8.8.8.8".parse()?],
+    };
+    for _ in 0..256 {
+        let request = browser_request(id.clone());
+        let grant = scope
+            .authorize_browser_dial(&request, 1, &dns)
+            .authorization
+            .ok_or("grant denied")?;
+        let consume = ConsumeBrowserDialRequest {
+            request,
+            address: grant.addresses[0],
+            authorization: grant,
+        };
+        assert!(scope.consume_browser_dial(&consume, 1));
+    }
+    assert!(
+        scope
+            .authorize_browser_dial(&browser_request(id), 1, &dns)
+            .authorization
+            .is_none()
+    );
+    Ok(())
+}
+#[test]
+fn browser_dial_grants_bind_scope_destination_and_generation()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut configured = policy();
+    configured.open_public = true;
+    configured.destinations.clear();
+    configured
+        .data_categories
+        .push(DataCategory::OpaqueBrowserTraffic);
+    let mut registry = EgressPolicyRegistry::with_clock(Arc::new(Clock));
+    let id = registry.register(configured)?;
+    let request = browser_request(id.clone());
+    let resolver = Dns {
+        calls: AtomicUsize::new(0),
+        answers: vec!["8.8.8.8".parse()?],
+    };
+    let policy = registry.get_owned(&id)?;
+    let authorization = policy
+        .authorize_browser_dial(&request, 1, &resolver)
+        .authorization
+        .ok_or("missing dial grant")?;
+    let wrong_destination = ConsumeBrowserDialRequest {
+        request: BrowserDialRequest {
+            hostname: "other.example".into(),
+            ..request.clone()
+        },
+        address: authorization.addresses[0],
+        authorization: authorization.clone(),
+    };
+    assert!(!policy.consume_browser_dial(&wrong_destination, 1));
+    let wrong_generation = ConsumeBrowserDialRequest {
+        request: BrowserDialRequest {
+            expected_generation: 2,
+            ..request.clone()
+        },
+        address: authorization.addresses[0],
+        authorization: authorization.clone(),
+    };
+    assert!(!policy.consume_browser_dial(&wrong_generation, 1));
+    let wrong_session = ConsumeBrowserDialRequest {
+        request: BrowserDialRequest {
+            session_id: "different-browser-session".into(),
+            ..request.clone()
+        },
+        address: authorization.addresses[0],
+        authorization: authorization.clone(),
+    };
+    assert!(!policy.consume_browser_dial(&wrong_session, 1));
+    let valid = ConsumeBrowserDialRequest {
+        request: request.clone(),
+        address: authorization.addresses[0],
+        authorization: authorization.clone(),
+    };
+    assert!(policy.consume_browser_dial(&valid, 1));
+    registry.advance_generation(2)?;
+    let stale = ConsumeBrowserDialRequest {
+        request,
+        address: authorization.addresses[0],
+        authorization,
+    };
+    assert!(!policy.consume_browser_dial(&stale, 2));
     Ok(())
 }
 #[test]
