@@ -252,7 +252,7 @@ fn secret_like(label: &str, raw: &str, rest: &str) -> bool {
     if scheme.starts_with("bearer") || scheme.ends_with("bearer") || scheme.ends_with("basic") {
         return value.len() >= 8;
     }
-    if value.len() < 8 || value.chars().any(char::is_whitespace) {
+    if value.chars().any(char::is_whitespace) {
         return false;
     }
     if value
