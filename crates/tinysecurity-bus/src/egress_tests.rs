@@ -59,6 +59,7 @@ fn scoped_debug_is_content_free_even_when_nested() {
 }
 
 #[test]
+/// Browser authorization payloads expose no page identity or fabricated HTTP data.
 fn browser_dial_contract_redacts_identity_and_serializes_no_http_payload()
 -> Result<(), serde_json::Error> {
     let subject = SubjectScope {
