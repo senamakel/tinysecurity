@@ -154,7 +154,7 @@ fn short_credential_assignments_are_redacted_without_rewriting_source_code() -> 
     let engine = Redactor::new(&RedactorConfig::default())?;
     let input = "api_key=abc123";
     let out = run(&engine, input, &RedactMode::CredentialsOnly)?;
-    assert!(!out.contains("abc123"), "short credential survived: {out}");
+    assert_eq!(out, "api_key=[REDACTED]");
 
     for source in [
         "api_key = get_api_key()",
