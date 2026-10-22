@@ -250,12 +250,30 @@ async fn whole_tool_trust_can_be_revoked_by_listed_request_id() -> Result<()> {
         })
         .await?;
     let request_id = receipt.request_id.ok_or(Error::Invalid)?;
+    owner.register_scope(register(8)).await?;
 
     let listed = owner
         .list_tool_trust(ListToolTrustRequest2 { scope_id: id(7) })
         .await?;
     assert_eq!(listed.entries.len(), 1);
     assert_eq!(listed.entries[0].request_id, request_id);
+
+    let wrong_scope = owner
+        .revoke_tool_by_id(RevokeToolByIdRequest2 {
+            scope_id: id(8),
+            request_id: request_id.clone(),
+            audit: at(1),
+        })
+        .await?;
+    assert_eq!(wrong_scope.outcome, ToolTrustOutcome2::Absent);
+    assert_eq!(
+        owner
+            .list_tool_trust(ListToolTrustRequest2 { scope_id: id(7) })
+            .await?
+            .entries
+            .len(),
+        1
+    );
 
     let revoked = owner
         .revoke_tool_by_id(RevokeToolByIdRequest2 {
@@ -266,11 +284,21 @@ async fn whole_tool_trust_can_be_revoked_by_listed_request_id() -> Result<()> {
         .await?;
     assert_eq!(revoked.outcome, ToolTrustOutcome2::Revoked);
     assert_eq!(revoked.request_id.as_deref(), Some(request_id.as_str()));
-    assert!(owner
-        .list_tool_trust(ListToolTrustRequest2 { scope_id: id(7) })
-        .await?
-        .entries
-        .is_empty());
+    let retry = owner
+        .revoke_tool_by_id(RevokeToolByIdRequest2 {
+            scope_id: id(7),
+            request_id: request_id.clone(),
+            audit: at(2),
+        })
+        .await?;
+    assert_eq!(retry.outcome, ToolTrustOutcome2::Revoked);
+    assert!(
+        owner
+            .list_tool_trust(ListToolTrustRequest2 { scope_id: id(7) })
+            .await?
+            .entries
+            .is_empty()
+    );
     let rows = fixture.rows.lock().map_err(|_| Error::Unavailable)?;
     assert_eq!(rows.len(), 1);
     Ok(())

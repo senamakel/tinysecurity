@@ -9,8 +9,7 @@ use super::{
 };
 use tinysecurity_bus::{
     GrantToolRequest2, ListToolTrustRequest2, RevokeToolByIdRequest2, RevokeToolRequest2,
-    TOOL_TRUST_LIFETIME_MS2, ToolTrustEntry2, ToolTrustList2, ToolTrustOutcome2,
-    ToolTrustReceipt2,
+    TOOL_TRUST_LIFETIME_MS2, ToolTrustEntry2, ToolTrustList2, ToolTrustOutcome2, ToolTrustReceipt2,
 };
 
 const ATTRIBUTION: &str = "tool-trust-grant";
