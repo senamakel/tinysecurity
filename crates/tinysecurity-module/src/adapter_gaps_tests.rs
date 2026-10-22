@@ -255,7 +255,9 @@ async fn listed_whole_tool_trust_can_be_revoked_by_opaque_row_id() -> TestResult
             },),
         )
         .await?;
-    let request_id = grant.request_id.expect("grant has durable row identity");
+    let request_id = grant
+        .request_id
+        .ok_or("grant has no durable row identity")?;
     first.broker.abort();
 
     let second = start(&path).await?;
@@ -296,7 +298,7 @@ async fn listed_whole_tool_trust_can_be_revoked_by_opaque_row_id() -> TestResult
             },),
         )
         .await?;
-    assert!(listed.entries.is_empty());
+    assert_eq!(listed.entries.len(), 0);
     third.broker.abort();
     Ok(())
 }

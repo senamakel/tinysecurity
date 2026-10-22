@@ -292,12 +292,13 @@ async fn whole_tool_trust_can_be_revoked_by_listed_request_id() -> Result<()> {
         })
         .await?;
     assert_eq!(retry.outcome, ToolTrustOutcome2::Revoked);
-    assert!(
+    assert_eq!(
         owner
             .list_tool_trust(ListToolTrustRequest2 { scope_id: id(7) })
             .await?
             .entries
-            .is_empty()
+            .len(),
+        0
     );
     let rows = fixture.rows.lock().map_err(|_| Error::Unavailable)?;
     assert_eq!(rows.len(), 1);
