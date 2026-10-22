@@ -546,7 +546,9 @@ fn sensitive_privacy_rejects_opaque_browser_traffic_on_legacy_scoped_egress()
     };
     let mut config = policy();
     config.privacy = PrivacyMode::Sensitive;
-    config.data_categories.push(DataCategory::OpaqueBrowserTraffic);
+    config
+        .data_categories
+        .push(DataCategory::OpaqueBrowserTraffic);
     let mut registry = EgressPolicyRegistry::with_clock(Arc::new(Clock));
     let id = registry.register(config)?;
     let mut req = request(id);
@@ -554,7 +556,10 @@ fn sensitive_privacy_rejects_opaque_browser_traffic_on_legacy_scoped_egress()
     req.category = DataCategory::OpaqueBrowserTraffic;
 
     assert_eq!(
-        registry.get_owned(&req.policy_id)?.check(&req, 1, &dns).denial,
+        registry
+            .get_owned(&req.policy_id)?
+            .check(&req, 1, &dns)
+            .denial,
         Some(EgressDenial::Privacy)
     );
     assert_eq!(dns.calls.load(Ordering::SeqCst), 0);
