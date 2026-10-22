@@ -156,7 +156,11 @@ fn short_credential_assignments_are_redacted_without_rewriting_source_code() -> 
     let out = run(&engine, input, &RedactMode::CredentialsOnly)?;
     assert!(!out.contains("abc123"), "short credential survived: {out}");
 
-    for source in ["api_key = get_api_key()", "token: string"] {
+    for source in [
+        "api_key = get_api_key()",
+        "token: string",
+        "let token = v2;",
+    ] {
         assert_eq!(
             run(&engine, source, &RedactMode::CredentialsOnly)?,
             source,
