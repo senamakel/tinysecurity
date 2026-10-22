@@ -169,6 +169,48 @@ fn browser_dial_returns_exact_resolved_sockets_and_consumes_once()
     assert!(!policy.validate_browser_dial(&lease, 8));
     Ok(())
 }
+#[derive(Debug)]
+struct RetentionRaceClock(AtomicUsize);
+impl EgressClock for RetentionRaceClock {
+    fn now_ms(&self) -> u64 {
+        match self.0.fetch_add(1, Ordering::SeqCst) {
+            0 | 1 => 100,
+            _ => 101,
+        }
+    }
+}
+#[test]
+fn browser_dial_rejects_grant_expired_before_retention()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut configured = policy();
+    configured.validity_ms = 1;
+    configured.destinations = vec![DestinationRule {
+        scheme: "https".into(),
+        hostname: "example.com".into(),
+        port: 443,
+        include_subdomains: false,
+    }];
+    configured
+        .data_categories
+        .push(DataCategory::OpaqueBrowserTraffic);
+    let mut registry = EgressPolicyRegistry::with_clock(Arc::new(RetentionRaceClock(
+        AtomicUsize::new(0),
+    )));
+    let id = registry.register(configured)?;
+    registry.advance_generation(1)?;
+    let resolver = Dns {
+        calls: AtomicUsize::new(0),
+        answers: vec!["8.8.8.8".parse()?],
+    };
+
+    let response = registry
+        .get_owned(&id)?
+        .authorize_browser_dial(&browser_request(id), 1, &resolver);
+
+    assert_eq!(response.denial, Some(EgressDenial::Stale));
+    assert_eq!(response.authorization, None);
+    Ok(())
+}
 #[test]
 /// Browser authorization rejects private answers and opaque data in restrictive modes.
 fn browser_dial_denies_private_dns_answers_and_sensitive_opaque_traffic()
