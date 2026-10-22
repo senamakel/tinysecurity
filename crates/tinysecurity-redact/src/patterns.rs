@@ -253,7 +253,7 @@ fn secret_like(label: &str, raw: &str, prefix: &str, rest: &str) -> bool {
     if scheme.starts_with("bearer") || scheme.ends_with("bearer") || scheme.ends_with("basic") {
         return value.len() >= 8;
     }
-    if is_declared_source_identifier(raw, prefix) {
+    if is_declared_source_expression(raw, prefix) {
         return false;
     }
     if value.chars().any(char::is_whitespace) {
@@ -290,14 +290,37 @@ fn secret_like(label: &str, raw: &str, prefix: &str, rest: &str) -> bool {
     value.parse::<f64>().is_err()
 }
 
-fn is_declared_source_identifier(raw: &str, prefix: &str) -> bool {
+fn is_declared_source_expression(raw: &str, prefix: &str) -> bool {
     let value = raw.trim();
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !(first.is_ascii_alphabetic() || first == '_' || first == '$')
-        || !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
+    if value.is_empty()
+        || !value
+            .chars()
+            .any(|ch| ch.is_ascii_alphabetic() || ch == '_' || ch == '$')
+        || !value.chars().all(|ch| {
+            ch.is_ascii_alphanumeric()
+                || matches!(
+                    ch,
+                    '_' | '$'
+                        | '.'
+                        | '+'
+                        | '-'
+                        | '*'
+                        | '/'
+                        | '%'
+                        | '('
+                        | ')'
+                        | '?'
+                        | ':'
+                        | '|'
+                        | '&'
+                        | '!'
+                        | '<'
+                        | '>'
+                        | '='
+                        | '~'
+                        | '^'
+                )
+        })
     {
         return false;
     }

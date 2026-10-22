@@ -160,6 +160,7 @@ fn short_credential_assignments_are_redacted_without_rewriting_source_code() -> 
         "api_key = get_api_key()",
         "token: string",
         "let token = v2;",
+        "const token=v2+1;",
     ] {
         assert_eq!(
             run(&engine, source, &RedactMode::CredentialsOnly)?,
