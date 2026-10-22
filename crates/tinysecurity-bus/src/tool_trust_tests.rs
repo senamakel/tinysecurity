@@ -125,7 +125,7 @@ fn trust_payload_debug_output_redacts_every_field() {
     assert_redacted(&RevokeToolRequest2 {
         scope_id: "scope-secret".into(),
         tool: "tool-secret".into(),
-        audit,
+        audit: audit.clone(),
     });
     assert_redacted(&RevokeToolByIdRequest2 {
         scope_id: "scope-secret".into(),

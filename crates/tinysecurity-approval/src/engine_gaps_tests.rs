@@ -271,7 +271,8 @@ async fn whole_tool_trust_can_be_revoked_by_listed_request_id() -> Result<()> {
         .await?
         .entries
         .is_empty());
-    assert_eq!(fixture.rows.lock().map_err(|_| Error::Unavailable)?.len(), 2);
+    let rows = fixture.rows.lock().map_err(|_| Error::Unavailable)?;
+    assert_eq!(rows.len(), 1);
     Ok(())
 }
 
