@@ -108,3 +108,112 @@ fn browser_dial_contract_redacts_identity_and_serializes_no_http_payload()
     assert!(!format!("{consume:#?}").contains("private-"));
     Ok(())
 }
+
+#[test]
+fn browser_dial_wire_shapes_are_exact_and_round_trip() -> Result<(), serde_json::Error> {
+    let subject = SubjectScope {
+        user: "user".into(),
+        workspace: "workspace".into(),
+        agent: "agent".into(),
+    };
+    let policy_id = EgressPolicyId("policy-1".into());
+    let request = BrowserDialRequest {
+        policy_id: policy_id.clone(),
+        expected_generation: 7,
+        session_id: "session-1".into(),
+        scheme: "https".into(),
+        hostname: "example.com".into(),
+        port: 443,
+    };
+    let request_wire = serde_json::json!({
+        "policy_id": "policy-1",
+        "expected_generation": 7,
+        "session_id": "session-1",
+        "scheme": "https",
+        "hostname": "example.com",
+        "port": 443
+    });
+    assert_eq!(serde_json::to_value(&request)?, request_wire);
+    assert_eq!(
+        serde_json::from_value::<BrowserDialRequest>(request_wire)?,
+        request
+    );
+
+    let authorization = BrowserDialAuthorization {
+        authorization_id: "nonce-1".into(),
+        session_id: "session-1".into(),
+        scheme: "https".into(),
+        hostname: "example.com".into(),
+        port: 443,
+        addresses: vec![std::net::SocketAddr::from(([8, 8, 8, 8], 443))],
+        subject: subject.clone(),
+        policy_id: policy_id.clone(),
+        generation: 7,
+        expires_at_ms: 30_042,
+    };
+    let authorization_wire = serde_json::json!({
+        "authorization_id": "nonce-1",
+        "session_id": "session-1",
+        "scheme": "https",
+        "hostname": "example.com",
+        "port": 443,
+        "addresses": ["8.8.8.8:443"],
+        "subject": {"user": "user", "workspace": "workspace", "agent": "agent"},
+        "policy_id": "policy-1",
+        "generation": 7,
+        "expires_at_ms": 30042
+    });
+    assert_eq!(serde_json::to_value(&authorization)?, authorization_wire);
+    assert_eq!(
+        serde_json::from_value::<BrowserDialAuthorization>(authorization_wire.clone())?,
+        authorization
+    );
+
+    let response = BrowserDialResponse {
+        generation: 7,
+        denial: None,
+        authorization: Some(authorization.clone()),
+    };
+    let response_wire = serde_json::json!({
+        "generation": 7,
+        "denial": null,
+        "authorization": authorization_wire
+    });
+    assert_eq!(serde_json::to_value(&response)?, response_wire);
+    assert_eq!(
+        serde_json::from_value::<BrowserDialResponse>(response_wire)?,
+        response
+    );
+
+    let consume = ConsumeBrowserDialRequest {
+        request: request.clone(),
+        address: authorization.addresses[0],
+        authorization: authorization.clone(),
+    };
+    let consume_wire = serde_json::json!({
+        "request": request,
+        "address": "8.8.8.8:443",
+        "authorization": authorization
+    });
+    assert_eq!(serde_json::to_value(&consume)?, consume_wire);
+    assert_eq!(
+        serde_json::from_value::<ConsumeBrowserDialRequest>(consume_wire)?,
+        consume
+    );
+
+    let validate = ValidateBrowserDialRequest { authorization };
+    let validate_wire = serde_json::json!({
+        "authorization": serde_json::to_value(&validate.authorization)?
+    });
+    assert_eq!(serde_json::to_value(&validate)?, validate_wire);
+    assert_eq!(
+        serde_json::from_value::<ValidateBrowserDialRequest>(validate_wire)?,
+        validate
+    );
+    assert_eq!(
+        serde_json::to_value(DataCategory::OpaqueBrowserTraffic)?,
+        "opaque_browser_traffic"
+    );
+    assert_eq!(serde_json::to_value(EgressDenial::Stale)?, "stale");
+    Ok(())
+}
