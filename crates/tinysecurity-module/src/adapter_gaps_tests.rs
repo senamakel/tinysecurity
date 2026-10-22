@@ -4,8 +4,9 @@ use super::*;
 use tinysecurity_bus::{
     ApprovalActionRequest2, ApprovalRow2, FlowTrustList2, FlowTrustOutcome2, FlowTrustReceipt2,
     GrantFlowToolRequest2, GrantToolRequest2, ListFlowTrustRequest2, ListToolTrustRequest2,
-    PromptTier2, RevokeFlowToolRequest2, RevokeToolRequest2, ScanPromptScoredRequest2,
-    ScanPromptScoredResponse2, ToolTrustList2, ToolTrustOutcome2, ToolTrustReceipt2,
+    PromptTier2, RevokeFlowToolRequest2, RevokeToolByIdRequest2, RevokeToolRequest2,
+    ScanPromptScoredRequest2, ScanPromptScoredResponse2, ToolTrustList2, ToolTrustOutcome2,
+    ToolTrustReceipt2,
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
@@ -234,6 +235,71 @@ async fn whole_tool_trust_survives_a_module_restart_and_is_revoked_before_consum
         .await?;
     assert_eq!(listed.entries.len(), 0);
     second.broker.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn listed_whole_tool_trust_can_be_revoked_by_opaque_row_id() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("ledger");
+    std::fs::write(&path, [])?;
+    let first = start(&path).await?;
+    let grant: ToolTrustReceipt2 = first
+        .proxy
+        .call(
+            names::methods::GRANT_TOOL2,
+            (GrantToolRequest2 {
+                scope_id: "a".repeat(32),
+                tool: "calendar_create".into(),
+                audit: audit(1),
+            },),
+        )
+        .await?;
+    let request_id = grant
+        .request_id
+        .ok_or("grant has no durable row identity")?;
+    first.broker.abort();
+
+    let second = start(&path).await?;
+    let listed: ToolTrustList2 = second
+        .proxy
+        .call(
+            names::methods::LIST_TOOL_TRUST2,
+            (ListToolTrustRequest2 {
+                scope_id: "a".repeat(32),
+            },),
+        )
+        .await?;
+    assert_eq!(listed.entries.len(), 1);
+    assert_eq!(listed.entries[0].request_id, request_id);
+
+    let revoked: ToolTrustReceipt2 = second
+        .proxy
+        .call(
+            names::methods::REVOKE_TOOL_BY_ID2,
+            (RevokeToolByIdRequest2 {
+                scope_id: "a".repeat(32),
+                request_id: request_id.clone(),
+                audit: audit(2),
+            },),
+        )
+        .await?;
+    assert_eq!(revoked.outcome, ToolTrustOutcome2::Revoked);
+    assert_eq!(revoked.request_id.as_deref(), Some(request_id.as_str()));
+    second.broker.abort();
+
+    let third = start(&path).await?;
+    let listed: ToolTrustList2 = third
+        .proxy
+        .call(
+            names::methods::LIST_TOOL_TRUST2,
+            (ListToolTrustRequest2 {
+                scope_id: "a".repeat(32),
+            },),
+        )
+        .await?;
+    assert_eq!(listed.entries.len(), 0);
+    third.broker.abort();
     Ok(())
 }
 

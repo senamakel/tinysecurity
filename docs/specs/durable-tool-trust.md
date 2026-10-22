@@ -1,7 +1,8 @@
 # Durable whole-tool trust
 
-Contract 1.26 gives the authenticated host three approval members:
-`GrantTool2`, `RevokeTool2` and `ListToolTrust2`. The private host-only
+Contract 1.26 gives the authenticated host durable whole-tool trust members:
+`GrantTool2`, `RevokeTool2` and `ListToolTrust2`. Contract 1.27 adds
+`RevokeToolById2`. The private host-only
 `ImportTrustSource2` member records legacy migration receipts. Each request is bound to a
 registered `scope_id`; tool names are exact and never pattern-matched. The host
 allocates an `AuditCorrelation2` for every grant and revocation.
@@ -24,6 +25,12 @@ the active redaction policy matches it; the module matches, revokes and evaluate
 grants using the exact domain-separated digest in the binding. Names must be
 nonblank, contain no control characters, fit within 256 bytes, and must not name
 a human-only or `native_*` tool.
+
+`RevokeTool2` remains available when the host has the exact tool name. A host that
+only has a listed entry can call `RevokeToolById2` with its opaque `request_id`.
+The module searches only rows loaded for that request's registered scope; an ID
+from another scope returns `absent` and leaves the original grant live. Repeating
+the same cancellation with its original audit correlation returns `revoked`.
 
 `EvaluateApproval2` consults durable whole-tool trust only for an eligible
 required approval (`Rule::Approval`) or an unlabelled call (`Rule::GrantOnly`),

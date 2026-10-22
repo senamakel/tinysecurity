@@ -339,7 +339,7 @@ cannot bind the call answers an error, never an allow. Latency budgets are per c
 
 <a id="approval-origin-classes-durable-flow-trust-and-scored-prompt-screening-contract-122"></a>
 
-## Approval origin classes, durable trust and scored prompt screening (contracts 1.22 and 1.26)
+## Approval origin classes, durable trust and scored prompt screening (contracts 1.22, 1.26 and 1.27)
 
 Additive: every new member and enum value is absent from a 1.21 host's traffic, and a 1.22 host
 refuses a 1.21 module.
@@ -373,6 +373,11 @@ Contract 1.26 adds durable whole-tool trust through `GrantTool2`, `RevokeTool2` 
 The private host-only `ImportTrustSource2` records one durable source/item receipt
 alongside its imported trust row, so retries after partial migration or revocation
 cannot restore legacy authority.
+
+Contract 1.27 adds `RevokeToolById2`. A host can revoke the opaque `request_id`
+returned by `ListToolTrust2` even when the tool's display label is redacted; the
+module verifies the row belongs to the supplied registered scope and records the
+usual audited cancellation.
 
 ### Scored prompt screening: `ScanPrompt2`
 

@@ -27,6 +27,8 @@ Contract 1.26 adds durable whole-tool trust (`GrantTool2`, `RevokeTool2` and
 `ImportTrustSource2` host member adds import-once receipts for legacy whole-tool
 and flow-tool grants, retained after revocation so partial migration retries cannot
 restore removed authority.
+Contract 1.27 adds `RevokeToolById2`, allowing a host to revoke a listed grant by
+its opaque row identity when the display label is redacted.
 
 Contract 1.6 supplies `Audit2`, `EvaluateAudited2` and `CheckAudited2` with
 authenticated exact audit callbacks and a bounded [native journal](crates/tinysecurity-audit/README.md).
