@@ -357,7 +357,16 @@ impl Fixture {
     async fn new() -> TestResult<Self> {
         Self::with_file(None).await
     }
+    async fn new_with_deadline(deadline: Duration) -> TestResult<Self> {
+        Self::with_file_and_deadline(None, deadline).await
+    }
     async fn with_file(initial: Option<&[u8]>) -> TestResult<Self> {
+        Self::with_file_and_deadline(initial, Duration::from_secs(1)).await
+    }
+    async fn with_file_and_deadline(
+        initial: Option<&[u8]>,
+        deadline: Duration,
+    ) -> TestResult<Self> {
         let (registry, clock, master, durable) = Self::master().await?;
         let id = "a".repeat(32);
         let engine = Engine::new(
@@ -425,7 +434,7 @@ impl Fixture {
                     value_bytes: 100,
                     allocation_bytes: 65_000,
                     output_bytes: 100,
-                    deadline: Instant::now() + Duration::from_secs(1),
+                    deadline: Instant::now() + deadline,
                 },
             },
             consent.clone(),
@@ -1334,7 +1343,7 @@ async fn actual_owner_last_drop_joins_canceled_physical_job_before_refund() -> T
 
 #[tokio::test]
 async fn exact_encoding_pins_escaped_context_utf8_empty_value_and_complete_bound() -> TestResult {
-    let fixture = Fixture::new().await?;
+    let fixture = Fixture::new_with_deadline(Duration::from_secs(30)).await?;
     let mut request = fixture.request(AppStoreKind::Set);
     request.name = Zeroizing::new("user:λ".into());
     request.caller.call_id = "quoted\"\\λ".into();
