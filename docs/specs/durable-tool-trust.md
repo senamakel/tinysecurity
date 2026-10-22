@@ -1,7 +1,7 @@
 # Durable whole-tool trust
 
-Contracts 1.26 and 1.27 give the authenticated host durable whole-tool trust
-members: `GrantTool2`, `RevokeTool2`, `ListToolTrust2` and
+Contract 1.26 gives the authenticated host durable whole-tool trust members:
+`GrantTool2`, `RevokeTool2` and `ListToolTrust2`. Contract 1.27 adds
 `RevokeToolById2`. The private host-only
 `ImportTrustSource2` member records legacy migration receipts. Each request is bound to a
 registered `scope_id`; tool names are exact and never pattern-matched. The host
