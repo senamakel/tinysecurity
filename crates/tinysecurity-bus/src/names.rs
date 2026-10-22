@@ -55,6 +55,8 @@ pub mod methods {
     pub const GRANT_TOOL2: &str = "GrantTool2";
     /// Withdraw durable trust of one exact whole tool (contract 1.26).
     pub const REVOKE_TOOL2: &str = "RevokeTool2";
+    /// Withdraw a listed whole-tool grant by opaque row identity (contract 1.27).
+    pub const REVOKE_TOOL_BY_ID2: &str = "RevokeToolById2";
     /// Read the live durable whole-tool trust of one scope (contract 1.26).
     pub const LIST_TOOL_TRUST2: &str = "ListToolTrust2";
     /// Host-only import-once receipt for a legacy tool or flow-tool trust item.
@@ -234,6 +236,7 @@ pub const METHODS: &[&str] = &[
     methods::LIST_FLOW_TRUST2,
     methods::GRANT_TOOL2,
     methods::REVOKE_TOOL2,
+    methods::REVOKE_TOOL_BY_ID2,
     methods::LIST_TOOL_TRUST2,
     methods::IMPORT_TRUST_SOURCE2,
     methods::REGISTER_APPROVAL_SCOPE2,

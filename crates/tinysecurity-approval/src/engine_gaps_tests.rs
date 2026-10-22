@@ -3,7 +3,8 @@ use super::*;
 use tinysecurity_bus::{
     FlowTrustOutcome2, GrantFlowToolRequest2, GrantToolRequest2, ImportTrustItem2,
     ImportTrustOutcome2, ImportTrustSourceRequest2, ListFlowTrustRequest2, ListToolTrustRequest2,
-    RedactorConfig, RevokeFlowToolRequest2, RevokeToolRequest2, Secret, ToolTrustOutcome2,
+    RedactorConfig, RevokeFlowToolRequest2, RevokeToolByIdRequest2, RevokeToolRequest2, Secret,
+    ToolTrustOutcome2,
 };
 
 fn shell(n: u64, flow: Option<&str>, origin: Origin, call: &str) -> EvaluateApprovalRequest2 {
@@ -234,6 +235,73 @@ async fn unlabelled_grant_posture_cannot_be_borrowed_from_auto_approve_all() -> 
             .err(),
         Some(Error::Denied)
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn whole_tool_trust_can_be_revoked_by_listed_request_id() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    let receipt = owner
+        .grant_tool(GrantToolRequest2 {
+            scope_id: id(7),
+            tool: "gmail_send".into(),
+            audit: at(1),
+        })
+        .await?;
+    let request_id = receipt.request_id.ok_or(Error::Invalid)?;
+    owner.register_scope(register(8)).await?;
+
+    let listed = owner
+        .list_tool_trust(ListToolTrustRequest2 { scope_id: id(7) })
+        .await?;
+    assert_eq!(listed.entries.len(), 1);
+    assert_eq!(listed.entries[0].request_id, request_id);
+
+    let wrong_scope = owner
+        .revoke_tool_by_id(RevokeToolByIdRequest2 {
+            scope_id: id(8),
+            request_id: request_id.clone(),
+            audit: at(1),
+        })
+        .await?;
+    assert_eq!(wrong_scope.outcome, ToolTrustOutcome2::Absent);
+    assert_eq!(
+        owner
+            .list_tool_trust(ListToolTrustRequest2 { scope_id: id(7) })
+            .await?
+            .entries
+            .len(),
+        1
+    );
+
+    let revoked = owner
+        .revoke_tool_by_id(RevokeToolByIdRequest2 {
+            scope_id: id(7),
+            request_id: request_id.clone(),
+            audit: at(2),
+        })
+        .await?;
+    assert_eq!(revoked.outcome, ToolTrustOutcome2::Revoked);
+    assert_eq!(revoked.request_id.as_deref(), Some(request_id.as_str()));
+    let retry = owner
+        .revoke_tool_by_id(RevokeToolByIdRequest2 {
+            scope_id: id(7),
+            request_id: request_id.clone(),
+            audit: at(2),
+        })
+        .await?;
+    assert_eq!(retry.outcome, ToolTrustOutcome2::Revoked);
+    assert_eq!(
+        owner
+            .list_tool_trust(ListToolTrustRequest2 { scope_id: id(7) })
+            .await?
+            .entries
+            .len(),
+        0
+    );
+    let rows = fixture.rows.lock().map_err(|_| Error::Unavailable)?;
+    assert_eq!(rows.len(), 1);
     Ok(())
 }
 
