@@ -536,6 +536,30 @@ fn standard_and_sensitive_enforce_original_data_and_destination()
     }
     Ok(())
 }
+
+#[test]
+fn sensitive_privacy_rejects_opaque_browser_traffic_on_legacy_scoped_egress()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let dns = Dns {
+        calls: AtomicUsize::new(0),
+        answers: vec!["8.8.8.8".parse()?],
+    };
+    let mut config = policy();
+    config.privacy = PrivacyMode::Sensitive;
+    config.data_categories.push(DataCategory::OpaqueBrowserTraffic);
+    let mut registry = EgressPolicyRegistry::with_clock(Arc::new(Clock));
+    let id = registry.register(config)?;
+    let mut req = request(id);
+    req.url = "https://example.com:8443/path".into();
+    req.category = DataCategory::OpaqueBrowserTraffic;
+
+    assert_eq!(
+        registry.get_owned(&req.policy_id)?.check(&req, 1, &dns).denial,
+        Some(EgressDenial::Privacy)
+    );
+    assert_eq!(dns.calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}
 #[derive(Debug)]
 struct MutableClock(std::sync::atomic::AtomicU64);
 impl EgressClock for MutableClock {
