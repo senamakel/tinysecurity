@@ -57,3 +57,53 @@ fn scoped_debug_is_content_free_even_when_nested() {
         assert!(!output.contains("private-"), "{output}");
     }
 }
+
+#[test]
+fn browser_dial_contract_redacts_identity_and_serializes_no_http_payload()
+-> Result<(), serde_json::Error> {
+    let subject = SubjectScope {
+        user: "private-user".into(),
+        workspace: "private-workspace".into(),
+        agent: "private-agent".into(),
+    };
+    let request = BrowserDialRequest {
+        policy_id: EgressPolicyId("private-policy".into()),
+        expected_generation: 9,
+        session_id: "browser-session-private".into(),
+        scheme: "https".into(),
+        hostname: "private-destination.example".into(),
+        port: 443,
+    };
+    let json = serde_json::to_value(&request)?;
+    assert!(json.get("method").is_none());
+    assert!(json.get("headers").is_none());
+    assert!(json.get("payload").is_none());
+    assert_eq!(format!("{request:?}"), "BrowserDialRequest([REDACTED])");
+    let authorization = BrowserDialAuthorization {
+        authorization_id: "private-nonce".into(),
+        session_id: request.session_id.clone(),
+        scheme: "https".into(),
+        hostname: "private-destination.example".into(),
+        port: 443,
+        addresses: vec![std::net::SocketAddr::from(([8, 8, 8, 8], 443))],
+        subject: subject.clone(),
+        policy_id: request.policy_id.clone(),
+        generation: 7,
+        expires_at_ms: 10_000,
+    };
+    assert!(!format!("{authorization:?}").contains("private-"));
+    let validate = ValidateBrowserDialRequest {
+        authorization: authorization.clone(),
+    };
+    assert_eq!(
+        format!("{validate:?}"),
+        "ValidateBrowserDialRequest([REDACTED])"
+    );
+    let consume = ConsumeBrowserDialRequest {
+        request,
+        address: authorization.addresses[0],
+        authorization,
+    };
+    assert!(!format!("{consume:#?}").contains("private-"));
+    Ok(())
+}
