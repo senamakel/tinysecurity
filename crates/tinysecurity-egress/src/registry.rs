@@ -189,6 +189,9 @@ impl RegisteredEgressPolicy {
         {
             return Err(EgressDenial::Stale);
         }
+        if authorization.expires_at_ms <= now {
+            return Err(EgressDenial::Stale);
+        }
         state
             .browser_dials
             .retain(|auth| auth.expires_at_ms > now && auth.generation == generation);
