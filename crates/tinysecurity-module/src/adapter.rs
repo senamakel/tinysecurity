@@ -735,6 +735,7 @@ impl PolicyService {
         })
         .await
     }
+    /// Authorize one browser proxy destination using its registered egress policy.
     async fn authorize_browser_dial(
         &self,
         request: tinysecurity_bus::BrowserDialRequest,
@@ -753,6 +754,7 @@ impl PolicyService {
         .await
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))
     }
+    /// Consume a one-use grant immediately before dialing the approved socket.
     async fn consume_browser_dial(
         &self,
         request: tinysecurity_bus::ConsumeBrowserDialRequest,
@@ -769,6 +771,7 @@ impl PolicyService {
             .await
             .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))
     }
+    /// Check that an established browser tunnel lease remains active.
     async fn validate_browser_dial(
         &self,
         request: tinysecurity_bus::ValidateBrowserDialRequest,

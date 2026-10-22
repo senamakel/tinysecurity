@@ -180,6 +180,7 @@ impl EgressClock for RetentionRaceClock {
     }
 }
 #[test]
+/// Rejects authorizations that expire before DNS results can be retained.
 fn browser_dial_rejects_grant_expired_before_retention()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut configured = policy();

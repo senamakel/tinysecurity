@@ -110,6 +110,7 @@ fn browser_dial_contract_redacts_identity_and_serializes_no_http_payload()
 }
 
 #[test]
+/// Pins the destination-only request wire shape, including its policy generation.
 fn browser_dial_request_has_exact_wire_shape() -> Result<(), serde_json::Error> {
     let request = browser_wire_request();
     assert_wire_shape(
@@ -126,6 +127,7 @@ fn browser_dial_request_has_exact_wire_shape() -> Result<(), serde_json::Error> 
 }
 
 #[test]
+/// Pins the authorization fields needed to dial only an approved socket.
 fn browser_dial_authorization_has_exact_wire_shape() -> Result<(), serde_json::Error> {
     assert_wire_shape(
         &browser_wire_authorization(),
@@ -145,6 +147,7 @@ fn browser_dial_authorization_has_exact_wire_shape() -> Result<(), serde_json::E
 }
 
 #[test]
+/// Pins the success response shape returned by browser destination authorization.
 fn browser_dial_response_has_exact_wire_shape() -> Result<(), serde_json::Error> {
     let response = BrowserDialResponse {
         generation: 7,
@@ -162,6 +165,7 @@ fn browser_dial_response_has_exact_wire_shape() -> Result<(), serde_json::Error>
 }
 
 #[test]
+/// Pins the exact request shape for consuming a browser socket grant.
 fn browser_dial_consume_request_has_exact_wire_shape() -> Result<(), serde_json::Error> {
     let request = browser_wire_request();
     let authorization = browser_wire_authorization();
@@ -181,6 +185,7 @@ fn browser_dial_consume_request_has_exact_wire_shape() -> Result<(), serde_json:
 }
 
 #[test]
+/// Pins the exact request shape for validating an open browser tunnel lease.
 fn browser_dial_validate_request_has_exact_wire_shape() -> Result<(), serde_json::Error> {
     let request = ValidateBrowserDialRequest {
         authorization: browser_wire_authorization(),
@@ -192,6 +197,7 @@ fn browser_dial_validate_request_has_exact_wire_shape() -> Result<(), serde_json
 }
 
 #[test]
+/// Prevents accidental wire renames for browser traffic and stale denials.
 fn browser_dial_enum_values_have_stable_wire_names() -> Result<(), serde_json::Error> {
     assert_eq!(
         serde_json::to_value(DataCategory::OpaqueBrowserTraffic)?,
