@@ -71,6 +71,7 @@ fn request(id: EgressPolicyId) -> ScopedEgressRequest {
         transformation: None,
     }
 }
+/// Make a valid browser destination request for a registered policy.
 fn browser_request(id: EgressPolicyId) -> BrowserDialRequest {
     BrowserDialRequest {
         policy_id: id,
@@ -121,6 +122,7 @@ fn url_guard_returns_scoped_exact_vetted_transport_authorization()
     Ok(())
 }
 #[test]
+/// Grants include every resolved public socket and can be consumed only once.
 fn browser_dial_returns_exact_resolved_sockets_and_consumes_once()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut configured = policy();
@@ -168,6 +170,7 @@ fn browser_dial_returns_exact_resolved_sockets_and_consumes_once()
     Ok(())
 }
 #[test]
+/// Browser authorization rejects private answers and opaque data in restrictive modes.
 fn browser_dial_denies_private_dns_answers_and_sensitive_opaque_traffic()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut configured = policy();
@@ -224,6 +227,7 @@ fn browser_dial_denies_private_dns_answers_and_sensitive_opaque_traffic()
 }
 
 #[test]
+/// Public IPv6 literals are preserved as exact dial targets.
 fn browser_dial_accepts_canonical_public_ipv6_literal()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut configured = policy();
@@ -263,6 +267,7 @@ fn browser_dial_accepts_canonical_public_ipv6_literal()
 }
 
 #[test]
+/// Live browser leases have a fixed capacity and do not evict active grants.
 fn live_browser_dial_leases_are_bounded() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut configured = policy();
     configured.open_public = true;
@@ -299,6 +304,7 @@ fn live_browser_dial_leases_are_bounded() -> std::result::Result<(), Box<dyn std
     Ok(())
 }
 #[test]
+/// Grants cannot be replayed across sessions, destinations, policies, or generations.
 fn browser_dial_grants_bind_scope_destination_and_generation()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut configured = policy();
@@ -538,6 +544,7 @@ fn standard_and_sensitive_enforce_original_data_and_destination()
 }
 
 #[test]
+/// Sensitive legacy egress denies opaque browser traffic before DNS resolution.
 fn sensitive_privacy_rejects_opaque_browser_traffic_on_legacy_scoped_egress()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let dns = Dns {
