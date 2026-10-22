@@ -8,8 +8,9 @@ use super::{
     ApprovalScope2, CallerContext, Engine, Error, Origin, RedactMode, Result, binding,
 };
 use tinysecurity_bus::{
-    GrantToolRequest2, ListToolTrustRequest2, RevokeToolRequest2, TOOL_TRUST_LIFETIME_MS2,
-    ToolTrustEntry2, ToolTrustList2, ToolTrustOutcome2, ToolTrustReceipt2,
+    GrantToolRequest2, ListToolTrustRequest2, RevokeToolByIdRequest2, RevokeToolRequest2,
+    TOOL_TRUST_LIFETIME_MS2, ToolTrustEntry2, ToolTrustList2, ToolTrustOutcome2,
+    ToolTrustReceipt2,
 };
 
 const ATTRIBUTION: &str = "tool-trust-grant";
@@ -27,6 +28,15 @@ pub(super) fn is_trust_row(row: &ApprovalRow2) -> bool {
         Some(ATTRIBUTION | IMPORT_ATTRIBUTION)
     ) && row.choice == Some(ApprovalChoice2::Tool)
         && row.state == ApprovalLifecycle2::Approved
+        && row.decision_ticket_sha256.is_none()
+        && row.binding.caller.flow.is_none()
+}
+
+fn is_tool_trust_binding(row: &ApprovalRow2) -> bool {
+    matches!(
+        row.attribution.as_deref(),
+        Some(ATTRIBUTION | IMPORT_ATTRIBUTION)
+    ) && row.choice == Some(ApprovalChoice2::Tool)
         && row.decision_ticket_sha256.is_none()
         && row.binding.caller.flow.is_none()
 }
@@ -219,6 +229,66 @@ impl Engine {
             scope_id: request.scope_id,
             outcome: ToolTrustOutcome2::Revoked,
             request_id: Some(request_id),
+        })
+    }
+
+    /// Withdraw one listed whole-tool grant by its opaque durable row identity.
+    /// # Errors
+    /// Rejects unknown scopes, stale audit correlations, unavailable storage, and
+    /// unacknowledged durability.
+    pub async fn revoke_tool_by_id(
+        &self,
+        request: RevokeToolByIdRequest2,
+    ) -> Result<ToolTrustReceipt2> {
+        if request.request_id.is_empty() || request.request_id.len() > 128 {
+            return Err(Error::Invalid);
+        }
+        let _serial = self.tool_trust_lock.lock().await;
+        let reg = self.registration(&request.scope_id)?;
+        Self::correlation(&request.audit, reg.generation)?;
+        let rows = self.rows(&reg).await?;
+        let now = self.now()?;
+        let Some(row) = rows.iter().find(|row| {
+            is_tool_trust_binding(row)
+                && row.request_id == request.request_id
+                && Self::current(&reg, row).is_ok()
+        }) else {
+            return Ok(ToolTrustReceipt2 {
+                scope_id: request.scope_id,
+                outcome: ToolTrustOutcome2::Absent,
+                request_id: None,
+            });
+        };
+        if row.state == ApprovalLifecycle2::Cancelled && row.audit == request.audit {
+            self.cancel(ApprovalRecordRequest2 {
+                scope_id: request.scope_id.clone(),
+                request_id: request.request_id.clone(),
+                audit: request.audit,
+            })
+            .await?;
+            return Ok(ToolTrustReceipt2 {
+                scope_id: request.scope_id,
+                outcome: ToolTrustOutcome2::Revoked,
+                request_id: Some(request.request_id),
+            });
+        }
+        if row.state != ApprovalLifecycle2::Approved || row.expires_at_ms <= now {
+            return Ok(ToolTrustReceipt2 {
+                scope_id: request.scope_id,
+                outcome: ToolTrustOutcome2::Absent,
+                request_id: None,
+            });
+        }
+        self.cancel(ApprovalRecordRequest2 {
+            scope_id: request.scope_id.clone(),
+            request_id: request.request_id.clone(),
+            audit: request.audit,
+        })
+        .await?;
+        Ok(ToolTrustReceipt2 {
+            scope_id: request.scope_id,
+            outcome: ToolTrustOutcome2::Revoked,
+            request_id: Some(request.request_id),
         })
     }
 

@@ -1,4 +1,4 @@
-//! Durable whole-tool trust and imported-source receipts (contract 1.26).
+//! Durable whole-tool trust and imported-source receipts (contract 1.27).
 //!
 //! A host can grant, revoke and list an exact tool grant through the authenticated
 //! approval interface. Grants live as audited approval-store rows under one
@@ -94,6 +94,18 @@ pub struct RevokeToolRequest2 {
     pub audit: AuditCorrelation2,
 }
 
+/// Withdraw one listed whole-tool grant by its opaque durable row identity.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokeToolByIdRequest2 {
+    /// Trusted registration.
+    pub scope_id: String,
+    /// Opaque row identity returned by `ListToolTrust2`.
+    pub request_id: String,
+    /// Exact audit phase of the cancellation.
+    pub audit: AuditCorrelation2,
+}
+
 /// Read the live whole-tool trust of one scope.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -164,6 +176,7 @@ redacted_debug!(
     ImportTrustReceipt2,
     GrantToolRequest2,
     RevokeToolRequest2,
+    RevokeToolByIdRequest2,
     ListToolTrustRequest2,
     ToolTrustEntry2,
     ToolTrustList2,

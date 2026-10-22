@@ -36,6 +36,31 @@ fn whole_tool_trust_payloads_have_stable_wire_shapes() {
 }
 
 #[test]
+fn revoke_by_id_payload_has_a_stable_wire_shape() {
+    let request = RevokeToolByIdRequest2 {
+        scope_id: "scope".into(),
+        request_id: "row-id".into(),
+        audit: AuditCorrelation2 {
+            event_id: "b".repeat(32),
+            expected_tail: 5,
+            generation: 7,
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(request).ok(),
+        Some(json!({
+            "scope_id": "scope",
+            "request_id": "row-id",
+            "audit": {
+                "event_id": "b".repeat(32),
+                "expected_tail": 5,
+                "generation": 7
+            }
+        }))
+    );
+}
+
+#[test]
 fn source_trust_import_items_keep_exact_tagged_wire_shapes() {
     let tool = ImportTrustItem2::Tool {
         tool: "search".into(),
@@ -100,6 +125,11 @@ fn trust_payload_debug_output_redacts_every_field() {
     assert_redacted(&RevokeToolRequest2 {
         scope_id: "scope-secret".into(),
         tool: "tool-secret".into(),
+        audit,
+    });
+    assert_redacted(&RevokeToolByIdRequest2 {
+        scope_id: "scope-secret".into(),
+        request_id: "request-secret".into(),
         audit,
     });
     assert_redacted(&ListToolTrustRequest2 {
