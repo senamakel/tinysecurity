@@ -92,6 +92,13 @@ fn browser_dial_contract_redacts_identity_and_serializes_no_http_payload()
         expires_at_ms: 10_000,
     };
     assert!(!format!("{authorization:?}").contains("private-"));
+    let validate = ValidateBrowserDialRequest {
+        authorization: authorization.clone(),
+    };
+    assert_eq!(
+        format!("{validate:?}"),
+        "ValidateBrowserDialRequest([REDACTED])"
+    );
     let consume = ConsumeBrowserDialRequest {
         request,
         address: authorization.addresses[0],
