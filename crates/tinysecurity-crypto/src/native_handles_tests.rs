@@ -128,7 +128,7 @@ fn replacing_a_live_scope_updates_policy_and_fences_old_reservations() -> TestRe
         OperationKind::RetainPlaintext,
         b"new",
     )?;
-    assert_eq!(next.binding().policy_ref(), "policy-next");
+    assert_eq!(next.binding().policy_ref, "policy-next");
     Ok(())
 }
 

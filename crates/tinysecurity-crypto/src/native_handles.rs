@@ -610,6 +610,42 @@ impl Registry {
         );
         Ok(())
     }
+    /// Replace only the policy reference of one live trusted scope.
+    /// Subject identities and native purposes are immutable. The epoch changes
+    /// before the new policy becomes visible, invalidating reservations and
+    /// retained handles created under the prior policy.
+    ///
+    /// # Errors
+    /// Rejects invalid registrations, stale generation, identity changes,
+    /// unknown scopes, closed state, clock failure, or epoch exhaustion.
+    pub fn replace_scope(&self, registration: Registration, generation: u64) -> Result<()> {
+        let (mut state, now) = self.checked_lock()?;
+        if state.generation != generation || !valid_registration(&registration) {
+            return Err(Error::NativeDenied);
+        }
+        let scope = state
+            .scopes
+            .get_mut(&registration.id)
+            .ok_or(Error::NativeDenied)?;
+        if scope.registration.subject != registration.subject
+            || scope.registration.durable_subject != registration.durable_subject
+            || scope.registration.purposes != registration.purposes
+        {
+            return Err(Error::NativeDenied);
+        }
+        if scope.registration == registration {
+            return Ok(());
+        }
+        let epoch = scope.epoch.checked_add(1).ok_or(Error::NativeDenied)?;
+        scope.registration = registration.clone();
+        scope.epoch = epoch;
+        scope.rate = RateCounter::new(now.monotonic);
+        state
+            .entries
+            .retain(|_, entry| entry.registration != registration.id);
+        state.recount();
+        Ok(())
+    }
     fn lock(&self) -> Result<StateGuard<'_>> {
         let gate = self.physical_gate.lock().map_err(|_| Error::NativeDenied)?;
         let state = self.state.lock().map_err(|_| Error::NativeDenied)?;
