@@ -310,9 +310,7 @@ impl Policy {
                 verdict,
                 bundle_sha256,
             } => {
-                if !is_sha256(bundle_sha256) {
-                    Err(DenialReason::InvalidContext)
-                } else {
+                if is_sha256(bundle_sha256) {
                     match verdict {
                         tinysecurity_bus::SkillScanVerdict::Pass => Ok(()),
                         tinysecurity_bus::SkillScanVerdict::Warn => {
@@ -320,6 +318,8 @@ impl Policy {
                         }
                         tinysecurity_bus::SkillScanVerdict::Block => Err(DenialReason::Content),
                     }
+                } else {
+                    Err(DenialReason::InvalidContext)
                 }
             }
             Check::Path { path, write } => path::check(settings, path, *write)
