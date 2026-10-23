@@ -2230,7 +2230,10 @@ pub(super) async fn run(
     *state.module.lock().map_err(|_| denied())? = Some(module.clone());
     let proxy = host
         .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
-        .with_timeout(Duration::from_secs(if mode == 18 { 30 } else { 5 }));
+        // Let the module's own callback deadline settle pending work. In
+        // particular, the duplicate-execution assertion below must observe the
+        // module's replay rejection rather than another client-side timeout.
+        .with_timeout(Duration::from_secs(35));
     assert!(proxy.attestation().await?.is_some());
     if mode == 18 {
         let _: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
