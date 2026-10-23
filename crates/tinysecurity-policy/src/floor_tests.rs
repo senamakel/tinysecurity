@@ -249,7 +249,14 @@ fn windows_reserved_device_components_cannot_be_scoped_as_files() {
         assert!(crate::protected_path(&PathBuf::from(path)), "{path}");
     }
 
-    for path in [r"C:\work\console.txt", r"C:\work\COM10.log", "/work/CON"] {
+    for path in [r"C:\work\console.txt", r"C:\work\COM10.log"] {
+        assert!(!floor(path), "{path}");
+        assert!(!crate::protected_path(&PathBuf::from(path)), "{path}");
+    }
+
+    #[cfg(not(windows))]
+    {
+        let path = "/work/CON";
         assert!(!floor(path), "{path}");
         assert!(!crate::protected_path(&PathBuf::from(path)), "{path}");
     }
