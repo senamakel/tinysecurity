@@ -738,6 +738,18 @@ impl Control {
             assert!(receipt.active);
             assert_eq!(receipt.registration_id, registration.registration_id);
             let secret = self.service.secret.as_ref().ok_or_else(denied)?;
+            let mut invalid_replacement = approval_request.clone();
+            invalid_replacement.scope.subject.user = "different-user".into();
+            assert!(self
+                .service
+                .replace_approval_scope2(invalid_replacement)
+                .await
+                .is_err());
+            assert!(secret
+                .dynamic
+                .lock()
+                .map_err(|_| denied())?
+                .contains_key(&registration.registration_id));
             let prior = Arc::as_ptr(
                 secret
                     .dynamic
@@ -777,6 +789,26 @@ impl Control {
                     .await
                     .is_err()
             );
+            let base_scope = scope();
+            assert!(self
+                .service
+                .retire_approval_scope2(RetireApprovalScopeRequest2 {
+                    scope_id: base_scope.scope_id.clone(),
+                })
+                .await
+                .is_err());
+            let _: ApprovalScopeReceipt2 = self
+                .service
+                .replace_approval_scope2(RegisterApprovalScopeRequest2 {
+                    scope: ApprovalScope2 {
+                        policy_ref: "registered-policy-next".into(),
+                        ..base_scope
+                    },
+                    grants: ApprovalGrants2::default(),
+                    audit_stream_id: "a".repeat(32),
+                    report_handle: false,
+                })
+                .await?;
             let replacement = RegisterApprovalScopeRequest2 {
                 scope: ApprovalScope2 {
                     scope_id: "f".repeat(32),
