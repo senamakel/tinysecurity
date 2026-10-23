@@ -134,6 +134,7 @@ fn global_dosdevices_alias_cannot_hide_system_or_credential_roots()
         r"\GLOBAL??\C:\Windows\System32\config\SAM",
         r"\GLOBAL??\D:\Users\alice\.ssh\id_rsa",
         r"\GLOBAL??\UNC\server\C$\Windows\System32\config\SAM",
+        r"\DosDevices\C:\Windows\System32\config\SAM",
     ] {
         assert!(protected_path(std::path::Path::new(path)), "{path}");
     }
