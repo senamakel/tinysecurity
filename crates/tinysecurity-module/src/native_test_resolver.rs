@@ -5,6 +5,7 @@ use std::{
     sync::{Mutex, OnceLock},
     time::Duration,
 };
+use serde::{Deserialize, Deserializer, de::{MapAccess, Visitor}};
 use tinysecurity::{ResolveFailure, Resolver};
 
 const ENVIRONMENT_VARIABLE: &str = "TINYSECURITY_TEST_DNS_SEQUENCE";
@@ -12,6 +13,43 @@ const MAX_FIXTURE_BYTES: usize = 4096;
 const MAX_HOSTS: usize = 16;
 const MAX_ANSWERS_PER_HOST: usize = 8;
 const MAX_TOTAL_ANSWERS: usize = 64;
+
+struct RawAnswers(BTreeMap<String, Vec<String>>);
+
+impl<'de> Deserialize<'de> for RawAnswers {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct RawAnswersVisitor;
+
+        impl<'de> Visitor<'de> for RawAnswersVisitor {
+            type Value = RawAnswers;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a DNS fixture object with unique hostname keys")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut answers = BTreeMap::new();
+                while let Some((hostname, values)) = map.next_entry::<String, Vec<String>>()? {
+                    if answers.insert(hostname, values).is_some() {
+                        return Err(serde::de::Error::custom("duplicate DNS fixture hostname"));
+                    }
+                    if answers.len() > MAX_HOSTS {
+                        return Err(serde::de::Error::custom("too many DNS fixture hostnames"));
+                    }
+                }
+                Ok(RawAnswers(answers))
+            }
+        }
+
+        deserializer.deserialize_map(RawAnswersVisitor)
+    }
+}
 
 /// A bounded hostname-to-address script. Each successful lookup consumes one address.
 #[derive(Debug)]
@@ -25,8 +63,9 @@ impl FixtureResolver {
         if input.is_empty() || input.len() > MAX_FIXTURE_BYTES {
             return Err(ResolveFailure);
         }
-        let raw: BTreeMap<String, Vec<String>> =
-            serde_json::from_str(input).map_err(|_| ResolveFailure)?;
+        let raw = serde_json::from_str::<RawAnswers>(input)
+            .map_err(|_| ResolveFailure)?
+            .0;
         if raw.is_empty() || raw.len() > MAX_HOSTS {
             return Err(ResolveFailure);
         }
