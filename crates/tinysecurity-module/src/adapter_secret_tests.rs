@@ -671,7 +671,30 @@ impl Control {
             return self.canceled_evaluation(&proxy).await;
         }
         if self.state.mode == 22 {
-            eprintln!("runtime secret exercise: register");
+            let approval_request = RegisterApprovalScopeRequest2 {
+                scope: ApprovalScope2 {
+                    scope_id: "f".repeat(32),
+                    subject: SubjectScope {
+                        user: "runtime-user".into(),
+                        workspace: "runtime-workspace".into(),
+                        agent: "runtime-agent".into(),
+                    },
+                    policy_ref: "runtime-policy".into(),
+                    generation: 1,
+                    ceiling: AccessTier::Full,
+                    require_approval: true,
+                    auto_approve_all: false,
+                },
+                grants: ApprovalGrants2::default(),
+                audit_stream_id: "g".repeat(32),
+                report_handle: false,
+            };
+            let _: ApprovalScopeReceipt2 = proxy
+                .call(
+                    names::methods::REGISTER_APPROVAL_SCOPE2,
+                    (&approval_request,),
+                )
+                .await?;
             let registration = SecretRegistration2 {
                 registration_id: "h".repeat(32),
                 approval_scope_id: "f".repeat(32),
@@ -689,7 +712,6 @@ impl Control {
             let receipt: SecretScopeReceipt2 = proxy
                 .call_confidential(names::methods::REGISTER_SECRET_SCOPE2, (&register_request,))
                 .await?;
-            eprintln!("runtime secret exercise: registered");
             assert!(receipt.active);
             assert_eq!(receipt.registration_id, registration.registration_id);
             assert_eq!(
@@ -720,7 +742,6 @@ impl Control {
                     },),
                 )
                 .await?;
-            eprintln!("runtime secret exercise: retired");
             assert!(
                 self.service
                     .secret
@@ -911,31 +932,6 @@ mod linked_fixture {
             )
             .map_err(|_| denied())?,
         );
-        if mode == 22 {
-            eprintln!("runtime secret setup: register approval");
-            engine
-                .register_scope(RegisterApprovalScopeRequest2 {
-                    scope: ApprovalScope2 {
-                        scope_id: "f".repeat(32),
-                        subject: SubjectScope {
-                            user: "runtime-user".into(),
-                            workspace: "runtime-workspace".into(),
-                            agent: "runtime-agent".into(),
-                        },
-                        policy_ref: "runtime-policy".into(),
-                        generation: 1,
-                        ceiling: AccessTier::Full,
-                        require_approval: true,
-                        auto_approve_all: false,
-                    },
-                    grants: ApprovalGrants2::default(),
-                    audit_stream_id: "g".repeat(32),
-                    report_handle: false,
-                })
-                .await
-                .map_err(approval_failure)?;
-            eprintln!("runtime secret setup: approval registered");
-        }
         let mut facade_config = super::config();
         if mode == 17 {
             facade_config.registrations[0].purpose = MasterPurpose2::AppEncryptionMaster;
