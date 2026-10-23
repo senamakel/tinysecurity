@@ -671,6 +671,7 @@ impl Control {
             return self.canceled_evaluation(&proxy).await;
         }
         if self.state.mode == 22 {
+            eprintln!("runtime secret exercise: register");
             let registration = SecretRegistration2 {
                 registration_id: "h".repeat(32),
                 approval_scope_id: "f".repeat(32),
@@ -688,6 +689,7 @@ impl Control {
             let receipt: SecretScopeReceipt2 = proxy
                 .call_confidential(names::methods::REGISTER_SECRET_SCOPE2, (&register_request,))
                 .await?;
+            eprintln!("runtime secret exercise: registered");
             assert!(receipt.active);
             assert_eq!(receipt.registration_id, registration.registration_id);
             assert_eq!(
@@ -718,6 +720,7 @@ impl Control {
                     },),
                 )
                 .await?;
+            eprintln!("runtime secret exercise: retired");
             assert!(
                 self.service
                     .secret
@@ -909,6 +912,7 @@ mod linked_fixture {
             .map_err(|_| denied())?,
         );
         if mode == 22 {
+            eprintln!("runtime secret setup: register approval");
             engine
                 .register_scope(RegisterApprovalScopeRequest2 {
                     scope: ApprovalScope2 {
@@ -930,6 +934,7 @@ mod linked_fixture {
                 })
                 .await
                 .map_err(approval_failure)?;
+            eprintln!("runtime secret setup: approval registered");
         }
         let mut facade_config = super::config();
         if mode == 17 {
