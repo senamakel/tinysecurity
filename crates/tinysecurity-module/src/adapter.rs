@@ -1214,14 +1214,12 @@ impl PolicyService {
             .as_ref()
             .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?;
         let scope_id = request.scope.scope_id.clone();
-        if let Some(secret) = &self.secret {
-            secret.retire_approval_scope(&scope_id)?;
-        }
         let receipt = engine
             .replace_scope(request)
             .await
             .map_err(approval_failure)?;
         if let Some(secret) = &self.secret {
+            secret.retire_approval_scope(&scope_id)?;
             secret.refresh_approval_scope(&scope_id, engine)?;
         }
         Ok(receipt)
@@ -1231,15 +1229,16 @@ impl PolicyService {
         request: tinysecurity_bus::RetireApprovalScopeRequest2,
     ) -> BusResult<tinysecurity_bus::ApprovalScopeReceipt2> {
         let _lifecycle = self.secret_scope_lifecycle.lock().await;
-        if let Some(secret) = &self.secret {
-            secret.retire_approval_scope(&request.scope_id)?;
-        }
-        self.approvals
+        let receipt = self.approvals
             .as_ref()
             .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?
             .retire_scope(request)
             .await
-            .map_err(approval_failure)
+            .map_err(approval_failure)?;
+        if let Some(secret) = &self.secret {
+            secret.retire_approval_scope(&receipt.scope_id)?;
+        }
+        Ok(receipt)
     }
     // Private host-only configuration: the facts are a trusted-adapter claim.
     async fn register_sandbox_scope2(
