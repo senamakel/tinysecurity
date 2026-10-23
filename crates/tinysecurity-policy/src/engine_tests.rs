@@ -1,5 +1,5 @@
 use super::*;
-use tinysecurity_bus::ToolCall;
+use tinysecurity_bus::{SkillScanVerdict, ToolCall};
 #[test]
 fn direct_credential_transfers_deny_original_content() -> Result<()> {
     let policy = Policy::new(ModuleConfig::default())?;
