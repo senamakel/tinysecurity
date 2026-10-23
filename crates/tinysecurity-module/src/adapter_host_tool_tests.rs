@@ -135,10 +135,18 @@ async fn evaluate_applies_host_skill_scan_verdicts_before_run_workflow() -> Test
                 &service,
                 request(
                     "run_workflow",
-                    vec![Check::SkillScan {
-                        verdict,
-                        bundle_sha256: "c".repeat(64),
-                    }],
+                    vec![
+                        Check::HostAction {
+                            permission: ToolPermission::None,
+                            external_effect: false,
+                            spend: false,
+                            command_policy: None,
+                        },
+                        Check::SkillScan {
+                            verdict,
+                            bundle_sha256: "c".repeat(64),
+                        },
+                    ],
                 ),
             )
             .await?

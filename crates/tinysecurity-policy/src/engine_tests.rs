@@ -1,5 +1,14 @@
 use super::*;
-use tinysecurity_bus::{SkillScanVerdict, ToolCall};
+use tinysecurity_bus::{SkillScanVerdict, ToolCall, ToolPermission};
+
+fn non_effecting_host_action() -> Check {
+    Check::HostAction {
+        permission: ToolPermission::None,
+        external_effect: false,
+        spend: false,
+        command_policy: None,
+    }
+}
 #[test]
 fn direct_credential_transfers_deny_original_content() -> Result<()> {
     let policy = Policy::new(ModuleConfig::default())?;
@@ -111,10 +120,13 @@ fn host_skill_scan_verdicts_deny_block_and_require_approval_for_warning() -> Res
                 &policy,
                 &host_call(
                     "run_workflow",
-                    vec![Check::SkillScan {
-                        verdict: scan_verdict,
-                        bundle_sha256: "a".repeat(64),
-                    }],
+                    vec![
+                        non_effecting_host_action(),
+                        Check::SkillScan {
+                            verdict: scan_verdict,
+                            bundle_sha256: "a".repeat(64),
+                        },
+                    ],
                 ),
             )?,
             expected,
@@ -154,6 +166,7 @@ fn a_skill_warning_never_masks_an_independent_hard_denial() -> Result<()> {
             &host_call(
                 "run_workflow",
                 vec![
+                    non_effecting_host_action(),
                     Check::SkillScan {
                         verdict: SkillScanVerdict::Warn,
                         bundle_sha256: "b".repeat(64),
@@ -185,10 +198,13 @@ fn a_skill_scan_requires_a_canonical_bundle_digest() -> Result<()> {
                 &policy,
                 &host_call(
                     "run_workflow",
-                    vec![Check::SkillScan {
-                        verdict: SkillScanVerdict::Pass,
-                        bundle_sha256,
-                    }],
+                    vec![
+                        non_effecting_host_action(),
+                        Check::SkillScan {
+                            verdict: SkillScanVerdict::Pass,
+                            bundle_sha256,
+                        },
+                    ],
                 ),
             )?,
             Verdict::Deny {

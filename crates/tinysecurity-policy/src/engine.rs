@@ -141,7 +141,6 @@ impl Policy {
                             Check::HostTool {}
                                 | Check::HostAction { .. }
                                 | Check::HostShell { .. }
-                                | Check::SkillScan { .. }
                         )
                     }) && request
                         .call
