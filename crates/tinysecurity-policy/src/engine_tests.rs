@@ -91,7 +91,7 @@ fn host_tool_needs_approval_instead_of_being_unsupported() -> Result<()> {
 #[test]
 fn host_skill_scan_verdicts_deny_block_and_require_approval_for_warning() -> Result<()> {
     let policy = Policy::new(ModuleConfig::default())?;
-    for (verdict, expected) in [
+    for (scan_verdict, expected) in [
         (
             SkillScanVerdict::Block,
             Verdict::Deny {
@@ -111,11 +111,13 @@ fn host_skill_scan_verdicts_deny_block_and_require_approval_for_warning() -> Res
                 &policy,
                 &host_call(
                     "run_workflow",
-                    vec![Check::SkillScan { verdict }],
+                    vec![Check::SkillScan {
+                        verdict: scan_verdict,
+                    }],
                 ),
             )?,
             expected,
-            "{verdict:?}"
+            "{scan_verdict:?}"
         );
     }
     Ok(())
