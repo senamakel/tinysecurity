@@ -261,3 +261,23 @@ fn windows_reserved_device_components_cannot_be_scoped_as_files() {
         assert!(!crate::protected_path(&PathBuf::from(path)), "{path}");
     }
 }
+
+#[cfg(not(windows))]
+#[test]
+fn windows_native_aliases_are_checked_on_posix_hosts() {
+    for path in [
+        "//?/C:/work/CON",
+        "//./C:/work/NUL.txt",
+        "/??/C:/work/AUX",
+        "/global??/C:/work/PRN",
+        "/dosdevices/C:/work/LPT1.log",
+        "/device/harddiskvolume1/work/COM3",
+        "globalroot/device/harddiskvolume1/work/COM²",
+        "unc/server/share/COM1",
+        "C:/work/CON",
+    ] {
+        assert!(crate::path::windows_device_path(path), "{path}");
+    }
+    assert!(!crate::path::windows_device_path("/work/CON"));
+    assert!(!crate::path::windows_device_path("/work/console.txt"));
+}
