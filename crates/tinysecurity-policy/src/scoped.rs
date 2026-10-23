@@ -106,9 +106,13 @@ fn check_fields(h: &mut Sha256, check: &Check) {
         }
         Check::LocalDiagnostic {} => field(h, "local_diagnostic"),
         Check::HostTool {} => field(h, "host_tool"),
-        Check::SkillScan { verdict } => {
+        Check::SkillScan {
+            verdict,
+            bundle_sha256,
+        } => {
             field(h, "skill_scan");
             field(h, &format!("{verdict:?}"));
+            field(h, bundle_sha256);
         }
         Check::HostAction {
             permission,

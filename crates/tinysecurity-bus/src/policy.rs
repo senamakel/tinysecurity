@@ -161,6 +161,9 @@ pub enum Check {
     SkillScan {
         /// Result computed by the host scanner.
         verdict: SkillScanVerdict,
+        /// Lowercase SHA-256 of the exact document and resources the host will
+        /// expose during this run. The approval binding includes this value.
+        bundle_sha256: String,
     },
     /// An effect not supported by this engine.
     Unknown {

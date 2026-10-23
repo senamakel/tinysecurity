@@ -113,6 +113,7 @@ fn host_skill_scan_verdicts_deny_block_and_require_approval_for_warning() -> Res
                     "run_workflow",
                     vec![Check::SkillScan {
                         verdict: scan_verdict,
+                        bundle_sha256: "a".repeat(64),
                     }],
                 ),
             )?,
@@ -134,6 +135,7 @@ fn a_skill_warning_never_masks_an_independent_hard_denial() -> Result<()> {
                 vec![
                     Check::SkillScan {
                         verdict: SkillScanVerdict::Warn,
+                        bundle_sha256: "b".repeat(64),
                     },
                     Check::Unknown {
                         description: "unsupported operation".into(),
@@ -145,6 +147,29 @@ fn a_skill_warning_never_masks_an_independent_hard_denial() -> Result<()> {
             reason: DenialReason::UnsupportedEffect,
         }
     );
+    Ok(())
+}
+
+#[test]
+fn a_skill_scan_requires_a_canonical_bundle_digest() -> Result<()> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    for bundle_sha256 in [String::new(), "A".repeat(64), "g".repeat(64), "a".repeat(63)] {
+        assert_eq!(
+            verdict(
+                &policy,
+                &host_call(
+                    "run_workflow",
+                    vec![Check::SkillScan {
+                        verdict: SkillScanVerdict::Pass,
+                        bundle_sha256,
+                    }],
+                ),
+            )?,
+            Verdict::Deny {
+                reason: DenialReason::InvalidContext,
+            }
+        );
+    }
     Ok(())
 }
 

@@ -125,11 +125,18 @@ fn skill_scan_has_stable_verdict_wire_forms() -> TestResult {
         (SkillScanVerdict::Warn, "warn"),
         (SkillScanVerdict::Block, "block"),
     ] {
-        let check = Check::SkillScan { verdict };
+        let check = Check::SkillScan {
+            verdict,
+            bundle_sha256: "a".repeat(64),
+        };
         let value = serde_json::to_value(&check)?;
         assert_eq!(
             value,
-            serde_json::json!({"kind":"skill_scan", "verdict":wire})
+            serde_json::json!({
+                "kind":"skill_scan",
+                "verdict":wire,
+                "bundle_sha256":"a".repeat(64),
+            })
         );
         assert_eq!(serde_json::from_value::<Check>(value)?, check);
     }

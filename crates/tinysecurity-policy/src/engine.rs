@@ -306,13 +306,22 @@ impl Policy {
                     *declared_class,
                 )
             }),
-            Check::SkillScan { verdict } => match verdict {
-                tinysecurity_bus::SkillScanVerdict::Pass => Ok(()),
-                tinysecurity_bus::SkillScanVerdict::Warn => {
-                    Err(DenialReason::ApprovalUnavailable)
+            Check::SkillScan {
+                verdict,
+                bundle_sha256,
+            } => {
+                if !is_sha256(bundle_sha256) {
+                    Err(DenialReason::InvalidContext)
+                } else {
+                    match verdict {
+                        tinysecurity_bus::SkillScanVerdict::Pass => Ok(()),
+                        tinysecurity_bus::SkillScanVerdict::Warn => {
+                            Err(DenialReason::ApprovalUnavailable)
+                        }
+                        tinysecurity_bus::SkillScanVerdict::Block => Err(DenialReason::Content),
+                    }
                 }
-                tinysecurity_bus::SkillScanVerdict::Block => Err(DenialReason::Content),
-            },
+            }
             Check::Path { path, write } => path::check(settings, path, *write)
                 .and_then(|()| hooks.map_or(Ok(()), |h| (h.path)(path, *write)))
                 .and_then(|()| {
@@ -358,6 +367,13 @@ impl Policy {
             cacheable: false,
         }
     }
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 /// Validate one subject's base settings with the same rules as module configuration.
 pub(crate) fn validate_settings(p: &PolicyConfig) -> Result<()> {
