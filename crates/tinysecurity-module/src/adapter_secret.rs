@@ -763,7 +763,7 @@ impl handles::HumanGrantVerifier for Verifier<'_> {
                 .consume_native_grant(ApprovalActionRequest2 {
                     scope_id: self.scope.scope_id.clone(),
                     request_id: self.request_id.clone(),
-                    request: call(self.reg, binding),
+                    request: call(self.reg, self.scope, binding),
                     audit: self.audit.clone(),
                 })
                 .await
