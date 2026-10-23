@@ -659,6 +659,7 @@ impl Control {
 }
 #[tinybus::interface(name = "ai.tinyhumans.tinysecurity.SecretFixture")]
 impl Control {
+    #[allow(clippy::too_many_lines)] // One fixture exercises the full secret lifecycle over TinyBus.
     async fn exercise(&self) -> tinybus::Result<serde_json::Value> {
         let peer = self.connection.unique_name().ok_or_else(denied)?;
         let proxy = self

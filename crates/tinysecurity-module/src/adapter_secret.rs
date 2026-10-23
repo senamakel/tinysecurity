@@ -578,10 +578,9 @@ impl SecretState {
             .lock()
             .map_err(|_| denied())?
             .retain(|(registration, _), _| {
-                !self
-                    .registered
+                self.registered
                     .get(registration)
-                    .is_some_and(|entry| entry.descriptor.approval_scope_id == scope_id)
+                    .is_none_or(|entry| entry.descriptor.approval_scope_id != scope_id)
             });
         Ok(())
     }
