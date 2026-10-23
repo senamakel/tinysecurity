@@ -1,4 +1,147 @@
-use super::*;
+//! Private, deterministic DNS answers for native security integration fixtures.
+use std::{
+    collections::{BTreeMap, HashMap},
+    net::IpAddr,
+    sync::{Mutex, OnceLock},
+    time::Duration,
+};
+use tinysecurity::{ResolveFailure, Resolver};
+
+const ENVIRONMENT_VARIABLE: &str = "TINYSECURITY_TEST_DNS_SEQUENCE";
+const MAX_FIXTURE_BYTES: usize = 4096;
+const MAX_HOSTS: usize = 16;
+const MAX_ANSWERS_PER_HOST: usize = 8;
+const MAX_TOTAL_ANSWERS: usize = 64;
+
+/// A bounded hostname-to-address script. Each successful lookup consumes one address.
+#[derive(Debug)]
+struct FixtureResolver {
+    answers: BTreeMap<String, Vec<IpAddr>>,
+    next_answer: Mutex<HashMap<String, usize>>,
+}
+
+impl FixtureResolver {
+    fn parse(input: &str) -> Result<Self, ResolveFailure> {
+        if input.is_empty() || input.len() > MAX_FIXTURE_BYTES {
+            return Err(ResolveFailure);
+        }
+        let raw: BTreeMap<String, Vec<String>> =
+            serde_json::from_str(input).map_err(|_| ResolveFailure)?;
+        if raw.is_empty() || raw.len() > MAX_HOSTS {
+            return Err(ResolveFailure);
+        }
+
+        let mut answers = BTreeMap::new();
+        let mut total_answers = 0;
+        for (hostname, values) in raw {
+            if !valid_hostname(&hostname)
+                || values.is_empty()
+                || values.len() > MAX_ANSWERS_PER_HOST
+            {
+                return Err(ResolveFailure);
+            }
+            total_answers += values.len();
+            if total_answers > MAX_TOTAL_ANSWERS {
+                return Err(ResolveFailure);
+            }
+            let addresses = values
+                .into_iter()
+                .map(|value| value.parse().map_err(|_| ResolveFailure))
+                .collect::<Result<Vec<IpAddr>, ResolveFailure>>()?;
+            answers.insert(hostname, addresses);
+        }
+
+        Ok(Self {
+            answers,
+            next_answer: Mutex::new(HashMap::new()),
+        })
+    }
+}
+
+impl Resolver for FixtureResolver {
+    fn resolve(
+        &self,
+        hostname: &str,
+        timeout: Duration,
+        limit: usize,
+    ) -> Result<Vec<IpAddr>, ResolveFailure> {
+        if hostname.len() > 253
+            || limit == 0
+            || limit > 64
+            || timeout.is_zero()
+            || timeout > Duration::from_secs(2)
+        {
+            return Err(ResolveFailure);
+        }
+        let hostname = hostname.to_ascii_lowercase();
+        let values = self.answers.get(&hostname).ok_or(ResolveFailure)?;
+        let mut next_answer = self.next_answer.lock().map_err(|_| ResolveFailure)?;
+        let next = next_answer.entry(hostname).or_default();
+        let address = *values.get(*next).ok_or(ResolveFailure)?;
+        *next += 1;
+        Ok(vec![address])
+    }
+}
+
+#[derive(Debug)]
+struct RejectResolver;
+
+impl Resolver for RejectResolver {
+    fn resolve(
+        &self,
+        _hostname: &str,
+        _timeout: Duration,
+        _limit: usize,
+    ) -> Result<Vec<IpAddr>, ResolveFailure> {
+        Err(ResolveFailure)
+    }
+}
+
+#[derive(Debug)]
+enum NativeTestResolver {
+    Fixture(FixtureResolver),
+    Reject(RejectResolver),
+}
+
+impl Resolver for NativeTestResolver {
+    fn resolve(
+        &self,
+        hostname: &str,
+        timeout: Duration,
+        limit: usize,
+    ) -> Result<Vec<IpAddr>, ResolveFailure> {
+        match self {
+            Self::Fixture(resolver) => resolver.resolve(hostname, timeout, limit),
+            Self::Reject(resolver) => resolver.resolve(hostname, timeout, limit),
+        }
+    }
+}
+
+/// Return the fixture resolver configured when the native module first loads.
+pub(super) fn resolver() -> &'static dyn Resolver {
+    static RESOLVER: OnceLock<NativeTestResolver> = OnceLock::new();
+    RESOLVER
+        .get_or_init(|| {
+            std::env::var(ENVIRONMENT_VARIABLE)
+                .ok()
+                .and_then(|input| FixtureResolver::parse(&input).ok())
+                .map(NativeTestResolver::Fixture)
+                .unwrap_or(NativeTestResolver::Reject(RejectResolver))
+        })
+}
+
+fn valid_hostname(hostname: &str) -> bool {
+    if hostname.is_empty() || hostname.len() > 253 || !hostname.is_ascii() {
+        return false;
+    }
+    hostname.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
+}
 
 #[cfg(test)]
 #[path = "native_test_resolver_tests.rs"]
