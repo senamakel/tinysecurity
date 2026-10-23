@@ -1190,10 +1190,6 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::RegisterSecretScopeRequest2,
     ) -> BusResult<tinysecurity_bus::SecretScopeReceipt2> {
-        let _lifecycle = SECRET_SCOPE_LIFECYCLE
-            .get_or_init(|| tokio::sync::Mutex::new(()))
-            .lock()
-            .await;
         // The TinyBus interface is asynchronous; registration itself only
         // updates the already-live in-process registries.
         std::future::ready(()).await;
@@ -1211,10 +1207,6 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::RegisterApprovalScopeRequest2,
     ) -> BusResult<tinysecurity_bus::ApprovalScopeReceipt2> {
-        let _lifecycle = SECRET_SCOPE_LIFECYCLE
-            .get_or_init(|| tokio::sync::Mutex::new(()))
-            .lock()
-            .await;
         let engine = self
             .approvals
             .as_ref()
@@ -1234,10 +1226,6 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::RetireApprovalScopeRequest2,
     ) -> BusResult<tinysecurity_bus::ApprovalScopeReceipt2> {
-        let _lifecycle = SECRET_SCOPE_LIFECYCLE
-            .get_or_init(|| tokio::sync::Mutex::new(()))
-            .lock()
-            .await;
         let receipt = self.approvals
             .as_ref()
             .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?

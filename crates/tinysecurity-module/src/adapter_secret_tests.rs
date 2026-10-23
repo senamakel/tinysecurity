@@ -1,4 +1,5 @@
 use super::*;
+use super::super::SECRET_SCOPE_LIFECYCLE;
 use std::result::Result;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tinybus::{Connection, broker::Broker, transport::memory::MemoryBus};
@@ -851,6 +852,60 @@ impl Control {
                     .is_err(),
                 "replacing the approval generation must require a new immutable secret ID"
             );
+            let race_registration = SecretRegistration2 {
+                registration_id: "6".repeat(32),
+                target: SecretBinding2 {
+                    backend_id: "5".repeat(32),
+                    slot: MasterSlotKind2::User,
+                },
+                ..registration.clone()
+            };
+            let race_request = RegisterSecretScopeRequest2 {
+                registration: race_registration.clone(),
+            };
+            self.service
+                .register_secret_scope2(race_request.clone())
+                .await?;
+            let lifecycle = SECRET_SCOPE_LIFECYCLE.get_or_init(|| tokio::sync::Mutex::new(()));
+            let held = lifecycle.lock().await;
+            let replacing_service = self.service.clone();
+            let replacing_request = replacement.clone();
+            let (replace_started, replace_started_rx) = tokio::sync::oneshot::channel();
+            let mut replacing = tokio::spawn(async move {
+                let _ = replace_started.send(());
+                replacing_service
+                    .replace_approval_scope2(replacing_request)
+                    .await
+            });
+            replace_started_rx.await.map_err(|_| denied())?;
+            let registering_service = self.service.clone();
+            let (register_started, register_started_rx) = tokio::sync::oneshot::channel();
+            let mut registering = tokio::spawn(async move {
+                let _ = register_started.send(());
+                registering_service.register_secret_scope2(race_request).await
+            });
+            register_started_rx.await.map_err(|_| denied())?;
+            assert!(tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                &mut replacing
+            )
+            .await
+            .is_err());
+            assert!(tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                &mut registering
+            )
+            .await
+            .is_err());
+            drop(held);
+            replacing.await.map_err(|_| denied())??;
+            assert!(registering.await.map_err(|_| denied())?.is_err());
+            assert!(secret
+                .dynamic
+                .lock()
+                .map_err(|_| denied())?
+                .get(&race_registration.registration_id)
+                .is_none());
             let replacement_registration = SecretRegistration2 {
                 registration_id: "7".repeat(32),
                 target: SecretBinding2 {
