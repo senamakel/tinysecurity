@@ -78,7 +78,8 @@ pub struct ToolCall {
 
 /// Host-computed verdict from scanning a skill before execution (contract 1.29).
 /// The host must scan the exact installed document and resources it will expose;
-/// this value is a trusted host assertion, never a model-supplied claim.
+/// this value is a trusted host assertion, never a model-supplied claim. It is
+/// supplemental to the host-effect check and cannot authorize a tool call alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillScanVerdict {

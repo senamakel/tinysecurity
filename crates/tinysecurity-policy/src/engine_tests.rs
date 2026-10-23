@@ -66,6 +66,14 @@ fn verdict(policy: &Policy, request: &EvaluateRequest) -> Result<Verdict> {
 }
 
 #[test]
+fn additive_contract_minor_accepts_an_older_same_major_host() -> Result<()> {
+    let mut config = ModuleConfig::default();
+    config.contract_version = (1, 28);
+    assert!(Policy::new(config).is_ok());
+    Ok(())
+}
+
+#[test]
 fn host_tool_needs_approval_instead_of_being_unsupported() -> Result<()> {
     let policy = Policy::new(ModuleConfig::default())?;
     let needs_approval = Verdict::Deny {
