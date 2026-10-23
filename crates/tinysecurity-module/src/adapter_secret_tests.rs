@@ -709,11 +709,40 @@ impl Control {
             let register_request = RegisterSecretScopeRequest2 {
                 registration: registration.clone(),
             };
+            let unknown = RegisterSecretScopeRequest2 {
+                registration: SecretRegistration2 {
+                    registration_id: "4".repeat(32),
+                    approval_scope_id: "5".repeat(32),
+                    origin: Origin::Operator,
+                    purpose: MasterPurpose2::ConfigUserMaster,
+                    target: SecretBinding2 {
+                        backend_id: "6".repeat(32),
+                        slot: MasterSlotKind2::User,
+                    },
+                    legacy: vec![],
+                },
+            };
+            assert!(proxy
+                .call_confidential::<SecretScopeReceipt2>(
+                    names::methods::REGISTER_SECRET_SCOPE2,
+                    (&unknown,),
+                )
+                .await
+                .is_err());
             let receipt: SecretScopeReceipt2 = proxy
                 .call_confidential(names::methods::REGISTER_SECRET_SCOPE2, (&register_request,))
                 .await?;
             assert!(receipt.active);
             assert_eq!(receipt.registration_id, registration.registration_id);
+            let secret = self.service.secret.as_ref().ok_or_else(denied)?;
+            let prior = Arc::as_ptr(
+                secret
+                    .dynamic
+                    .lock()
+                    .map_err(|_| denied())?
+                    .get(&registration.registration_id)
+                    .ok_or_else(denied)?,
+            );
             assert_eq!(
                 proxy
                     .call_confidential::<SecretScopeReceipt2>(
@@ -722,6 +751,17 @@ impl Control {
                     )
                     .await?,
                 receipt
+            );
+            assert_eq!(
+                Arc::as_ptr(
+                    secret
+                        .dynamic
+                        .lock()
+                        .map_err(|_| denied())?
+                        .get(&registration.registration_id)
+                        .ok_or_else(denied)?,
+                ),
+                prior
             );
             let mut conflicting = register_request;
             conflicting.registration.target.backend_id = "3".repeat(32);

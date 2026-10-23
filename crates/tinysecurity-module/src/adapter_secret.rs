@@ -412,7 +412,7 @@ impl SecretState {
             .scope_snapshot(&descriptor.approval_scope_id)
             .map_err(approval_failure)?;
         let registration_id = descriptor.registration_id.clone();
-        if let Ok(existing) = self.registration_id(&registration_id) {
+        if let Some(existing) = self.registered.get(&registration_id) {
             return if existing.descriptor == descriptor {
                 Ok(SecretScopeReceipt2 {
                     registration_id,
@@ -424,6 +424,16 @@ impl SecretState {
         }
 
         let mut dynamic = self.dynamic.lock().map_err(|_| denied())?;
+        if let Some(existing) = dynamic.get(&registration_id) {
+            return if existing.descriptor == descriptor {
+                Ok(SecretScopeReceipt2 {
+                    registration_id,
+                    active: true,
+                })
+            } else {
+                Err(denied())
+            };
+        }
         let mut inventory = Inventory::default();
         for existing in self.registered.values().chain(dynamic.values()) {
             let mut live_scope = existing.scope.clone();
