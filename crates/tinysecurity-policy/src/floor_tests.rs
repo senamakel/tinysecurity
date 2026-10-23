@@ -242,6 +242,8 @@ fn windows_reserved_device_components_cannot_be_scoped_as_files() {
         r"\\?\GLOBALROOT\Device\HarddiskVolume1\work\CON",
         r"\\?\UNC\server\share\NUL",
         r"\\server\share\PRN",
+        r"\GLOBAL??\NUL",
+        r"\DosDevices\CON",
     ] {
         assert!(floor(path), "{path}");
         assert!(crate::protected_path(&PathBuf::from(path)), "{path}");

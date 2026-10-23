@@ -63,6 +63,7 @@ pub(super) fn denial_segment(segment: &str) -> &str {
 }
 pub(super) fn floor(path: &str) -> bool {
     let normalized = path.to_ascii_lowercase().replace('\\', "/");
+    let windows_device = windows_device_path(&normalized);
     // Windows canonicalize emits an extended-length prefix. It must not hide
     // the system-root floor when this engine runs natively on Windows.
     let normalized = strip_native_namespace(&normalized);
@@ -72,7 +73,7 @@ pub(super) fn floor(path: &str) -> bool {
     if path.contains('\0')
         || segments.iter().any(|segment| parent_segment(segment))
         || credential_store(&segments)
-        || windows_device_path(normalized)
+        || windows_device
     {
         return true;
     }
