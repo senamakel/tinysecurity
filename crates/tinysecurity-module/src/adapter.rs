@@ -1626,13 +1626,18 @@ fn permission_payload(mut original: serde_json::Value) -> BusResult<String> {
 fn approval_failure(error: tinysecurity::approval::Error) -> tinybus::Error {
     tinybus::Error::failed(error.to_string())
 }
-/// Whether every check is a host-tool or shell admission question (contract 1.20).
+/// Whether host-tool checks are admission-only, with an optional supplemental scan.
 fn admission_only(checks: &[tinysecurity_bus::Check]) -> bool {
     use tinysecurity_bus::Check;
-    !checks.is_empty()
-        && checks
-            .iter()
-            .all(|check| matches!(check, Check::HostAction { .. } | Check::HostShell { .. }))
+    checks
+        .iter()
+        .any(|check| matches!(check, Check::HostAction { .. } | Check::HostShell { .. }))
+        && checks.iter().all(|check| {
+            matches!(
+                check,
+                Check::HostAction { .. } | Check::HostShell { .. } | Check::SkillScan { .. }
+            )
+        })
 }
 fn deny_allow(decision: &mut Decision) {
     if matches!(decision.verdict, tinysecurity_bus::Verdict::Allow) {
