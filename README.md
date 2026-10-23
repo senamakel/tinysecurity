@@ -38,6 +38,12 @@ privacy modes deny this uninspectable traffic; TinyComputer remains responsible
 for enforcing the proxy and dialing the approved socket. See the
 [browser-dial contract specification](docs/specs/browser-dial-contract-1.28.md).
 
+Contract 1.29 adds `Check::SkillScan` so the trusted host can submit the scan
+verdict and exact bundle digest before an installed skill runs. `Block` is a
+content denial, `Warn` enters the host's approval flow, and `Pass` leaves the
+remaining policy checks authoritative. See the
+[host skill-scan specification](docs/specs/skill-scan-contract-1.29.md).
+
 Contract 1.6 supplies `Audit2`, `EvaluateAudited2` and `CheckAudited2` with
 authenticated exact audit callbacks and a bounded [native journal](crates/tinysecurity-audit/README.md).
 The audited permission methods derive events from the actual original request,
