@@ -851,6 +851,41 @@ impl Control {
                     .await
                     .is_err()
             );
+            // A stale pending call can outlive a registration only across a
+            // service-tree replacement. Replacing the scope must prune it
+            // before any caller can resume work under the new generation.
+            let reservation_request = request(88);
+            let reservation = secret
+                .registry
+                .reserve(handles::Request {
+                    registration: &reservation_request.registration_id,
+                    authenticated_peer: &secret.peer,
+                    purpose: handles::Purpose::ConfigUserMaster,
+                    kind: handles::OperationKind::NativeMasterGrant,
+                    call_id: &reservation_request.call_id,
+                    input: Zeroizing::new(vec![]),
+                    ttl_ms: reservation_request.ttl_ms,
+                    generation: 1,
+                })
+                .map_err(|_| denied())?;
+            let stale_request = SecretRequest2 {
+                registration_id: "6".repeat(32),
+                call_id: "orphaned-pending-call".into(),
+                ttl_ms: 30_000,
+                operation: SecretOperation2::ResolveConfigMaster,
+            };
+            secret.pending.lock().map_err(|_| denied())?.insert(
+                (
+                    stale_request.registration_id.clone(),
+                    stale_request.call_id.clone(),
+                ),
+                Pending {
+                    request: stale_request,
+                    audit: audit(88),
+                    work: reservation,
+                    row: None,
+                },
+            );
             let _: ApprovalScopeReceipt2 = self
                 .service
                 .replace_approval_scope2(RegisterApprovalScopeRequest2 {
@@ -863,6 +898,10 @@ impl Control {
                     report_handle: false,
                 })
                 .await?;
+            assert!(
+                secret.pending.lock().map_err(|_| denied())?.is_empty(),
+                "scope replacement prunes pending calls for unknown registrations"
+            );
             let cipher = self.service.secret_cipher.as_ref().ok_or_else(denied)?;
             let approvals = self.service.approvals.as_ref().ok_or_else(denied)?;
             assert_eq!(
