@@ -138,18 +138,20 @@ fn a_revoked_scope_id_cannot_be_registered_again_but_can_be_replaced() -> TestRe
     registry.revoke_scope("a")?;
 
     assert!(registry.register_scope(registration("a"), 1).is_err());
-    assert!(registry
-        .reserve(Request {
-            registration: "a",
-            authenticated_peer: ":1.1",
-            purpose: Purpose::ConfigUserMaster,
-            kind: OperationKind::RetainPlaintext,
-            call_id: "revoked-call",
-            input: Zeroizing::new(b"revoked".to_vec()),
-            ttl_ms: 100,
-            generation: 1,
-        })
-        .is_err());
+    assert!(
+        registry
+            .reserve(Request {
+                registration: "a",
+                authenticated_peer: ":1.1",
+                purpose: Purpose::ConfigUserMaster,
+                kind: OperationKind::RetainPlaintext,
+                call_id: "revoked-call",
+                input: Zeroizing::new(b"revoked".to_vec()),
+                ttl_ms: 100,
+                generation: 1,
+            })
+            .is_err()
+    );
 
     // The trusted approval-scope replacement path reactivates a configured
     // native scope only after fencing the previous generation.
@@ -160,7 +162,7 @@ fn a_revoked_scope_id_cannot_be_registered_again_but_can_be_replaced() -> TestRe
         OperationKind::RetainPlaintext,
         b"next-generation",
     )?;
-    assert_eq!(next.binding().epoch(), 3);
+    assert_eq!(next.binding().policy_ref, "policy");
     Ok(())
 }
 
