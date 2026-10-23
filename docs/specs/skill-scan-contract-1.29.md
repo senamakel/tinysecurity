@@ -37,7 +37,8 @@ Policy maps the verdicts as follows:
 
 - `Pass` succeeds this check; all other policy checks still apply.
 - `Warn` returns `ApprovalUnavailable`, which the host maps to its existing
-  human-approval path. It never silently becomes an allow.
+  human-approval path. It is human-only: auto-approve-all, a whole-tool or flow
+  grant, a previous approval, and the judge cannot bypass this fresh decision.
 - `Block` returns `DenialReason::Content`, a hard refusal that approval cannot
   override.
 - A malformed digest returns `DenialReason::InvalidContext`.
@@ -54,5 +55,7 @@ binding, so a changed document cannot reuse the earlier warning decision.
 - Malformed digests deny with `DenialReason::InvalidContext`.
 - A warning enters the persisted human-approval lifecycle; a block cannot be
   converted into a pending approval by policy evaluation.
+- Auto-approve-all, grants, and judge decisions cannot bypass a warning's
+  fresh human decision.
 - Older 1.28 hosts reject the 1.29 module, and the 1.29 host accepts later
   1.x module minors.
