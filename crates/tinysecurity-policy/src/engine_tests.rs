@@ -125,6 +125,27 @@ fn host_skill_scan_verdicts_deny_block_and_require_approval_for_warning() -> Res
 }
 
 #[test]
+fn skill_scan_pass_cannot_authorize_a_host_tool_without_an_effect_check() -> Result<()> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    assert_eq!(
+        verdict(
+            &policy,
+            &host_call(
+                "run_workflow",
+                vec![Check::SkillScan {
+                    verdict: SkillScanVerdict::Pass,
+                    bundle_sha256: "a".repeat(64),
+                }],
+            ),
+        )?,
+        Verdict::Deny {
+            reason: DenialReason::UnsupportedEffect,
+        }
+    );
+    Ok(())
+}
+
+#[test]
 fn a_skill_warning_never_masks_an_independent_hard_denial() -> Result<()> {
     let policy = Policy::new(ModuleConfig::default())?;
     assert_eq!(
