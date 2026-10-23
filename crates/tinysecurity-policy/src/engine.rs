@@ -138,7 +138,10 @@ impl Policy {
                     request.call.checks.iter().any(|c| {
                         matches!(
                             c,
-                            Check::HostTool {} | Check::HostAction { .. } | Check::HostShell { .. }
+                            Check::HostTool {}
+                                | Check::HostAction { .. }
+                                | Check::HostShell { .. }
+                                | Check::SkillScan { .. }
                         )
                     }) && request
                         .call
@@ -303,6 +306,13 @@ impl Policy {
                     *declared_class,
                 )
             }),
+            Check::SkillScan { verdict } => match verdict {
+                tinysecurity_bus::SkillScanVerdict::Pass => Ok(()),
+                tinysecurity_bus::SkillScanVerdict::Warn => {
+                    Err(DenialReason::ApprovalUnavailable)
+                }
+                tinysecurity_bus::SkillScanVerdict::Block => Err(DenialReason::Content),
+            },
             Check::Path { path, write } => path::check(settings, path, *write)
                 .and_then(|()| hooks.map_or(Ok(()), |h| (h.path)(path, *write)))
                 .and_then(|()| {

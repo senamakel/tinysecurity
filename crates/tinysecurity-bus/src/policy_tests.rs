@@ -119,6 +119,24 @@ fn host_shell_has_a_stable_strict_wire_form() -> TestResult {
 }
 
 #[test]
+fn skill_scan_has_stable_verdict_wire_forms() -> TestResult {
+    for (verdict, wire) in [
+        (SkillScanVerdict::Pass, "pass"),
+        (SkillScanVerdict::Warn, "warn"),
+        (SkillScanVerdict::Block, "block"),
+    ] {
+        let check = Check::SkillScan { verdict };
+        let value = serde_json::to_value(&check)?;
+        assert_eq!(
+            value,
+            serde_json::json!({"kind":"skill_scan", "verdict":wire})
+        );
+        assert_eq!(serde_json::from_value::<Check>(value)?, check);
+    }
+    Ok(())
+}
+
+#[test]
 fn new_denial_reasons_have_stable_wire_forms_and_old_ones_are_unchanged() -> TestResult {
     for (reason, wire) in [
         (
