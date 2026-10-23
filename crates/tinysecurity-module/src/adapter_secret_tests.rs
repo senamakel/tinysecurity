@@ -1028,7 +1028,11 @@ async fn actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_
             .call("Exercise", ())
             .await
             .map_err(|e| format!("mode {mode}: {e}"))?;
-        assert_eq!(result["sets"], u32::from(matches!(mode, 1 | 2 | 6 | 10)));
+        if mode == 22 {
+            assert_eq!(result["denied"], true);
+        } else {
+            assert_eq!(result["sets"], u32::from(matches!(mode, 1 | 2 | 6 | 10)));
+        }
         if matches!(mode, 0 | 17) {
             assert_eq!(result["loads"], 1);
         }
