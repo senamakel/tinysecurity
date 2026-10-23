@@ -276,8 +276,9 @@ fn windows_native_aliases_are_checked_on_posix_hosts() {
         "unc/server/share/COM1",
         "C:/work/CON",
     ] {
-        assert!(crate::path::windows_device_path(path), "{path}");
+        assert!(floor(path), "{path}");
+        assert!(crate::protected_path(&PathBuf::from(path)), "{path}");
     }
-    assert!(!crate::path::windows_device_path("/work/CON"));
-    assert!(!crate::path::windows_device_path("/work/console.txt"));
+    assert!(!floor("/work/CON"));
+    assert!(!floor("/work/console.txt"));
 }
