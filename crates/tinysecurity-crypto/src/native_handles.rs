@@ -20,6 +20,9 @@ use tinysecurity_bus::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
+/// Maximum lifetime scope identities retained by one native secret registry.
+pub const MAX_NATIVE_SCOPES: usize = 65_536;
+
 /// Native purposes are distinct from device static and ephemeral keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Purpose {
@@ -522,7 +525,7 @@ impl Registry {
         clock: Arc<dyn NativeClock>,
     ) -> Result<Self> {
         if registrations.is_empty()
-            || registrations.len() > 128
+            || registrations.len() > MAX_NATIVE_SCOPES
             || !peer.starts_with(':')
             || !text(peer)
             || generation == 0
@@ -581,7 +584,7 @@ impl Registry {
     /// # Errors
     /// Rejects invalid or conflicting registrations, a stale expected
     /// generation, closed state, clock failure, and capacity beyond the fixed
-    /// 128-scope ceiling.
+    /// fixed scope ceiling.
     pub fn register_scope(&self, registration: Registration, generation: u64) -> Result<()> {
         let (mut state, now) = self.checked_lock()?;
         if state.generation != generation || !valid_registration(&registration) {
@@ -594,7 +597,7 @@ impl Registry {
                 Err(Error::NativeDenied)
             };
         }
-        if state.scopes.len() >= 128 {
+        if state.scopes.len() >= MAX_NATIVE_SCOPES {
             return Err(Error::NativeCapacity);
         }
         state.scopes.insert(

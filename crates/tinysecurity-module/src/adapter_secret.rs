@@ -77,7 +77,9 @@ pub(super) struct SecretState {
     config: SecretConfig2,
     peer: String,
     registry: handles::Registry,
-    registered: BTreeMap<String, Registered>,
+    registered: BTreeMap<String, Arc<Registered>>,
+    dynamic: Mutex<BTreeMap<String, Arc<Registered>>>,
+    connection: tinybus::Connection,
     pending: Mutex<BTreeMap<(String, String), Pending>>,
     aliases: Mutex<BTreeMap<String, Alias>>,
     clock: Arc<dyn handles::NativeClock>,
@@ -227,12 +229,12 @@ impl SecretState {
             .map_err(|_| denied())?;
             registered.insert(
                 descriptor.registration_id.clone(),
-                Registered {
+                Arc::new(Registered {
                     descriptor: descriptor.clone(),
                     scope: scope.clone(),
                     broker,
                     resolver,
-                },
+                }),
             );
         }
         let clock: Arc<dyn handles::NativeClock> = Arc::new(Clock(clock));
@@ -250,6 +252,8 @@ impl SecretState {
             peer: peer.into(),
             registry,
             registered,
+            dynamic: Mutex::new(BTreeMap::new()),
+            connection: connection.clone(),
             pending: Mutex::new(BTreeMap::new()),
             aliases: Mutex::new(BTreeMap::new()),
             clock,
@@ -258,12 +262,15 @@ impl SecretState {
     pub(super) fn cipher_registry(&self) -> handles::Registry {
         self.registry.clone()
     }
-    pub(super) fn cipher_scope(&self, registration: &str) -> tinybus::Result<&ApprovalScope2> {
-        let reg = self.registered.get(registration).ok_or_else(denied)?;
+    pub(super) fn cipher_scope(
+        &self,
+        registration: &str,
+    ) -> tinybus::Result<ApprovalScope2> {
+        let reg = self.registration_id(registration)?;
         if reg.descriptor.purpose != MasterPurpose2::ConfigUserMaster {
             return Err(denied());
         }
-        Ok(&reg.scope)
+        Ok(reg.scope.clone())
     }
     pub(super) fn prepare_cipher(
         &self,
@@ -364,11 +371,20 @@ impl SecretState {
             )
             .map_err(|_| denied())
     }
-    fn registration(&self, request: &SecretRequest2) -> tinybus::Result<&Registered> {
-        let reg = self
-            .registered
-            .get(&request.registration_id)
-            .ok_or_else(denied)?;
+    fn registration_id(&self, id: &str) -> tinybus::Result<Arc<Registered>> {
+        if let Some(reg) = self.registered.get(id) {
+            // Static registrations remain owned by the immutable init snapshot.
+            return Ok(reg.clone());
+        }
+        self.dynamic
+            .lock()
+            .map_err(|_| denied())?
+            .get(id)
+            .cloned()
+            .ok_or_else(denied)
+    }
+    fn registration(&self, request: &SecretRequest2) -> tinybus::Result<Arc<Registered>> {
+        let reg = self.registration_id(&request.registration_id)?;
         if request.call_id.is_empty()
             || request.call_id.len() > 128
             || request.call_id.chars().any(char::is_control)
@@ -423,6 +439,9 @@ impl SecretState {
         }
         if let Ok(mut aliases) = self.aliases.lock() {
             aliases.clear();
+        }
+        if let Ok(mut dynamic) = self.dynamic.lock() {
+            dynamic.clear();
         }
         super::cipher::close_pending();
     }
