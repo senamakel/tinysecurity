@@ -138,6 +138,7 @@ pub(crate) fn original(
     let canonical = serde_json::to_string(&args).map_err(|_| Error::Invalid)?;
     let external = request.call.checks.iter().any(|check| match check {
         Check::LocalDiagnostic {} => false,
+        Check::SkillScan { .. } => false,
         Check::Path { write, .. } => *write,
         Check::HostAction {
             external_effect, ..
