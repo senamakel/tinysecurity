@@ -51,3 +51,84 @@ fn invalid_fixture_inputs_fail_closed() {
         assert!(FixtureResolver::parse(input).is_err());
     }
 }
+
+#[test]
+fn fixture_bounds_reject_too_many_hosts_and_total_answers() {
+    let too_many_hosts = (0..=MAX_HOSTS)
+        .map(|index| format!(r#""host{index}.test":["8.8.8.8"]"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    assert!(FixtureResolver::parse(&format!("{{{too_many_hosts}}}")).is_err());
+
+    let too_many_answers = (0..9)
+        .map(|index| {
+            let answers = [r#""8.8.8.8""#; 8].join(",");
+            format!(r#""host{index}.test":[{answers}]"#)
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    assert!(FixtureResolver::parse(&format!("{{{too_many_answers}}}")).is_err());
+}
+
+#[test]
+fn fixture_parser_rejects_invalid_json_shapes_and_hostnames() {
+    let invalid_hosts = [
+        "",
+        "-leading.test",
+        "trailing-.test",
+        "two..labels.test",
+        &format!("{}.test", "a".repeat(64)),
+        "münich.test",
+    ];
+    for hostname in invalid_hosts {
+        let input = format!(r#"{{"{hostname}":["8.8.8.8"]}}"#);
+        assert!(
+            FixtureResolver::parse(&input).is_err(),
+            "accepted {hostname:?}"
+        );
+    }
+
+    for input in ["[]", "null", r#"{"host.test":null}"#] {
+        assert!(FixtureResolver::parse(input).is_err(), "accepted {input}");
+    }
+}
+
+#[test]
+fn resolver_rejects_out_of_range_limits_timeouts_and_unknown_hosts() {
+    let resolver =
+        FixtureResolver::parse(r#"{"host.test":["8.8.8.8"]}"#).expect("fixture is valid");
+    for (hostname, timeout, limit) in [
+        ("host.test", Duration::from_secs(1), 0),
+        ("host.test", Duration::from_secs(1), 65),
+        ("host.test", Duration::ZERO, 1),
+        ("host.test", Duration::from_secs(3), 1),
+        (&"h".repeat(254), Duration::from_secs(1), 1),
+    ] {
+        assert_eq!(
+            resolver.resolve(hostname, timeout, limit),
+            Err(ResolveFailure)
+        );
+    }
+    assert_eq!(
+        resolver.resolve("other.test", Duration::from_secs(1), 1),
+        Err(ResolveFailure)
+    );
+}
+
+#[test]
+fn poisoned_lookup_state_fails_closed() {
+    let resolver =
+        FixtureResolver::parse(r#"{"host.test":["8.8.8.8"]}"#).expect("fixture is valid");
+    let poison = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = resolver
+            .next_answer
+            .lock()
+            .expect("mutex is initially healthy");
+        panic!("poison test mutex");
+    }));
+    assert!(poison.is_err());
+    assert_eq!(
+        resolver.resolve("host.test", Duration::from_secs(1), 1),
+        Err(ResolveFailure)
+    );
+}
