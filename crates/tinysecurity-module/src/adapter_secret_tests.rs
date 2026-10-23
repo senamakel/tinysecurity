@@ -776,6 +776,48 @@ impl Control {
                     .await
                     .is_err()
             );
+            let replacement = RegisterApprovalScopeRequest2 {
+                scope: ApprovalScope2 {
+                    scope_id: "f".repeat(32),
+                    subject: SubjectScope {
+                        user: "runtime-user".into(),
+                        workspace: "runtime-workspace".into(),
+                        agent: "runtime-agent".into(),
+                    },
+                    policy_ref: "runtime-policy-next".into(),
+                    generation: 1,
+                    ceiling: AccessTier::Full,
+                    require_approval: true,
+                    auto_approve_all: false,
+                },
+                grants: ApprovalGrants2::default(),
+                audit_stream_id: "9".repeat(32),
+                report_handle: false,
+            };
+            let _: ApprovalScopeReceipt2 = proxy
+                .call(names::methods::REPLACE_APPROVAL_SCOPE2, (&replacement,))
+                .await?;
+            assert!(
+                secret
+                    .registration_id(&registration.registration_id)
+                    .is_err()
+            );
+            let replacement_registration = SecretRegistration2 {
+                registration_id: "7".repeat(32),
+                target: SecretBinding2 {
+                    backend_id: "8".repeat(32),
+                    slot: MasterSlotKind2::User,
+                },
+                ..registration.clone()
+            };
+            let _: SecretScopeReceipt2 = proxy
+                .call_confidential(
+                    names::methods::REGISTER_SECRET_SCOPE2,
+                    (&RegisterSecretScopeRequest2 {
+                        registration: replacement_registration.clone(),
+                    },),
+                )
+                .await?;
             let _: ApprovalScopeReceipt2 = proxy
                 .call(
                     names::methods::RETIRE_APPROVAL_SCOPE2,
@@ -789,7 +831,7 @@ impl Control {
                     .secret
                     .as_ref()
                     .ok_or_else(denied)?
-                    .registration_id(&registration.registration_id)
+                    .registration_id(&replacement_registration.registration_id)
                     .is_err()
             );
         }
