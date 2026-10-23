@@ -141,3 +141,23 @@ fn global_dosdevices_alias_cannot_hide_system_or_credential_roots() {
         r"\GLOBAL??\C:\Users\alice\Documents\report.txt"
     )));
 }
+
+#[cfg(windows)]
+#[test]
+fn global_dosdevices_system_roots_are_floor_denials_through_policy_check()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    for path in [
+        r"\GLOBAL??\C:\Windows\System32\config\SAM",
+        r"\DosDevices\C:\Windows\System32\config\SAM",
+    ] {
+        assert_eq!(
+            policy.check(&request(path))?.decisions[0].verdict,
+            Verdict::Deny {
+                reason: DenialReason::Floor
+            },
+            "{path}"
+        );
+    }
+    Ok(())
+}
