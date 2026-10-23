@@ -306,6 +306,7 @@ pub(super) struct CipherState {
     pending: Mutex<BTreeMap<String, Pending>>,
 }
 impl CipherState {
+    #[cfg(test)]
     pub(super) fn audit_policy_ref(&self) -> tinybus::Result<String> {
         Ok(self
             .broker
