@@ -533,7 +533,8 @@ async fn skill_scan_warning_enters_human_approval_and_block_cannot_be_overridden
         verdict: tinysecurity_bus::SkillScanVerdict::Block,
         bundle_sha256: "b".repeat(64),
     }];
-    assert_eq!(owner.begin(blocked).await.err(), Some(Error::Denied));
+    let denied = owner.begin(blocked).await?;
+    assert_eq!(denied.state, ApprovalLifecycle2::Denied);
     Ok(())
 }
 
