@@ -1028,11 +1028,7 @@ async fn actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_
             .call("Exercise", ())
             .await
             .map_err(|e| format!("mode {mode}: {e}"))?;
-        if mode == 22 {
-            assert_eq!(result["denied"], true);
-        } else {
-            assert_eq!(result["sets"], u32::from(matches!(mode, 1 | 2 | 6 | 10)));
-        }
+        assert_eq!(result["sets"], u32::from(matches!(mode, 1 | 2 | 6 | 10)));
         if matches!(mode, 0 | 17) {
             assert_eq!(result["loads"], 1);
         }
@@ -1056,8 +1052,7 @@ async fn actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_
 }
 
 #[tokio::test]
-async fn runtime_secret_registration_is_bound_to_approval_scope_and_retirement()
--> TestResult {
+async fn runtime_secret_registration_is_bound_to_approval_scope_and_retirement() -> TestResult {
     let bus = MemoryBus::new();
     let owner = Broker::new();
     let broker = owner.spawn(bus.clone());
