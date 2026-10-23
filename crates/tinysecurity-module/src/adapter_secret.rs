@@ -558,7 +558,7 @@ impl SecretState {
             }
             self.registry
                 .replace_scope(
-                    handles::Registration {
+                    &handles::Registration {
                         id: registered.descriptor.registration_id.clone(),
                         subject: scope.subject.clone(),
                         durable_subject: engine

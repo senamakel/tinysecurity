@@ -621,7 +621,7 @@ impl Registry {
     /// # Errors
     /// Rejects invalid registrations, stale generation, identity changes,
     /// unknown scopes, closed state, clock failure, or epoch exhaustion.
-    pub fn replace_scope(&self, registration: Registration, generation: u64) -> Result<()> {
+    pub fn replace_scope(&self, registration: &Registration, generation: u64) -> Result<()> {
         let (mut state, now) = self.checked_lock()?;
         if state.generation != generation || !valid_registration(&registration) {
             return Err(Error::NativeDenied);
@@ -640,7 +640,7 @@ impl Registry {
             return Ok(());
         }
         let epoch = scope.epoch.checked_add(1).ok_or(Error::NativeDenied)?;
-        scope.registration = registration.clone();
+        scope.registration.clone_from(registration);
         scope.epoch = epoch;
         scope.rate = RateCounter::new(now.monotonic);
         scope.active = true;

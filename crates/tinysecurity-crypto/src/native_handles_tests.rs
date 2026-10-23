@@ -119,7 +119,7 @@ fn replacing_a_live_scope_updates_policy_and_fences_old_reservations() -> TestRe
     )?;
     let mut updated = registration("a");
     updated.policy_ref = "policy-next".into();
-    registry.replace_scope(updated, 1)?;
+    registry.replace_scope(&updated, 1)?;
     assert!(old.validate().is_err());
 
     let next = reserve(
@@ -155,7 +155,8 @@ fn a_revoked_scope_id_cannot_be_registered_again_but_can_be_replaced() -> TestRe
 
     // The trusted approval-scope replacement path reactivates a configured
     // native scope only after fencing the previous generation.
-    registry.replace_scope(registration("a"), 1)?;
+    let replacement = registration("a");
+    registry.replace_scope(&replacement, 1)?;
     let next = reserve(
         &registry,
         Purpose::ConfigUserMaster,
