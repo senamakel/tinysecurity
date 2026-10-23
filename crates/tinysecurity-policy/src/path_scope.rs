@@ -35,6 +35,7 @@ pub fn protected_path(path: &Path) -> bool {
     if normalized.contains('\0')
         || normalized.contains("..%2f")
         || normalized.contains("%2f..")
+        || crate::path::windows_device_path(normalized)
         || segments
             .iter()
             .any(|segment| crate::path::parent_segment(segment))

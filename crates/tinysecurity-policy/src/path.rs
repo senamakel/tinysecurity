@@ -72,6 +72,7 @@ pub(super) fn floor(path: &str) -> bool {
     if path.contains('\0')
         || segments.iter().any(|segment| parent_segment(segment))
         || credential_store(&segments)
+        || windows_device_path(normalized)
     {
         return true;
     }
@@ -80,6 +81,42 @@ pub(super) fn floor(path: &str) -> bool {
         .chain(INSTALLATION_ROOTS)
         .any(|prefix| normalized == *prefix || normalized.starts_with(&format!("{prefix}/")))
         || windows_system_root(normalized)
+}
+// Win32 resolves reserved device names instead of ordinary path components,
+// even when they have an extension or an alternate-data-stream suffix. Apply
+// this lexical guard to Windows paths on every host, and to native relative
+// paths when running on Windows; POSIX names such as `/work/CON` remain valid.
+pub(super) fn windows_device_path(path: &str) -> bool {
+    let windows_path = cfg!(windows)
+        || path.starts_with("//")
+        || path.starts_with("/??/")
+        || path.starts_with("/global??/")
+        || path.starts_with("/dosdevices/")
+        || path.starts_with("/device/")
+        || path.starts_with("globalroot/")
+        || path.starts_with("unc/")
+        || path.as_bytes().get(1) == Some(&b':');
+    windows_path
+        && path.split('/').any(|component| {
+            let base = component
+                .split(':')
+                .next()
+                .unwrap_or(component)
+                .trim_end_matches([' ', '.'])
+                .split('.')
+                .next()
+                .unwrap_or(component)
+                .trim_end_matches([' ', '.']);
+            matches!(base, "con" | "prn" | "aux" | "nul")
+                || ["com", "lpt"].iter().any(|prefix| {
+                    base.strip_prefix(prefix).is_some_and(|suffix| {
+                        matches!(
+                            suffix,
+                            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                        )
+                    })
+                })
+        })
 }
 pub(super) fn strip_native_namespace(path: &str) -> &str {
     path.strip_prefix("//?/")

@@ -230,3 +230,25 @@ fn windows_normalized_parent_segments_count_as_traversal() {
         assert!(!floor(path), "{path:?}");
     }
 }
+
+#[test]
+fn windows_reserved_device_components_cannot_be_scoped_as_files() {
+    for path in [
+        r"C:\work\CON",
+        r"C:\work\nul.txt",
+        r"C:\work\LPT9.log",
+        r"C:\work\COM¹.data",
+        r"\\?\C:\work\AUX:stream",
+        r"\\?\GLOBALROOT\Device\HarddiskVolume1\work\CON",
+        r"\\?\UNC\server\share\NUL",
+        r"\\server\share\PRN",
+    ] {
+        assert!(floor(path), "{path}");
+        assert!(crate::protected_path(&PathBuf::from(path)), "{path}");
+    }
+
+    for path in [r"C:\work\console.txt", r"C:\work\COM10.log", "/work/CON"] {
+        assert!(!floor(path), "{path}");
+        assert!(!crate::protected_path(&PathBuf::from(path)), "{path}");
+    }
+}
