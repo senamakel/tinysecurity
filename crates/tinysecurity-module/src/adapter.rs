@@ -19,6 +19,7 @@ static EGRESS_SCOPES: OnceLock<Arc<Mutex<EgressPolicyRegistry>>> = OnceLock::new
 static EXTENDED_REDACTORS: OnceLock<Arc<tinysecurity::ExtendedRedactors>> = OnceLock::new();
 static AUDIT_CLIENT: OnceLock<Option<Arc<crate::callbacks::AuditClient>>> = OnceLock::new();
 static HOST_BINDING: OnceLock<crate::callbacks::PeerBinding> = OnceLock::new();
+static SECRET_SCOPE_LIFECYCLE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 static APPROVALS: OnceLock<
     Option<(
         tinysecurity_bus::ApprovalConfig2,
@@ -38,7 +39,6 @@ struct PolicyService {
     device: Option<Arc<tinysecurity::crypto::device_handles::Registry>>,
     crypto: Option<Arc<crypto::CryptoState>>,
     secret: Option<Arc<secret::SecretState>>,
-    secret_scope_lifecycle: Arc<tokio::sync::Mutex<()>>,
     secret_cipher: Option<Arc<cipher::CipherState>>,
     sandbox: Option<Arc<tinysecurity::sandbox::Engine>>,
     sandbox_runtime: Option<Arc<sandbox_scopes::SandboxRuntime>>,
@@ -1190,7 +1190,10 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::RegisterSecretScopeRequest2,
     ) -> BusResult<tinysecurity_bus::SecretScopeReceipt2> {
-        let _lifecycle = self.secret_scope_lifecycle.lock().await;
+        let _lifecycle = SECRET_SCOPE_LIFECYCLE
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
         // The TinyBus interface is asynchronous; registration itself only
         // updates the already-live in-process registries.
         std::future::ready(()).await;
@@ -1208,7 +1211,10 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::RegisterApprovalScopeRequest2,
     ) -> BusResult<tinysecurity_bus::ApprovalScopeReceipt2> {
-        let _lifecycle = self.secret_scope_lifecycle.lock().await;
+        let _lifecycle = SECRET_SCOPE_LIFECYCLE
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
         let engine = self
             .approvals
             .as_ref()
@@ -1230,7 +1236,10 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::RetireApprovalScopeRequest2,
     ) -> BusResult<tinysecurity_bus::ApprovalScopeReceipt2> {
-        let _lifecycle = self.secret_scope_lifecycle.lock().await;
+        let _lifecycle = SECRET_SCOPE_LIFECYCLE
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
         if let Some(secret) = &self.secret {
             secret.retire_approval_scope(&request.scope_id)?;
         }
@@ -1639,7 +1648,6 @@ fn service_for(
         device: None,
         crypto: None,
         secret: None,
-        secret_scope_lifecycle: Arc::new(tokio::sync::Mutex::new(())),
         secret_cipher: None,
         sandbox: None,
         sandbox_runtime: None,
