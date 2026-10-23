@@ -108,6 +108,30 @@ fn a_live_registry_accepts_an_immutable_additional_subject_scope() -> TestResult
     Ok(())
 }
 
+#[test]
+fn replacing_a_live_scope_updates_policy_and_fences_old_reservations() -> TestResult {
+    let (registry, _) = registry(Limits::default())?;
+    let old = reserve(
+        &registry,
+        Purpose::ConfigUserMaster,
+        OperationKind::RetainPlaintext,
+        b"old",
+    )?;
+    let mut updated = registration("a");
+    updated.policy_ref = "policy-next".into();
+    registry.replace_scope(updated, 1)?;
+    assert!(old.validate().is_err());
+
+    let next = reserve(
+        &registry,
+        Purpose::ConfigUserMaster,
+        OperationKind::RetainPlaintext,
+        b"new",
+    )?;
+    assert_eq!(next.binding().policy_ref(), "policy-next");
+    Ok(())
+}
+
 fn reserve(
     reg: &Registry,
     purpose: Purpose,
