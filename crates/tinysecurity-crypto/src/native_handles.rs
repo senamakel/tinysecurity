@@ -579,11 +579,12 @@ impl Registry {
     /// corresponding approval scope before registering this native authority.
     ///
     /// # Errors
-    /// Rejects invalid or conflicting registrations, closed state, clock
-    /// failure, and capacity beyond the fixed 128-scope ceiling.
-    pub fn register_scope(&self, registration: Registration) -> Result<()> {
+    /// Rejects invalid or conflicting registrations, a stale expected
+    /// generation, closed state, clock failure, and capacity beyond the fixed
+    /// 128-scope ceiling.
+    pub fn register_scope(&self, registration: Registration, generation: u64) -> Result<()> {
         let (mut state, now) = self.checked_lock()?;
-        if !valid_registration(&registration) {
+        if state.generation != generation || !valid_registration(&registration) {
             return Err(Error::NativeDenied);
         }
         if let Some(existing) = state.scopes.get(&registration.id) {
