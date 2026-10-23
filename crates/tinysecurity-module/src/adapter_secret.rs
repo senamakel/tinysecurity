@@ -15,7 +15,7 @@ use tinysecurity_bus::{
     AuditCorrelation2, CallerContext, Check, EvaluateApprovalRequest2, EvaluateRequest,
     EvaluateSecretRequest2, ExecuteSecretRequest2, MasterPurpose2, MasterSlotKind2, Origin,
     SecretConfig2, SecretOperation2, SecretRegistration2, SecretRequest2, SecretResponse2,
-    ToolCall,
+    RegisterSecretScopeRequest2, SecretScopeReceipt2, ToolCall,
 };
 use zeroize::{Zeroize, Zeroizing};
 static SECRET: OnceLock<Option<Arc<SecretState>>> = OnceLock::new();
@@ -404,6 +404,125 @@ impl SecretState {
             return Err(denied());
         }
         Ok(reg)
+    }
+    pub(super) fn register_scope(
+        &self,
+        request: RegisterSecretScopeRequest2,
+        engine: &tinysecurity::approval::Engine,
+    ) -> tinybus::Result<SecretScopeReceipt2> {
+        let descriptor = request.registration;
+        let scope = engine
+            .scope_snapshot(&descriptor.approval_scope_id)
+            .map_err(approval_failure)?;
+        let registration_id = descriptor.registration_id.clone();
+        if let Ok(existing) = self.registration_id(&registration_id) {
+            return if existing.descriptor == descriptor {
+                Ok(SecretScopeReceipt2 {
+                    registration_id,
+                    active: true,
+                })
+            } else {
+                Err(denied())
+            };
+        }
+
+        let mut dynamic = self.dynamic.lock().map_err(|_| denied())?;
+        let mut inventory = Inventory::default();
+        for existing in self
+            .registered
+            .values()
+            .chain(dynamic.values().map(Arc::as_ref))
+        {
+            let mut live_scope = existing.scope.clone();
+            live_scope.generation = scope.generation;
+            inventory.admit(&existing.descriptor, &live_scope, scope.generation)?;
+        }
+        inventory.admit(&descriptor, &scope, scope.generation)?;
+
+        let native = handles::Registration {
+            id: registration_id.clone(),
+            subject: scope.subject.clone(),
+            durable_subject: engine
+                .durable_scope(&scope.scope_id)
+                .map_err(approval_failure)?,
+            policy_ref: engine
+                .durable_policy_ref(&scope.scope_id)
+                .map_err(approval_failure)?,
+            purposes: vec![purpose(descriptor.purpose)],
+        };
+        let broker = Arc::new(StoreBroker::new(
+            self.connection.clone(),
+            &self.peer,
+            self.config.callback_timeout_ms,
+        )?);
+        let (target_slot, target_name) = slot(descriptor.target.slot, &scope.subject.user);
+        let target = Arc::new(CallbackStore::new(
+            broker.clone(),
+            descriptor.target.clone(),
+            target_name,
+            false,
+        ));
+        let legacy = descriptor
+            .legacy
+            .iter()
+            .map(|binding| {
+                let (source_slot, name) = slot(binding.slot, &scope.subject.user);
+                LegacySource::at_slot(
+                    Arc::new(CallbackStore::new(
+                        broker.clone(),
+                        binding.clone(),
+                        name,
+                        true,
+                    )),
+                    source_slot,
+                )
+            })
+            .collect();
+        let resolver = MasterResolver::new_with_sources(
+            target,
+            legacy,
+            &target_slot,
+            Arc::new(GuardedMint(broker.clone())),
+        )
+        .map_err(|_| denied())?;
+
+        self.registry
+            .register_scope(native, scope.generation)
+            .map_err(|_| denied())?;
+        dynamic.insert(
+            registration_id.clone(),
+            Arc::new(Registered {
+                descriptor,
+                scope,
+                broker,
+                resolver,
+            }),
+        );
+        Ok(SecretScopeReceipt2 {
+            registration_id,
+            active: true,
+        })
+    }
+    pub(super) fn retire_approval_scope(&self, scope_id: &str) -> tinybus::Result<()> {
+        let mut dynamic = self.dynamic.lock().map_err(|_| denied())?;
+        let ids = dynamic
+            .iter()
+            .filter(|(_, registration)| registration.descriptor.approval_scope_id == scope_id)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in &ids {
+            self.registry.revoke_scope(id).map_err(|_| denied())?;
+        }
+        dynamic.retain(|id, _| !ids.contains(id));
+        self.pending
+            .lock()
+            .map_err(|_| denied())?
+            .retain(|(id, _), _| !ids.contains(id));
+        self.aliases
+            .lock()
+            .map_err(|_| denied())?
+            .retain(|_, alias| !ids.contains(&alias.registration));
+        Ok(())
     }
     fn prune(&self) -> tinybus::Result<()> {
         let now = self.clock.now().map_err(|_| {
