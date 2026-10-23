@@ -4,6 +4,29 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use tinybus::{Connection, broker::Broker, transport::memory::MemoryBus};
 use tinysecurity_bus::*;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+/// The module's confidential authorities are process-owned and intentionally
+/// survive service-tree replacement. Run actual bus fixtures in a child test
+/// process so Windows' linked module loader cannot share those owners between
+/// independent broker instances in the same libtest process.
+fn isolate_process_owned_fixture(
+    test_filter: &str,
+    marker: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    const CHILD_MARKER: &str = "TINYSECURITY_PROCESS_OWNED_FIXTURE";
+    if std::env::var(CHILD_MARKER).is_ok_and(|value| value == marker) {
+        return Ok(false);
+    }
+    let status = std::process::Command::new(std::env::current_exe()?)
+        .arg(test_filter)
+        .arg("--nocapture")
+        .env(CHILD_MARKER, marker)
+        .status()?;
+    if !status.success() {
+        return Err(format!("isolated fixture process exited with {status}").into());
+    }
+    Ok(true)
+}
 #[derive(Debug)]
 struct FixedClock(std::sync::atomic::AtomicU64);
 impl tinysecurity::approval::Clock for FixedClock {
@@ -922,6 +945,12 @@ mod linked_fixture {
 #[tokio::test]
 async fn actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_closed()
 -> TestResult {
+    if isolate_process_owned_fixture(
+        "actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_closed",
+        "master",
+    )? {
+        return Ok(());
+    }
     for mode in 0..=19 {
         let bus = MemoryBus::new();
         let owner = Broker::new();
