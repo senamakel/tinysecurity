@@ -1,5 +1,26 @@
 # Host skill-scan decisions (contract 1.29)
 
+**Status:** Draft, implemented on `skill-scan-risk-7328`.
+**Owner:** TinySecurity bus contract and policy engine.
+
+## Problem
+
+OpenHuman's TinySkills scanner has `Pass`, `Warn`, and `Block` outcomes, but
+the security policy bus cannot represent those outcomes before a skill runs.
+Without a typed check, a warning cannot enter the standard approval resolver
+and a block cannot be distinguished from ordinary tool permission.
+
+## Goals and non-goals
+
+- Let an authenticated host submit its scan verdict to the policy engine.
+- Require human approval for warnings and make blocks non-overridable.
+- Bind the result to the exact installed bundle using a digest.
+- Keep TinySkills parsing and scanning in TinySkills; TinySecurity consumes only
+  the host-computed verdict.
+- Do not let models or remote callers assert scan results.
+
+## Proposed behavior
+
 `Check::SkillScan` carries the trusted host's `Pass`, `Warn`, or `Block` result
 for the exact installed skill bundle an agent is about to execute. The request
 also carries a lowercase SHA-256 digest over the document and every resource
@@ -24,3 +45,14 @@ Policy maps the verdicts as follows:
 The check is not reusable by registered-policy decision caching. Its verdict
 and bundle digest remain in the canonical call fingerprint and approval
 binding, so a changed document cannot reuse the earlier warning decision.
+
+## Acceptance criteria
+
+- The wire type round-trips all verdicts and requires a bundle digest.
+- `Pass` allows this check, `Warn` produces the existing approval requirement,
+  and `Block` produces `DenialReason::Content`.
+- Malformed digests deny with `DenialReason::InvalidContext`.
+- A warning enters the persisted human-approval lifecycle; a block cannot be
+  converted into a pending approval by policy evaluation.
+- Older 1.28 hosts reject the 1.29 module, and the 1.29 host accepts later
+  1.x module minors.

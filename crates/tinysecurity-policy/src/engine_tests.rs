@@ -153,7 +153,12 @@ fn a_skill_warning_never_masks_an_independent_hard_denial() -> Result<()> {
 #[test]
 fn a_skill_scan_requires_a_canonical_bundle_digest() -> Result<()> {
     let policy = Policy::new(ModuleConfig::default())?;
-    for bundle_sha256 in [String::new(), "A".repeat(64), "g".repeat(64), "a".repeat(63)] {
+    for bundle_sha256 in [
+        String::new(),
+        "A".repeat(64),
+        "g".repeat(64),
+        "a".repeat(63),
+    ] {
         assert_eq!(
             verdict(
                 &policy,
