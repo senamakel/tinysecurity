@@ -8,7 +8,7 @@ use tinysecurity_bus::{
     CheckRequest, CheckResponse, Decision, EvaluateRequest, ModuleConfig, PolicyInfo, names,
 };
 
-#[cfg(feature = "native-security-tests")]
+#[cfg(all(feature = "native-security-tests", debug_assertions))]
 #[path = "native_test_resolver.rs"]
 mod native_test_resolver;
 
@@ -55,12 +55,12 @@ fn failure(error: &tinysecurity_bus::Error) -> tinybus::Error {
     tinybus::Error::failed(error.to_string())
 }
 
-#[cfg(feature = "native-security-tests")]
+#[cfg(all(feature = "native-security-tests", debug_assertions))]
 fn egress_resolver() -> &'static dyn tinysecurity::Resolver {
     native_test_resolver::resolver()
 }
 
-#[cfg(not(feature = "native-security-tests"))]
+#[cfg(not(all(feature = "native-security-tests", debug_assertions)))]
 fn egress_resolver() -> &'static dyn tinysecurity::Resolver {
     &tinysecurity::SystemResolver
 }

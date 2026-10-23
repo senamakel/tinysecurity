@@ -15,7 +15,7 @@ crate-type = ["rlib", "cdylib"]
 
 [features]
 default = []
-# Enables the private deterministic resolver fixture used by native integration tests.
+# Enables the private deterministic resolver fixture in debug native test builds only.
 native-security-tests = []
 
 [dependencies]
