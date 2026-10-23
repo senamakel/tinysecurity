@@ -230,3 +230,55 @@ fn windows_normalized_parent_segments_count_as_traversal() {
         assert!(!floor(path), "{path:?}");
     }
 }
+
+#[test]
+fn windows_reserved_device_components_cannot_be_scoped_as_files() {
+    for path in [
+        r"C:\work\CON",
+        r"C:\work\nul.txt",
+        r"C:\work\LPT9.log",
+        r"C:\work\COM¹.data",
+        r"\\?\C:\work\AUX:stream",
+        r"\\?\GLOBALROOT\Device\HarddiskVolume1\work\CON",
+        r"\\?\UNC\server\share\NUL",
+        r"\\server\share\PRN",
+        r"\GLOBAL??\NUL",
+        r"\DosDevices\CON",
+    ] {
+        assert!(floor(path), "{path}");
+        assert!(crate::protected_path(&PathBuf::from(path)), "{path}");
+    }
+
+    for path in [r"C:\work\console.txt", r"C:\work\COM10.log"] {
+        assert!(!floor(path), "{path}");
+        assert!(!crate::protected_path(&PathBuf::from(path)), "{path}");
+    }
+
+    #[cfg(not(windows))]
+    {
+        let path = "/work/CON";
+        assert!(!floor(path), "{path}");
+        assert!(!crate::protected_path(&PathBuf::from(path)), "{path}");
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn windows_native_aliases_are_checked_on_posix_hosts() {
+    for path in [
+        "//?/C:/work/CON",
+        "//./C:/work/NUL.txt",
+        "/??/C:/work/AUX",
+        "/global??/C:/work/PRN",
+        "/dosdevices/C:/work/LPT1.log",
+        "/device/harddiskvolume1/work/COM3",
+        "globalroot/device/harddiskvolume1/work/COM²",
+        "unc/server/share/COM1",
+        "C:/work/CON",
+    ] {
+        assert!(floor(path), "{path}");
+        assert!(crate::protected_path(&PathBuf::from(path)), "{path}");
+    }
+    assert!(!floor("/work/CON"));
+    assert!(!floor("/work/console.txt"));
+}

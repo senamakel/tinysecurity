@@ -30,11 +30,13 @@ pub fn protected_path(path: &Path) -> bool {
         .to_string_lossy()
         .to_ascii_lowercase()
         .replace('\\', "/");
+    let windows_device = crate::path::windows_device_path(&normalized);
     let normalized = crate::path::strip_native_namespace(&normalized);
     let segments: Vec<_> = normalized.split('/').filter(|s| !s.is_empty()).collect();
     if normalized.contains('\0')
         || normalized.contains("..%2f")
         || normalized.contains("%2f..")
+        || windows_device
         || segments
             .iter()
             .any(|segment| crate::path::parent_segment(segment))
