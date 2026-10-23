@@ -4,7 +4,7 @@ use super::{PolicyService, approval_failure};
 use crate::secret_callbacks::{CallbackStore, GuardedMint, LiveGrant, ResolveContext, StoreBroker};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex, MutexGuard, OnceLock},
+    sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock},
 };
 use tinysecurity::crypto::{
     keyring::{LegacySource, MasterResolver, MasterSlot},
@@ -46,7 +46,7 @@ fn opaque() -> tinybus::Result<String> {
 }
 struct Registered {
     descriptor: SecretRegistration2,
-    scope: ApprovalScope2,
+    scope: RwLock<ApprovalScope2>,
     broker: Arc<StoreBroker>,
     resolver: MasterResolver,
 }
@@ -231,7 +231,7 @@ impl SecretState {
                 descriptor.registration_id.clone(),
                 Arc::new(Registered {
                     descriptor: descriptor.clone(),
-                    scope: scope.clone(),
+                    scope: RwLock::new(scope.clone()),
                     broker,
                     resolver,
                 }),
@@ -267,7 +267,7 @@ impl SecretState {
         if reg.descriptor.purpose != MasterPurpose2::ConfigUserMaster {
             return Err(denied());
         }
-        Ok(reg.scope.clone())
+        Ok(reg.scope.read().map_err(|_| denied())?.clone())
     }
     pub(super) fn prepare_cipher(
         &self,
@@ -436,7 +436,7 @@ impl SecretState {
         }
         let mut inventory = Inventory::default();
         for existing in self.registered.values().chain(dynamic.values()) {
-            let mut live_scope = existing.scope.clone();
+            let mut live_scope = existing.scope.read().map_err(|_| denied())?.clone();
             live_scope.generation = scope.generation;
             inventory.admit(&existing.descriptor, &live_scope, scope.generation)?;
         }
@@ -496,7 +496,7 @@ impl SecretState {
             registration_id.clone(),
             Arc::new(Registered {
                 descriptor,
-                scope,
+                scope: RwLock::new(scope),
                 broker,
                 resolver,
             }),
@@ -541,6 +541,47 @@ impl SecretState {
             .retain(|_, alias| !ids.contains(&alias.registration));
         Ok(())
     }
+    pub(super) fn refresh_approval_scope(
+        &self,
+        scope_id: &str,
+        engine: &tinysecurity::approval::Engine,
+    ) -> tinybus::Result<()> {
+        let scope = engine.scope_snapshot(scope_id).map_err(approval_failure)?;
+        for registered in self.registered.values().filter(|registered| {
+            registered.descriptor.approval_scope_id == scope_id
+        }) {
+            let mut current = registered.scope.write().map_err(|_| denied())?;
+            if current.subject != scope.subject {
+                return Err(denied());
+            }
+            self.registry
+                .replace_scope(
+                    handles::Registration {
+                        id: registered.descriptor.registration_id.clone(),
+                        subject: scope.subject.clone(),
+                        durable_subject: engine
+                            .durable_scope(scope_id)
+                            .map_err(approval_failure)?,
+                        policy_ref: engine
+                            .durable_policy_ref(scope_id)
+                            .map_err(approval_failure)?,
+                        purposes: vec![purpose(registered.descriptor.purpose)],
+                    },
+                    scope.generation,
+                )
+                .map_err(|_| denied())?;
+            *current = scope.clone();
+        }
+        self.pending
+            .lock()
+            .map_err(|_| denied())?
+            .retain(|(registration, _), _| {
+                !self.registered.get(registration).is_some_and(|entry| {
+                    entry.descriptor.approval_scope_id == scope_id
+                })
+            });
+        Ok(())
+    }
     fn prune(&self) -> tinybus::Result<()> {
         let now = self.clock.now().map_err(|_| {
             self.close();
@@ -582,12 +623,16 @@ impl SecretState {
         super::cipher::close_pending();
     }
 }
-fn call(reg: &Registered, binding: &handles::Binding) -> EvaluateRequest {
+fn call(
+    reg: &Registered,
+    scope: &ApprovalScope2,
+    binding: &handles::Binding,
+) -> EvaluateRequest {
     EvaluateRequest {
         caller: CallerContext {
-            agent: reg.scope.subject.agent.clone(),
+            agent: scope.subject.agent.clone(),
             call_id: binding.safe_call_id(),
-            tier: reg.scope.ceiling.clone(),
+            tier: scope.ceiling.clone(),
             origin: reg.descriptor.origin.clone(),
             ..Default::default()
         },
@@ -703,6 +748,7 @@ pub(super) fn activate(state: Option<Arc<SecretState>>) -> tinybus::Result<()> {
 struct Verifier<'a> {
     engine: &'a tinysecurity::approval::Engine,
     reg: &'a Registered,
+    scope: &'a ApprovalScope2,
     request_id: String,
     audit: AuditCorrelation2,
 }
@@ -715,7 +761,7 @@ impl handles::HumanGrantVerifier for Verifier<'_> {
             let (row, ack) = self
                 .engine
                 .consume_native_grant(ApprovalActionRequest2 {
-                    scope_id: self.reg.scope.scope_id.clone(),
+                    scope_id: self.scope.scope_id.clone(),
                     request_id: self.request_id.clone(),
                     request: call(self.reg, binding),
                     audit: self.audit.clone(),
@@ -749,6 +795,7 @@ impl PolicyService {
         let state = self.secret.as_ref().ok_or_else(denied)?;
         state.prune()?;
         let reg = state.registration(&request.request)?;
+        let reg_scope = reg.scope.read().map_err(|_| denied())?.clone();
         let engine = self.approvals.as_ref().ok_or_else(denied)?;
         let generation = self.read()?.info().generation;
         let key = (
@@ -779,7 +826,7 @@ impl PolicyService {
                     generation,
                 })
                 .map_err(|_| denied())?;
-            let approval = call(&reg, work.binding());
+            let approval = call(&reg, &reg_scope, work.binding());
             let expires = work.binding().expires_at_ms();
             pending.insert(
                 key.clone(),
@@ -795,7 +842,7 @@ impl PolicyService {
         let row = engine
             .begin_native_grant(
                 EvaluateApprovalRequest2 {
-                    scope_id: reg.scope.scope_id.clone(),
+                    scope_id: reg_scope.scope_id.clone(),
                     request: approval,
                     ttl_ms: None,
                     summary: "native master authority".into(),
@@ -821,6 +868,7 @@ impl PolicyService {
         let state = self.secret.as_ref().ok_or_else(denied)?;
         state.prune()?;
         let reg = state.registration(&request.request)?;
+        let reg_scope = reg.scope.read().map_err(|_| denied())?.clone();
         let generation = self.read()?.info().generation;
         let key = (
             request.request.registration_id.clone(),
@@ -846,6 +894,7 @@ impl PolicyService {
                 &Verifier {
                     engine: self.approvals.as_ref().ok_or_else(denied)?,
                     reg: &reg,
+                    scope: &reg_scope,
                     request_id: request.request_id,
                     audit: request.audit,
                 },
