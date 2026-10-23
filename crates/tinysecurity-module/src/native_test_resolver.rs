@@ -168,14 +168,18 @@ impl Resolver for NativeTestResolver {
 pub(super) fn resolver() -> &'static dyn Resolver {
     static RESOLVER: OnceLock<NativeTestResolver> = OnceLock::new();
     RESOLVER.get_or_init(|| {
-        std::env::var(ENVIRONMENT_VARIABLE)
-            .ok()
-            .and_then(|input| FixtureResolver::parse(&input).ok())
-            .map_or(
-                NativeTestResolver::Reject(RejectResolver),
-                NativeTestResolver::Fixture,
-            )
+        let input = std::env::var(ENVIRONMENT_VARIABLE).ok();
+        configured_resolver(input.as_deref())
     })
+}
+
+fn configured_resolver(input: Option<&str>) -> NativeTestResolver {
+    input
+        .and_then(|input| FixtureResolver::parse(input).ok())
+        .map_or(
+            NativeTestResolver::Reject(RejectResolver),
+            NativeTestResolver::Fixture,
+        )
 }
 
 fn valid_hostname(hostname: &str) -> bool {

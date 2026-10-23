@@ -132,3 +132,20 @@ fn poisoned_lookup_state_fails_closed() {
         Err(ResolveFailure)
     );
 }
+
+#[test]
+fn configured_resolver_accepts_only_a_valid_fixture() {
+    let configured = configured_resolver(Some(r#"{"host.test":["8.8.8.8"]}"#));
+    assert_eq!(
+        configured.resolve("host.test", Duration::from_secs(1), 1),
+        Ok(vec![IpAddr::from([8, 8, 8, 8])])
+    );
+
+    for invalid in [None, Some("not-json")] {
+        let rejecting = configured_resolver(invalid);
+        assert_eq!(
+            rejecting.resolve("host.test", Duration::from_secs(1), 1),
+            Err(ResolveFailure)
+        );
+    }
+}
