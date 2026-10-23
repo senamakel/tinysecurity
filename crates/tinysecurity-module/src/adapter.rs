@@ -19,6 +19,7 @@ static EGRESS_SCOPES: OnceLock<Arc<Mutex<EgressPolicyRegistry>>> = OnceLock::new
 static EXTENDED_REDACTORS: OnceLock<Arc<tinysecurity::ExtendedRedactors>> = OnceLock::new();
 static AUDIT_CLIENT: OnceLock<Option<Arc<crate::callbacks::AuditClient>>> = OnceLock::new();
 static HOST_BINDING: OnceLock<crate::callbacks::PeerBinding> = OnceLock::new();
+static SECRET_SCOPE_LIFECYCLE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 static APPROVALS: OnceLock<
     Option<(
         tinysecurity_bus::ApprovalConfig2,
@@ -1183,29 +1184,77 @@ impl PolicyService {
             .await
             .map_err(approval_failure)
     }
+    // Private host-only configuration: the approval scope is resolved inside
+    // the module and cannot be supplied by the caller.
+    async fn register_secret_scope2(
+        &self,
+        request: tinysecurity_bus::RegisterSecretScopeRequest2,
+    ) -> BusResult<tinysecurity_bus::SecretScopeReceipt2> {
+        let _lifecycle = SECRET_SCOPE_LIFECYCLE
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+        // The TinyBus interface is asynchronous; registration itself only
+        // updates the already-live in-process registries.
+        std::future::ready(()).await;
+        self.secret
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("secret authority unavailable"))?
+            .register_scope(
+                request,
+                self.approvals
+                    .as_ref()
+                    .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?,
+            )
+    }
     async fn replace_approval_scope2(
         &self,
         request: tinysecurity_bus::RegisterApprovalScopeRequest2,
     ) -> BusResult<tinysecurity_bus::ApprovalScopeReceipt2> {
+        let _lifecycle = SECRET_SCOPE_LIFECYCLE
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
         let engine = self
             .approvals
             .as_ref()
             .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?;
-        engine
+        let scope_id = request.scope.scope_id.clone();
+        let receipt = engine
             .replace_scope(request)
             .await
-            .map_err(approval_failure)
+            .map_err(approval_failure)?;
+        if let Some(secret) = &self.secret {
+            secret.retire_approval_scope(&scope_id)?;
+            secret.refresh_approval_scope(&scope_id, engine)?;
+            cipher::refresh_approval_scope(
+                &scope_id,
+                secret,
+                engine,
+                self.secret_cipher.as_deref(),
+            )?;
+        }
+        Ok(receipt)
     }
     async fn retire_approval_scope2(
         &self,
         request: tinysecurity_bus::RetireApprovalScopeRequest2,
     ) -> BusResult<tinysecurity_bus::ApprovalScopeReceipt2> {
-        self.approvals
+        let _lifecycle = SECRET_SCOPE_LIFECYCLE
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+        let receipt = self
+            .approvals
             .as_ref()
             .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?
             .retire_scope(request)
             .await
-            .map_err(approval_failure)
+            .map_err(approval_failure)?;
+        if let Some(secret) = &self.secret {
+            secret.retire_approval_scope(&receipt.scope_id)?;
+        }
+        Ok(receipt)
     }
     // Private host-only configuration: the facts are a trusted-adapter claim.
     async fn register_sandbox_scope2(
@@ -1577,13 +1626,18 @@ fn permission_payload(mut original: serde_json::Value) -> BusResult<String> {
 fn approval_failure(error: tinysecurity::approval::Error) -> tinybus::Error {
     tinybus::Error::failed(error.to_string())
 }
-/// Whether every check is a host-tool or shell admission question (contract 1.20).
+/// Whether host-tool checks are admission-only, with an optional supplemental scan.
 fn admission_only(checks: &[tinysecurity_bus::Check]) -> bool {
     use tinysecurity_bus::Check;
-    !checks.is_empty()
-        && checks
-            .iter()
-            .all(|check| matches!(check, Check::HostAction { .. } | Check::HostShell { .. }))
+    checks
+        .iter()
+        .any(|check| matches!(check, Check::HostAction { .. } | Check::HostShell { .. }))
+        && checks.iter().all(|check| {
+            matches!(
+                check,
+                Check::HostAction { .. } | Check::HostShell { .. } | Check::SkillScan { .. }
+            )
+        })
 }
 fn deny_allow(decision: &mut Decision) {
     if matches!(decision.verdict, tinysecurity_bus::Verdict::Allow) {
@@ -2118,7 +2172,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "DeviceFrame2", "DevicePairing2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "GrantFlowTool2", "RevokeFlowTool2", "ListFlowTrust2", "GrantTool2", "RevokeTool2", "RevokeToolById2", "ListToolTrust2", "ImportTrustSource2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "RegisterSandboxScope2", "RetireSandboxScope2", "Audit2", "RecordAudit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "CheckPaths2", "ProtectedPath2", "ProtectedFloor2", "CredentialRoots2", "SpendAction2", "PeekBudget2", "ClassifyHostAction2", "PrivacyCheck2", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "AuthorizeBrowserDial", "ConsumeBrowserDial", "ValidateBrowserDial", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanPrompt2", "ScanToolDefinition"],
+    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "DeviceFrame2", "DevicePairing2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "GrantFlowTool2", "RevokeFlowTool2", "ListFlowTrust2", "GrantTool2", "RevokeTool2", "RevokeToolById2", "ListToolTrust2", "ImportTrustSource2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "RegisterSecretScope2", "RegisterSandboxScope2", "RetireSandboxScope2", "Audit2", "RecordAudit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "CheckPaths2", "ProtectedPath2", "ProtectedFloor2", "CredentialRoots2", "SpendAction2", "PeekBudget2", "ClassifyHostAction2", "PrivacyCheck2", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "AuthorizeBrowserDial", "ConsumeBrowserDial", "ValidateBrowserDial", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanPrompt2", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = ["ai.tinyhumans.tinysecurity.KeyringConsent2", "ai.tinyhumans.tinysecurity.SecretCipherConsumer2", "ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.DevicePairingHost2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],
