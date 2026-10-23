@@ -1238,7 +1238,8 @@ impl PolicyService {
             .get_or_init(|| tokio::sync::Mutex::new(()))
             .lock()
             .await;
-        let receipt = self.approvals
+        let receipt = self
+            .approvals
             .as_ref()
             .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?
             .retire_scope(request)

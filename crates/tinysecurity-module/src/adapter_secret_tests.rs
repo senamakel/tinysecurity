@@ -1,5 +1,5 @@
-use super::*;
 use super::super::SECRET_SCOPE_LIFECYCLE;
+use super::*;
 use std::result::Result;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tinybus::{Connection, broker::Broker, transport::memory::MemoryBus};
@@ -741,16 +741,19 @@ impl Control {
             let secret = self.service.secret.as_ref().ok_or_else(denied)?;
             let mut invalid_replacement = approval_request.clone();
             invalid_replacement.scope.subject.user = "different-user".into();
-            assert!(self
-                .service
-                .replace_approval_scope2(invalid_replacement)
-                .await
-                .is_err());
-            assert!(secret
-                .dynamic
-                .lock()
-                .map_err(|_| denied())?
-                .contains_key(&registration.registration_id));
+            assert!(
+                self.service
+                    .replace_approval_scope2(invalid_replacement)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                secret
+                    .dynamic
+                    .lock()
+                    .map_err(|_| denied())?
+                    .contains_key(&registration.registration_id)
+            );
             let prior = Arc::as_ptr(
                 secret
                     .dynamic
@@ -791,13 +794,14 @@ impl Control {
                     .is_err()
             );
             let base_scope = scope();
-            assert!(self
-                .service
-                .retire_approval_scope2(RetireApprovalScopeRequest2 {
-                    scope_id: base_scope.scope_id.clone(),
-                })
-                .await
-                .is_err());
+            assert!(
+                self.service
+                    .retire_approval_scope2(RetireApprovalScopeRequest2 {
+                        scope_id: base_scope.scope_id.clone(),
+                    })
+                    .await
+                    .is_err()
+            );
             let _: ApprovalScopeReceipt2 = self
                 .service
                 .replace_approval_scope2(RegisterApprovalScopeRequest2 {
@@ -882,30 +886,32 @@ impl Control {
             let (register_started, register_started_rx) = tokio::sync::oneshot::channel();
             let mut registering = tokio::spawn(async move {
                 let _ = register_started.send(());
-                registering_service.register_secret_scope2(race_request).await
+                registering_service
+                    .register_secret_scope2(race_request)
+                    .await
             });
             register_started_rx.await.map_err(|_| denied())?;
-            assert!(tokio::time::timeout(
-                std::time::Duration::from_millis(10),
-                &mut replacing
-            )
-            .await
-            .is_err());
-            assert!(tokio::time::timeout(
-                std::time::Duration::from_millis(10),
-                &mut registering
-            )
-            .await
-            .is_err());
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(10), &mut replacing)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(10), &mut registering)
+                    .await
+                    .is_err()
+            );
             drop(held);
             replacing.await.map_err(|_| denied())??;
             assert!(registering.await.map_err(|_| denied())?.is_err());
-            assert!(secret
-                .dynamic
-                .lock()
-                .map_err(|_| denied())?
-                .get(&race_registration.registration_id)
-                .is_none());
+            assert!(
+                secret
+                    .dynamic
+                    .lock()
+                    .map_err(|_| denied())?
+                    .get(&race_registration.registration_id)
+                    .is_none()
+            );
             let replacement_registration = SecretRegistration2 {
                 registration_id: "7".repeat(32),
                 target: SecretBinding2 {
