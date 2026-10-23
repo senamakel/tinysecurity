@@ -589,7 +589,7 @@ impl Registry {
     /// fixed scope ceiling.
     pub fn register_scope(&self, registration: Registration, generation: u64) -> Result<()> {
         let (mut state, now) = self.checked_lock()?;
-        if state.generation != generation || !valid_registration(&registration) {
+        if state.generation != generation || !valid_registration(registration) {
             return Err(Error::NativeDenied);
         }
         if let Some(existing) = state.scopes.get(&registration.id) {
@@ -636,7 +636,7 @@ impl Registry {
         {
             return Err(Error::NativeDenied);
         }
-        if scope.active && scope.registration == registration {
+        if scope.active && &scope.registration == registration {
             return Ok(());
         }
         let epoch = scope.epoch.checked_add(1).ok_or(Error::NativeDenied)?;
