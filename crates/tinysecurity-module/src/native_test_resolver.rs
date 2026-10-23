@@ -1,11 +1,14 @@
 //! Private, deterministic DNS answers for native security integration fixtures.
+use serde::{
+    Deserialize, Deserializer,
+    de::{MapAccess, Visitor},
+};
 use std::{
     collections::{BTreeMap, HashMap},
     net::IpAddr,
     sync::{Mutex, OnceLock},
     time::Duration,
 };
-use serde::{Deserialize, Deserializer, de::{MapAccess, Visitor}};
 use tinysecurity::{ResolveFailure, Resolver};
 
 const ENVIRONMENT_VARIABLE: &str = "TINYSECURITY_TEST_DNS_SEQUENCE";
