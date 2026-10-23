@@ -45,6 +45,7 @@ pub enum OperationKind {
     AppStore,
 }
 /// Immutable trusted owner registration. No field grants live authority.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Registration {
     /// Trusted native registration identity.
     pub id: String,
@@ -539,18 +540,7 @@ impl Registry {
         let now = clock.now().map_err(|_| Error::NativeClock)?;
         let mut scopes = BTreeMap::new();
         for registration in registrations {
-            let subjects = [&registration.subject, &registration.durable_subject];
-            if !text(&registration.id)
-                || !text(&registration.policy_ref)
-                || registration.purposes.is_empty()
-                || registration.purposes.len() > 3
-                || registration.purposes.iter().collect::<BTreeSet<_>>().len()
-                    != registration.purposes.len()
-                || subjects
-                    .iter()
-                    .any(|s| [&s.user, &s.workspace, &s.agent].iter().any(|v| !text(v)))
-                || scopes.contains_key(&registration.id)
-            {
+            if !valid_registration(&registration) || scopes.contains_key(&registration.id) {
                 return Err(Error::NativeDenied);
             }
             scopes.insert(
@@ -580,6 +570,41 @@ impl Registry {
             clock,
             physical_gate: Arc::new(Mutex::new(())),
         })
+    }
+    /// Add one immutable trusted subject scope without replacing the live
+    /// registry or changing the authority of existing subjects.
+    ///
+    /// An exact repeat is idempotent. Reusing an identity with different
+    /// subject, policy, or purpose data is refused. The host must establish the
+    /// corresponding approval scope before registering this native authority.
+    ///
+    /// # Errors
+    /// Rejects invalid or conflicting registrations, closed state, clock
+    /// failure, and capacity beyond the fixed 128-scope ceiling.
+    pub fn register_scope(&self, registration: Registration) -> Result<()> {
+        let (mut state, now) = self.checked_lock()?;
+        if !valid_registration(&registration) {
+            return Err(Error::NativeDenied);
+        }
+        if let Some(existing) = state.scopes.get(&registration.id) {
+            return if existing.registration == registration {
+                Ok(())
+            } else {
+                Err(Error::NativeDenied)
+            };
+        }
+        if state.scopes.len() >= 128 {
+            return Err(Error::NativeCapacity);
+        }
+        state.scopes.insert(
+            registration.id.clone(),
+            Scope {
+                registration,
+                epoch: 1,
+                rate: RateCounter::new(now.monotonic),
+            },
+        );
+        Ok(())
     }
     fn lock(&self) -> Result<StateGuard<'_>> {
         let gate = self.physical_gate.lock().map_err(|_| Error::NativeDenied)?;
@@ -1117,6 +1142,21 @@ fn handle_identity(key: &[u8], bytes: &[u8]) -> [u8; 32] {
 }
 fn text(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+}
+fn valid_registration(registration: &Registration) -> bool {
+    text(&registration.id)
+        && text(&registration.policy_ref)
+        && !registration.purposes.is_empty()
+        && registration.purposes.len() <= 3
+        && registration.purposes.iter().collect::<BTreeSet<_>>().len()
+            == registration.purposes.len()
+        && [&registration.subject, &registration.durable_subject]
+            .iter()
+            .all(|subject| {
+                [&subject.user, &subject.workspace, &subject.agent]
+                    .iter()
+                    .all(|v| text(v))
+            })
 }
 fn opaque(value: &str, length: usize) -> bool {
     value.len() == length && value.bytes().all(|b| b.is_ascii_hexdigit())

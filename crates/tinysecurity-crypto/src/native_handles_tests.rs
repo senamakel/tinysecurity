@@ -46,6 +46,67 @@ fn registry(limits: Limits) -> Result<(Registry, Arc<Clock>)> {
         clock,
     ))
 }
+
+#[test]
+fn a_live_registry_accepts_an_immutable_additional_subject_scope() -> TestResult {
+    let clock = Arc::new(Clock(AtomicU64::new(0)));
+    let registry = Registry::new(
+        vec![registration("first")],
+        ":1.1",
+        1,
+        Limits::default(),
+        clock,
+    )?;
+    let mut second = registration("second");
+    second.subject.user = "another-user".into();
+    second.durable_subject.user = "another-durable-user".into();
+
+    registry.register_scope(second.clone())?;
+    registry.register_scope(second)?;
+
+    let first = registry.reserve(Request {
+        registration: "first",
+        authenticated_peer: ":1.1",
+        purpose: Purpose::ConfigUserMaster,
+        kind: OperationKind::RetainPlaintext,
+        call_id: "first-call",
+        input: Zeroizing::new(b"first".to_vec()),
+        ttl_ms: 100,
+        generation: 1,
+    })?;
+    let second = registry.reserve(Request {
+        registration: "second",
+        authenticated_peer: ":1.1",
+        purpose: Purpose::ConfigUserMaster,
+        kind: OperationKind::RetainPlaintext,
+        call_id: "second-call",
+        input: Zeroizing::new(b"second".to_vec()),
+        ttl_ms: 100,
+        generation: 1,
+    })?;
+    assert_eq!(first.binding().subject().user, "user");
+    assert_eq!(second.binding().subject().user, "another-user");
+
+    let mut conflicting = registration("second");
+    conflicting.subject.user = "attacker-user".into();
+    assert!(registry.register_scope(conflicting).is_err());
+    assert!(
+        registry
+            .reserve(Request {
+                registration: "unknown",
+                authenticated_peer: ":1.1",
+                purpose: Purpose::ConfigUserMaster,
+                kind: OperationKind::RetainPlaintext,
+                call_id: "unknown-call",
+                input: Zeroizing::new(b"unknown".to_vec()),
+                ttl_ms: 100,
+                generation: 1,
+            })
+            .is_err()
+    );
+    Ok(())
+}
+
 fn reserve(
     reg: &Registry,
     purpose: Purpose,
