@@ -4,10 +4,8 @@ use tinysecurity::{ResolveFailure, Resolver};
 
 #[test]
 fn configured_answers_advance_once_per_resolution() {
-    let resolver = FixtureResolver::parse(
-        r#"{"rebind.test":["8.8.8.8","127.0.0.1"]}"#,
-    )
-    .expect("valid sequence should parse");
+    let resolver = FixtureResolver::parse(r#"{"rebind.test":["8.8.8.8","127.0.0.1"]}"#)
+        .expect("valid sequence should parse");
 
     assert_eq!(
         resolver.resolve("rebind.test", Duration::from_secs(1), 8),

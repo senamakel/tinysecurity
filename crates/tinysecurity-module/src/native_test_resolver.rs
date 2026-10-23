@@ -120,14 +120,13 @@ impl Resolver for NativeTestResolver {
 /// Return the fixture resolver configured when the native module first loads.
 pub(super) fn resolver() -> &'static dyn Resolver {
     static RESOLVER: OnceLock<NativeTestResolver> = OnceLock::new();
-    RESOLVER
-        .get_or_init(|| {
-            std::env::var(ENVIRONMENT_VARIABLE)
-                .ok()
-                .and_then(|input| FixtureResolver::parse(&input).ok())
-                .map(NativeTestResolver::Fixture)
-                .unwrap_or(NativeTestResolver::Reject(RejectResolver))
-        })
+    RESOLVER.get_or_init(|| {
+        std::env::var(ENVIRONMENT_VARIABLE)
+            .ok()
+            .and_then(|input| FixtureResolver::parse(&input).ok())
+            .map(NativeTestResolver::Fixture)
+            .unwrap_or(NativeTestResolver::Reject(RejectResolver))
+    })
 }
 
 fn valid_hostname(hostname: &str) -> bool {
@@ -139,7 +138,9 @@ fn valid_hostname(hostname: &str) -> bool {
             && label.len() <= 63
             && !label.starts_with('-')
             && !label.ends_with('-')
-            && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
     })
 }
 
