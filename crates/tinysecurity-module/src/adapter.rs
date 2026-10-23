@@ -1227,7 +1227,12 @@ impl PolicyService {
         if let Some(secret) = &self.secret {
             secret.retire_approval_scope(&scope_id)?;
             secret.refresh_approval_scope(&scope_id, engine)?;
-            cipher::refresh_approval_scope(&scope_id, secret, engine)?;
+            cipher::refresh_approval_scope(
+                &scope_id,
+                secret,
+                engine,
+                self.secret_cipher.as_deref(),
+            )?;
         }
         Ok(receipt)
     }

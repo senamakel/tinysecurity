@@ -414,8 +414,9 @@ pub(super) fn refresh_approval_scope(
     scope_id: &str,
     secret: &SecretState,
     engine: &tinysecurity::approval::Engine,
+    cipher: Option<&CipherState>,
 ) -> tinybus::Result<()> {
-    let Some(Some(state)) = CIPHER.get() else {
+    let Some(state) = cipher else {
         return Ok(());
     };
     let scope = secret.cipher_scope(&state.config.registration_id)?;
