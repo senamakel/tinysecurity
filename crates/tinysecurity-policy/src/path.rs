@@ -88,8 +88,10 @@ pub(super) fn floor(path: &str) -> bool {
 // this lexical guard to Windows paths on every host, and to native relative
 // paths when running on Windows; POSIX names such as `/work/CON` remain valid.
 pub(super) fn windows_device_path(path: &str) -> bool {
-    let windows_path = cfg!(windows)
-        || path.starts_with("//")
+    #[cfg(windows)]
+    let windows_path = true;
+    #[cfg(not(windows))]
+    let windows_path = path.starts_with("//")
         || path.starts_with("/??/")
         || path.starts_with("/global??/")
         || path.starts_with("/dosdevices/")
