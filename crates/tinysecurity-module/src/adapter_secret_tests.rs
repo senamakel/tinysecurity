@@ -784,7 +784,11 @@ impl Control {
                         workspace: "runtime-workspace".into(),
                         agent: "runtime-agent".into(),
                     },
-                    policy_ref: "runtime-policy-next".into(),
+                    // Reusing the same policy reference still advances the
+                    // approval generation. A retired dynamic secret ID must
+                    // not become live again just because its descriptor is
+                    // byte-for-byte identical.
+                    policy_ref: "runtime-policy".into(),
                     generation: 1,
                     ceiling: AccessTier::Full,
                     require_approval: true,
@@ -801,6 +805,18 @@ impl Control {
                 secret
                     .registration_id(&registration.registration_id)
                     .is_err()
+            );
+            assert!(
+                proxy
+                    .call_confidential::<SecretScopeReceipt2>(
+                        names::methods::REGISTER_SECRET_SCOPE2,
+                        (&RegisterSecretScopeRequest2 {
+                            registration: registration.clone(),
+                        },),
+                    )
+                    .await
+                    .is_err(),
+                "replacing the approval generation must require a new immutable secret ID"
             );
             let replacement_registration = SecretRegistration2 {
                 registration_id: "7".repeat(32),
