@@ -48,7 +48,12 @@ impl FixtureResolver {
                 .into_iter()
                 .map(|value| value.parse().map_err(|_| ResolveFailure))
                 .collect::<Result<Vec<IpAddr>, ResolveFailure>>()?;
-            answers.insert(hostname, addresses);
+            if answers
+                .insert(hostname.to_ascii_lowercase(), addresses)
+                .is_some()
+            {
+                return Err(ResolveFailure);
+            }
         }
 
         Ok(Self {
