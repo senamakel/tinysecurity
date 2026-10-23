@@ -52,7 +52,9 @@ fn config() -> SecretConfig2 {
             ],
         }],
         limits: SecretLimits2::default(),
-        callback_timeout_ms: 50,
+        // This fixture also runs under llvm-cov on Windows; 50 ms can turn
+        // an otherwise valid backend callback into a spurious authority deny.
+        callback_timeout_ms: 1000,
     }
 }
 fn audit(sequence: u64) -> AuditCorrelation2 {
