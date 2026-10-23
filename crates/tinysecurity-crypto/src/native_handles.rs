@@ -147,6 +147,7 @@ struct Scope {
     registration: Registration,
     epoch: u64,
     rate: RateCounter,
+    active: bool,
 }
 struct State {
     scopes: BTreeMap<String, Scope>,
@@ -552,6 +553,7 @@ impl Registry {
                     registration,
                     epoch: 1,
                     rate: RateCounter::new(now.monotonic),
+                    active: true,
                 },
             );
         }
@@ -591,7 +593,7 @@ impl Registry {
             return Err(Error::NativeDenied);
         }
         if let Some(existing) = state.scopes.get(&registration.id) {
-            return if existing.registration == registration {
+            return if existing.active && existing.registration == registration {
                 Ok(())
             } else {
                 Err(Error::NativeDenied)
@@ -606,6 +608,7 @@ impl Registry {
                 registration,
                 epoch: 1,
                 rate: RateCounter::new(now.monotonic),
+                active: true,
             },
         );
         Ok(())
@@ -633,13 +636,14 @@ impl Registry {
         {
             return Err(Error::NativeDenied);
         }
-        if scope.registration == registration {
+        if scope.active && scope.registration == registration {
             return Ok(());
         }
         let epoch = scope.epoch.checked_add(1).ok_or(Error::NativeDenied)?;
         scope.registration = registration.clone();
         scope.epoch = epoch;
         scope.rate = RateCounter::new(now.monotonic);
+        scope.active = true;
         state
             .entries
             .retain(|_, entry| entry.registration != registration.id);
@@ -719,7 +723,7 @@ impl Registry {
             .scopes
             .get(request.registration)
             .ok_or(Error::NativeDenied)?;
-        if !scope.registration.purposes.contains(&request.purpose) {
+        if !scope.active || !scope.registration.purposes.contains(&request.purpose) {
             return Err(Error::NativeDenied);
         }
         let mut binding = Binding {
@@ -935,7 +939,7 @@ impl Registry {
             || state
                 .scopes
                 .get(registration)
-                .is_none_or(|scope| scope.epoch != entry.epoch)
+                .is_none_or(|scope| !scope.active || scope.epoch != entry.epoch)
         {
             return Err(Error::NativeDenied);
         }
@@ -950,7 +954,11 @@ impl Registry {
             .scopes
             .get_mut(registration)
             .ok_or(Error::NativeDenied)?;
+        if !scope.active {
+            return Err(Error::NativeDenied);
+        }
         scope.epoch = scope.epoch.checked_add(1).ok_or(Error::NativeDenied)?;
+        scope.active = false;
         state
             .entries
             .retain(|_, entry| entry.registration != registration);
