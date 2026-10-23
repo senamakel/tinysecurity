@@ -670,6 +670,63 @@ impl Control {
         if self.state.mode == 18 {
             return self.canceled_evaluation(&proxy).await;
         }
+        if self.state.mode == 22 {
+            let registration = SecretRegistration2 {
+                registration_id: "h".repeat(32),
+                approval_scope_id: "f".repeat(32),
+                origin: Origin::Operator,
+                purpose: MasterPurpose2::ConfigUserMaster,
+                target: SecretBinding2 {
+                    backend_id: "i".repeat(32),
+                    slot: MasterSlotKind2::User,
+                },
+                legacy: vec![],
+            };
+            let register_request = RegisterSecretScopeRequest2 {
+                registration: registration.clone(),
+            };
+            let receipt: SecretScopeReceipt2 = proxy
+                .call_confidential(names::methods::REGISTER_SECRET_SCOPE2, (&register_request,))
+                .await?;
+            assert!(receipt.active);
+            assert_eq!(receipt.registration_id, registration.registration_id);
+            assert_eq!(
+                proxy
+                    .call_confidential::<SecretScopeReceipt2>(
+                        names::methods::REGISTER_SECRET_SCOPE2,
+                        (&register_request,),
+                    )
+                    .await?,
+                receipt
+            );
+            let mut conflicting = register_request;
+            conflicting.registration.target.backend_id = "j".repeat(32);
+            assert!(
+                proxy
+                    .call_confidential::<SecretScopeReceipt2>(
+                        names::methods::REGISTER_SECRET_SCOPE2,
+                        (&conflicting,),
+                    )
+                    .await
+                    .is_err()
+            );
+            let _: ApprovalScopeReceipt2 = proxy
+                .call(
+                    names::methods::RETIRE_APPROVAL_SCOPE2,
+                    (RetireApprovalScopeRequest2 {
+                        scope_id: "f".repeat(32),
+                    },),
+                )
+                .await?;
+            assert!(
+                self.service
+                    .secret
+                    .as_ref()
+                    .ok_or_else(denied)?
+                    .registration_id(&registration.registration_id)
+                    .is_err()
+            );
+        }
         let mut req = request(1);
         if self.state.mode == 17 {
             req.operation = SecretOperation2::ResolveAppMaster;
@@ -851,6 +908,29 @@ mod linked_fixture {
             )
             .map_err(|_| denied())?,
         );
+        if mode == 22 {
+            engine
+                .register_scope(RegisterApprovalScopeRequest2 {
+                    scope: ApprovalScope2 {
+                        scope_id: "f".repeat(32),
+                        subject: SubjectScope {
+                            user: "runtime-user".into(),
+                            workspace: "runtime-workspace".into(),
+                            agent: "runtime-agent".into(),
+                        },
+                        policy_ref: "runtime-policy".into(),
+                        generation: 1,
+                        ceiling: AccessTier::Full,
+                        require_approval: true,
+                        auto_approve_all: false,
+                    },
+                    grants: ApprovalGrants2::default(),
+                    audit_stream_id: "g".repeat(32),
+                    report_handle: false,
+                })
+                .await
+                .map_err(approval_failure)?;
+        }
         let mut facade_config = super::config();
         if mode == 17 {
             facade_config.registrations[0].purpose = MasterPurpose2::AppEncryptionMaster;
@@ -924,7 +1004,7 @@ mod linked_fixture {
 #[tokio::test]
 async fn actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_closed()
 -> TestResult {
-    for mode in 0..=19 {
+    for mode in 0..=22 {
         let bus = MemoryBus::new();
         let owner = Broker::new();
         let broker = owner.spawn(bus.clone());
