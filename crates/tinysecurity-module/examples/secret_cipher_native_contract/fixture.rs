@@ -2230,14 +2230,10 @@ pub(super) async fn run(
     *state.module.lock().map_err(|_| denied())? = Some(module.clone());
     let proxy = host
         .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
-        // Mode 12 deliberately leaves delivery pending and keeps the short
-        // timeout that proves the request is abandoned. The other modes may
-        // cross several authenticated callbacks under Windows CI/coverage.
-        .with_timeout(Duration::from_secs(match mode {
-            12 => 5,
-            18 => 30,
-            _ => 10,
-        }));
+        // Let the module's own callback deadline settle pending work. In
+        // particular, the duplicate-execution assertion below must observe the
+        // module's replay rejection rather than another client-side timeout.
+        .with_timeout(Duration::from_secs(35));
     assert!(proxy.attestation().await?.is_some());
     if mode == 18 {
         let _: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
