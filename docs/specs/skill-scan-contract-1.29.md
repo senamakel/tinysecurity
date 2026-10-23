@@ -1,7 +1,8 @@
 # Host skill-scan decisions (contract 1.29)
 
-**Status:** Draft, implemented on `skill-scan-risk-7328`.
+**Status:** Accepted; implementation is under review in TinySecurity PR #48.
 **Owner:** TinySecurity bus contract and policy engine.
+**Plan:** [implementation plan](../plans/skill-scan-contract-1.29.md).
 
 ## Problem
 
