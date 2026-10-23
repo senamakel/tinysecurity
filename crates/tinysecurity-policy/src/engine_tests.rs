@@ -89,6 +89,64 @@ fn host_tool_needs_approval_instead_of_being_unsupported() -> Result<()> {
 }
 
 #[test]
+fn host_skill_scan_verdicts_deny_block_and_require_approval_for_warning() -> Result<()> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    for (verdict, expected) in [
+        (
+            SkillScanVerdict::Block,
+            Verdict::Deny {
+                reason: DenialReason::Content,
+            },
+        ),
+        (
+            SkillScanVerdict::Warn,
+            Verdict::Deny {
+                reason: DenialReason::ApprovalUnavailable,
+            },
+        ),
+        (SkillScanVerdict::Pass, Verdict::Allow),
+    ] {
+        assert_eq!(
+            verdict(
+                &policy,
+                &host_call(
+                    "run_workflow",
+                    vec![Check::SkillScan { verdict }],
+                ),
+            )?,
+            expected,
+            "{verdict:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_skill_warning_never_masks_an_independent_hard_denial() -> Result<()> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    assert_eq!(
+        verdict(
+            &policy,
+            &host_call(
+                "run_workflow",
+                vec![
+                    Check::SkillScan {
+                        verdict: SkillScanVerdict::Warn,
+                    },
+                    Check::Unknown {
+                        description: "unsupported operation".into(),
+                    },
+                ],
+            ),
+        )?,
+        Verdict::Deny {
+            reason: DenialReason::UnsupportedEffect,
+        }
+    );
+    Ok(())
+}
+
+#[test]
 fn host_tool_never_relaxes_other_checks_and_rejects_reserved_or_unmarked_calls() -> Result<()> {
     let policy = Policy::new(ModuleConfig::default())?;
     let unsupported = Verdict::Deny {
