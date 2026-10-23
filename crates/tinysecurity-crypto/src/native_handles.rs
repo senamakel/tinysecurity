@@ -589,7 +589,7 @@ impl Registry {
     /// fixed scope ceiling.
     pub fn register_scope(&self, registration: Registration, generation: u64) -> Result<()> {
         let (mut state, now) = self.checked_lock()?;
-        if state.generation != generation || !valid_registration(registration) {
+        if state.generation != generation || !valid_registration(&registration) {
             return Err(Error::NativeDenied);
         }
         if let Some(existing) = state.scopes.get(&registration.id) {
@@ -623,7 +623,7 @@ impl Registry {
     /// unknown scopes, closed state, clock failure, or epoch exhaustion.
     pub fn replace_scope(&self, registration: &Registration, generation: u64) -> Result<()> {
         let (mut state, now) = self.checked_lock()?;
-        if state.generation != generation || !valid_registration(&registration) {
+        if state.generation != generation || !valid_registration(registration) {
             return Err(Error::NativeDenied);
         }
         let scope = state
