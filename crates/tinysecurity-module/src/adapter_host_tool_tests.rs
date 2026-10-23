@@ -288,6 +288,14 @@ async fn a_mixed_request_is_not_an_admission_and_stays_audit_bound() -> TestResu
     assert!(!admission_only(&call.call.checks));
     call.call.checks = vec![acting(false, &scope)];
     assert!(admission_only(&call.call.checks));
+    let scan = Check::SkillScan {
+        verdict: tinysecurity_bus::SkillScanVerdict::Pass,
+        bundle_sha256: "a".repeat(64),
+    };
+    call.call.checks = vec![acting(false, &scope), scan.clone()];
+    assert!(admission_only(&call.call.checks));
+    call.call.checks = vec![scan];
+    assert!(!admission_only(&call.call.checks));
     Ok(())
 }
 
