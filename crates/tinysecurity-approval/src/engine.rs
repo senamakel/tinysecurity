@@ -1172,6 +1172,14 @@ impl Engine {
         let entry = self.entry(id)?;
         Ok(self.registered(&entry))
     }
+    /// Return the current trusted scope snapshot for one live registration.
+    /// This is used by sibling module adapters that must bind a secondary
+    /// capability to the approval engine's canonical subject and generation.
+    /// # Errors
+    /// Rejects unknown registrations or poisoned approval state.
+    pub fn scope_snapshot(&self, id: &str) -> Result<ApprovalScope2> {
+        self.registration(id)
+    }
     fn validate_scope(scope: &ApprovalScope2) -> Result<()> {
         if scope.scope_id.len() != 32
             || !scope.scope_id.bytes().all(|b| b.is_ascii_hexdigit())
