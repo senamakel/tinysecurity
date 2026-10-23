@@ -1189,6 +1189,9 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::RegisterSecretScopeRequest2,
     ) -> BusResult<tinysecurity_bus::SecretScopeReceipt2> {
+        // The TinyBus interface is asynchronous; registration itself only
+        // updates the already-live in-process registries.
+        std::future::ready(()).await;
         self.secret
             .as_ref()
             .ok_or_else(|| tinybus::Error::failed("secret authority unavailable"))?
