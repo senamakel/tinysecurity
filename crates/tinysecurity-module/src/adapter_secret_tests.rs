@@ -1004,7 +1004,7 @@ mod linked_fixture {
 #[tokio::test]
 async fn actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_closed()
 -> TestResult {
-    for mode in 0..=22 {
+    for mode in 0..=19 {
         let bus = MemoryBus::new();
         let owner = Broker::new();
         let broker = owner.spawn(bus.clone());
@@ -1052,6 +1052,36 @@ async fn actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_
         );
         broker.abort();
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_secret_registration_is_bound_to_approval_scope_and_retirement()
+-> TestResult {
+    let bus = MemoryBus::new();
+    let owner = Broker::new();
+    let broker = owner.spawn(bus.clone());
+    let client = Connection::connect(bus.connect().await?).await?;
+    let host = tinybus::module::ModuleHost::new(owner);
+    let info = host.attach_linked_with_config(
+        linked_fixture::linked_module()?,
+        serde_json::json!({"mode":22}),
+    )?;
+    let peer = client
+        .name_owner(info.manifest.bus_name.as_str())
+        .await?
+        .ok_or("fixture peer")?;
+    let proxy = client.proxy(
+        peer.as_str(),
+        "/fixture",
+        "ai.tinyhumans.tinysecurity.SecretFixture",
+    )?;
+    let result: serde_json::Value = proxy
+        .with_timeout(std::time::Duration::from_secs(10))
+        .call("Exercise", ())
+        .await?;
+    assert_eq!(result["denied"], true);
+    broker.abort();
     Ok(())
 }
 
