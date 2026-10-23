@@ -747,10 +747,7 @@ impl Control {
                 registration: static_registration.clone(),
             };
             let static_receipt: SecretScopeReceipt2 = proxy
-                .call_confidential(
-                    names::methods::REGISTER_SECRET_SCOPE2,
-                    (&static_request,),
-                )
+                .call_confidential(names::methods::REGISTER_SECRET_SCOPE2, (&static_request,))
                 .await?;
             assert!(static_receipt.active);
             assert_eq!(
