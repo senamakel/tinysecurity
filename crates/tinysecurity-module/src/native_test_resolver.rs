@@ -124,8 +124,10 @@ pub(super) fn resolver() -> &'static dyn Resolver {
         std::env::var(ENVIRONMENT_VARIABLE)
             .ok()
             .and_then(|input| FixtureResolver::parse(&input).ok())
-            .map(NativeTestResolver::Fixture)
-            .unwrap_or(NativeTestResolver::Reject(RejectResolver))
+            .map_or(
+                NativeTestResolver::Reject(RejectResolver),
+                NativeTestResolver::Fixture,
+            )
     })
 }
 
