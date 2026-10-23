@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use tinybus::{Connection, broker::Broker, transport::memory::MemoryBus};
 use tinysecurity_bus::*;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-fn isolate_process_global_test(name: &str) -> TestResult<bool> {
+fn isolate_process_global_test(
+    name: &str,
+) -> std::result::Result<bool, Box<dyn std::error::Error>> {
     const CHILD: &str = "TINYSECURITY_PROCESS_GLOBAL_TEST_CHILD";
     if std::env::var_os(CHILD).is_some() {
         return Ok(false);
@@ -1248,7 +1250,6 @@ mod linked_fixture {
 #[tokio::test]
 async fn actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_closed()
 -> TestResult {
-    let _test_lifecycle = SECRET_SCOPE_TESTS.lock().await;
     for mode in 0..=19 {
         let bus = MemoryBus::new();
         let owner = Broker::new();
