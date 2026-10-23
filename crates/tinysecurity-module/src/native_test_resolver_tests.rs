@@ -23,12 +23,24 @@ fn configured_answers_advance_once_per_resolution() -> Result<(), std::io::Error
 }
 
 #[test]
+fn mixed_case_host_keys_match_canonical_queries() {
+    let resolver = FixtureResolver::parse(r#"{"Rebind.Test":["8.8.8.8"]}"#)
+        .expect("valid mixed-case hostname should parse");
+
+    assert_eq!(
+        resolver.resolve("rebind.test", Duration::from_secs(1), 8),
+        Ok(vec![IpAddr::from([8, 8, 8, 8])])
+    );
+}
+
+#[test]
 fn invalid_fixture_inputs_fail_closed() {
     for input in [
         "",
         "{}",
         r#"{"rebind.test":[]}"#,
         r#"{"bad host":["8.8.8.8"]}"#,
+        r#"{"Rebind.Test":["8.8.8.8"],"rebind.test":["127.0.0.1"]}"#,
         r#"{"rebind.test":["not-an-ip"]}"#,
         &format!("{{\"{}\":[\"8.8.8.8\"]}}", "a".repeat(254)),
         &format!("{{\"rebind.test\":[{}]}}", ["\"8.8.8.8\""; 9].join(",")),
