@@ -13,9 +13,11 @@ from that canonical scope. A caller cannot supply or override those fields.
 Registration is bounded by the native registry's 65,536 lifetime scope
 identities. An exact repeat is idempotent and preserves the existing resolver,
 including its persistent failure state. Reusing a registration ID with a
-different descriptor is denied. Native admission checks the expected approval
-generation while holding the registry lock, so an in-flight generation change
-cannot add stale authority.
+different descriptor is denied. Revoked runtime IDs stay tombstoned for the
+life of the native registry and cannot be reactivated by registering the same
+descriptor again; a replacement needs a new ID. Native admission checks the
+expected approval generation while holding the registry lock, so an in-flight
+generation change cannot add stale authority.
 
 Retiring or replacing an approval scope first revokes native secret handles,
 drops pending secret grants and aliases, and removes its runtime secret
