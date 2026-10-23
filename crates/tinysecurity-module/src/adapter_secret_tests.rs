@@ -5,22 +5,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use tinybus::{Connection, broker::Broker, transport::memory::MemoryBus};
 use tinysecurity_bus::*;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-fn isolate_process_global_test(
-    name: &str,
-) -> std::result::Result<bool, Box<dyn std::error::Error>> {
-    const CHILD: &str = "TINYSECURITY_PROCESS_GLOBAL_TEST_CHILD";
-    if std::env::var_os(CHILD).is_some() {
-        return Ok(false);
-    }
-    let status = std::process::Command::new(std::env::current_exe()?)
-        .args(["--exact", name])
-        .env(CHILD, "1")
-        .status()?;
-    if !status.success() {
-        return Err(format!("isolated test process failed: {name}").into());
-    }
-    Ok(true)
-}
 #[derive(Debug)]
 struct FixedClock(std::sync::atomic::AtomicU64);
 impl tinysecurity::approval::Clock for FixedClock {
@@ -1299,11 +1283,6 @@ async fn actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_
 
 #[tokio::test]
 async fn runtime_secret_registration_is_bound_to_approval_scope_and_retirement() -> TestResult {
-    if isolate_process_global_test(
-        "adapter::secret::tests::runtime_secret_registration_is_bound_to_approval_scope_and_retirement",
-    )? {
-        return Ok(());
-    }
     let bus = MemoryBus::new();
     let owner = Broker::new();
     let broker = owner.spawn(bus.clone());

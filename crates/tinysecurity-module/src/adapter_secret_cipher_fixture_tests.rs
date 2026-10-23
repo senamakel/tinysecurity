@@ -499,11 +499,6 @@ impl Control {
 #[tokio::test]
 async fn actual_confidential_cipher_dispatch_stages_only_at_fixed_slots_and_fails_closed()
 -> TestResult {
-    if isolate_process_global_test(
-        "adapter::secret::tests::cipher_tests::actual_confidential_cipher_dispatch_stages_only_at_fixed_slots_and_fails_closed",
-    )? {
-        return Ok(());
-    }
     for mode in 20..=32 {
         let bus = MemoryBus::new();
         let owner = Broker::new();
