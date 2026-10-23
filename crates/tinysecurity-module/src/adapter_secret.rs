@@ -547,9 +547,11 @@ impl SecretState {
         engine: &tinysecurity::approval::Engine,
     ) -> tinybus::Result<()> {
         let scope = engine.scope_snapshot(scope_id).map_err(approval_failure)?;
-        for registered in self.registered.values().filter(|registered| {
-            registered.descriptor.approval_scope_id == scope_id
-        }) {
+        for registered in self
+            .registered
+            .values()
+            .filter(|registered| registered.descriptor.approval_scope_id == scope_id)
+        {
             let mut current = registered.scope.write().map_err(|_| denied())?;
             if current.subject != scope.subject {
                 return Err(denied());
@@ -576,9 +578,10 @@ impl SecretState {
             .lock()
             .map_err(|_| denied())?
             .retain(|(registration, _), _| {
-                !self.registered.get(registration).is_some_and(|entry| {
-                    entry.descriptor.approval_scope_id == scope_id
-                })
+                !self
+                    .registered
+                    .get(registration)
+                    .is_some_and(|entry| entry.descriptor.approval_scope_id == scope_id)
             });
         Ok(())
     }
@@ -623,11 +626,7 @@ impl SecretState {
         super::cipher::close_pending();
     }
 }
-fn call(
-    reg: &Registered,
-    scope: &ApprovalScope2,
-    binding: &handles::Binding,
-) -> EvaluateRequest {
+fn call(reg: &Registered, scope: &ApprovalScope2, binding: &handles::Binding) -> EvaluateRequest {
     EvaluateRequest {
         caller: CallerContext {
             agent: scope.subject.agent.clone(),
