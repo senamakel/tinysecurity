@@ -706,7 +706,10 @@ impl Control {
                     backend_id: "2".repeat(32),
                     slot: MasterSlotKind2::User,
                 },
-                legacy: vec![],
+                legacy: vec![SecretBinding2 {
+                    backend_id: "7".repeat(32),
+                    slot: MasterSlotKind2::File,
+                }],
             };
             let register_request = RegisterSecretScopeRequest2 {
                 registration: registration.clone(),
@@ -739,6 +742,32 @@ impl Control {
             assert!(receipt.active);
             assert_eq!(receipt.registration_id, registration.registration_id);
             let secret = self.service.secret.as_ref().ok_or_else(denied)?;
+            let static_registration = config().registrations[0].clone();
+            let static_request = RegisterSecretScopeRequest2 {
+                registration: static_registration.clone(),
+            };
+            let static_receipt: SecretScopeReceipt2 = proxy
+                .call_confidential(
+                    names::methods::REGISTER_SECRET_SCOPE2,
+                    (&static_request,),
+                )
+                .await?;
+            assert!(static_receipt.active);
+            assert_eq!(
+                static_receipt.registration_id,
+                static_registration.registration_id
+            );
+            let mut conflicting_static = static_request;
+            conflicting_static.registration.target.backend_id = "f".repeat(32);
+            assert!(
+                proxy
+                    .call_confidential::<SecretScopeReceipt2>(
+                        names::methods::REGISTER_SECRET_SCOPE2,
+                        (&conflicting_static,),
+                    )
+                    .await
+                    .is_err()
+            );
             let mut invalid_replacement = approval_request.clone();
             invalid_replacement.scope.subject.user = "different-user".into();
             assert!(
