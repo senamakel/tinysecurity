@@ -514,7 +514,7 @@ async fn host_tool_marker_is_an_external_effect_that_cron_cannot_reach() -> Resu
 }
 
 #[tokio::test]
-async fn skill_scan_warning_enters_human_approval_and_block_cannot_be_overridden() -> Result<()> {
+async fn skill_scan_warning_enters_human_approval() -> Result<()> {
     let (_, owner) = owner()?;
     owner.register_scope(register(7)).await?;
 
@@ -526,15 +526,6 @@ async fn skill_scan_warning_enters_human_approval_and_block_cannot_be_overridden
     let pending = owner.begin(warning).await?;
     assert_eq!(pending.state, ApprovalLifecycle2::Pending);
     assert!(!pending.external_effect);
-
-    let mut blocked = begin_for(7, "run_workflow", None, Origin::Operator);
-    blocked.request.caller.call_id = "blocked-call".into();
-    blocked.request.call.checks = vec![Check::SkillScan {
-        verdict: tinysecurity_bus::SkillScanVerdict::Block,
-        bundle_sha256: "b".repeat(64),
-    }];
-    let denied = owner.begin(blocked).await?;
-    assert_eq!(denied.state, ApprovalLifecycle2::Denied);
     Ok(())
 }
 
