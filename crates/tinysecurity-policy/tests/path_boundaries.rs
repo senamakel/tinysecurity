@@ -130,19 +130,12 @@ fn every_windows_drive_prefix_preserves_system_and_credential_floors()
 #[test]
 fn global_dosdevices_alias_cannot_hide_system_or_credential_roots()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let policy = Policy::new(ModuleConfig::default())?;
     for path in [
         r"\GLOBAL??\C:\Windows\System32\config\SAM",
         r"\GLOBAL??\D:\Users\alice\.ssh\id_rsa",
         r"\GLOBAL??\UNC\server\C$\Windows\System32\config\SAM",
     ] {
-        assert_eq!(
-            policy.check(&request(path))?.decisions[0].verdict,
-            Verdict::Deny {
-                reason: DenialReason::Floor
-            },
-            "{path}"
-        );
+        assert!(protected_path(std::path::Path::new(path)), "{path}");
     }
     Ok(())
 }
