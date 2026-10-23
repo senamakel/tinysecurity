@@ -686,7 +686,7 @@ impl Control {
                     auto_approve_all: false,
                 },
                 grants: ApprovalGrants2::default(),
-                audit_stream_id: "g".repeat(32),
+                audit_stream_id: "9".repeat(32),
                 report_handle: false,
             };
             let _: ApprovalScopeReceipt2 = proxy
@@ -696,12 +696,12 @@ impl Control {
                 )
                 .await?;
             let registration = SecretRegistration2 {
-                registration_id: "h".repeat(32),
+                registration_id: "1".repeat(32),
                 approval_scope_id: "f".repeat(32),
                 origin: Origin::Operator,
                 purpose: MasterPurpose2::ConfigUserMaster,
                 target: SecretBinding2 {
-                    backend_id: "i".repeat(32),
+                    backend_id: "2".repeat(32),
                     slot: MasterSlotKind2::User,
                 },
                 legacy: vec![],
@@ -724,7 +724,7 @@ impl Control {
                 receipt
             );
             let mut conflicting = register_request;
-            conflicting.registration.target.backend_id = "j".repeat(32);
+            conflicting.registration.target.backend_id = "3".repeat(32);
             assert!(
                 proxy
                     .call_confidential::<SecretScopeReceipt2>(
