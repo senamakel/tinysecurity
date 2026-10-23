@@ -744,7 +744,7 @@ impl Control {
                     .map_err(|_| denied())?
                     .get(&registration.registration_id)
                     .ok_or_else(denied)?,
-            );
+            ) as usize;
             assert_eq!(
                 proxy
                     .call_confidential::<SecretScopeReceipt2>(
@@ -762,7 +762,7 @@ impl Control {
                         .map_err(|_| denied())?
                         .get(&registration.registration_id)
                         .ok_or_else(denied)?,
-                ),
+                ) as usize,
                 prior
             );
             let mut conflicting = register_request;
