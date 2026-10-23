@@ -42,6 +42,7 @@ fn invalid_fixture_inputs_fail_closed() {
         r#"{"rebind.test":[]}"#,
         r#"{"bad host":["8.8.8.8"]}"#,
         r#"{"Rebind.Test":["8.8.8.8"],"rebind.test":["127.0.0.1"]}"#,
+        r#"{"rebind.test":["8.8.8.8"],"rebind.test":["127.0.0.1"]}"#,
         r#"{"rebind.test":["not-an-ip"]}"#,
         &format!("{{\"{}\":[\"8.8.8.8\"]}}", "a".repeat(254)),
         &format!("{{\"rebind.test\":[{}]}}", ["\"8.8.8.8\""; 9].join(",")),
