@@ -425,11 +425,7 @@ impl SecretState {
 
         let mut dynamic = self.dynamic.lock().map_err(|_| denied())?;
         let mut inventory = Inventory::default();
-        for existing in self
-            .registered
-            .values()
-            .chain(dynamic.values().map(Arc::as_ref))
-        {
+        for existing in self.registered.values().chain(dynamic.values()) {
             let mut live_scope = existing.scope.clone();
             live_scope.generation = scope.generation;
             inventory.admit(&existing.descriptor, &live_scope, scope.generation)?;
@@ -773,7 +769,7 @@ impl PolicyService {
                     generation,
                 })
                 .map_err(|_| denied())?;
-            let approval = call(reg, work.binding());
+            let approval = call(&reg, work.binding());
             let expires = work.binding().expires_at_ms();
             pending.insert(
                 key.clone(),
@@ -839,7 +835,7 @@ impl PolicyService {
                 work,
                 &Verifier {
                     engine: self.approvals.as_ref().ok_or_else(denied)?,
-                    reg,
+                    reg: &reg,
                     request_id: request.request_id,
                     audit: request.audit,
                 },
