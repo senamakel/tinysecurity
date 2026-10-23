@@ -840,6 +840,15 @@ impl Control {
                     report_handle: false,
                 })
                 .await?;
+            let cipher = self.service.secret_cipher.as_ref().ok_or_else(denied)?;
+            let approvals = self.service.approvals.as_ref().ok_or_else(denied)?;
+            assert_eq!(
+                cipher.audit_policy_ref()?,
+                approvals
+                    .durable_policy_ref(&"a".repeat(32))
+                    .map_err(|_| denied())?,
+                "cipher audit policy follows the replaced approval scope",
+            );
             let replacement = RegisterApprovalScopeRequest2 {
                 scope: ApprovalScope2 {
                     scope_id: "f".repeat(32),
