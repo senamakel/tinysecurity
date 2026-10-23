@@ -59,7 +59,10 @@ fn runtime_secret_scope_registration_only_accepts_the_trusted_descriptor()
         },
     };
     let value = serde_json::to_value(&request)?;
-    assert_eq!(serde_json::from_value::<RegisterSecretScopeRequest2>(value.clone())?, request);
+    assert_eq!(
+        serde_json::from_value::<RegisterSecretScopeRequest2>(value.clone())?,
+        request
+    );
     let mut forged = value;
     forged["subject"] = serde_json::json!({ "user": "caller" });
     assert!(serde_json::from_value::<RegisterSecretScopeRequest2>(forged).is_err());
@@ -67,6 +70,9 @@ fn runtime_secret_scope_registration_only_accepts_the_trusted_descriptor()
         registration_id: "a".repeat(32),
         active: true,
     };
-    assert_eq!(serde_json::from_value::<SecretScopeReceipt2>(serde_json::to_value(receipt.clone())?)?, receipt);
+    assert_eq!(
+        serde_json::from_value::<SecretScopeReceipt2>(serde_json::to_value(receipt.clone())?)?,
+        receipt
+    );
     Ok(())
 }

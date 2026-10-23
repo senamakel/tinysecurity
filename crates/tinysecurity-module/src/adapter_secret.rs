@@ -14,8 +14,8 @@ use tinysecurity_bus::{
     ApprovalActionRequest2, ApprovalConfig2, ApprovalRow2, ApprovalScope2, AuditConfig2,
     AuditCorrelation2, CallerContext, Check, EvaluateApprovalRequest2, EvaluateRequest,
     EvaluateSecretRequest2, ExecuteSecretRequest2, MasterPurpose2, MasterSlotKind2, Origin,
-    SecretConfig2, SecretOperation2, SecretRegistration2, SecretRequest2, SecretResponse2,
-    RegisterSecretScopeRequest2, SecretScopeReceipt2, ToolCall,
+    RegisterSecretScopeRequest2, SecretConfig2, SecretOperation2, SecretRegistration2,
+    SecretRequest2, SecretResponse2, SecretScopeReceipt2, ToolCall,
 };
 use zeroize::{Zeroize, Zeroizing};
 static SECRET: OnceLock<Option<Arc<SecretState>>> = OnceLock::new();
@@ -262,10 +262,7 @@ impl SecretState {
     pub(super) fn cipher_registry(&self) -> handles::Registry {
         self.registry.clone()
     }
-    pub(super) fn cipher_scope(
-        &self,
-        registration: &str,
-    ) -> tinybus::Result<ApprovalScope2> {
+    pub(super) fn cipher_scope(&self, registration: &str) -> tinybus::Result<ApprovalScope2> {
         let reg = self.registration_id(registration)?;
         if reg.descriptor.purpose != MasterPurpose2::ConfigUserMaster {
             return Err(denied());
@@ -505,15 +502,29 @@ impl SecretState {
     }
     pub(super) fn retire_approval_scope(&self, scope_id: &str) -> tinybus::Result<()> {
         let mut dynamic = self.dynamic.lock().map_err(|_| denied())?;
-        let ids = dynamic
+        let ids = self
+            .registered
             .iter()
             .filter(|(_, registration)| registration.descriptor.approval_scope_id == scope_id)
             .map(|(id, _)| id.clone())
+            .chain(
+                dynamic
+                    .iter()
+                    .filter(|(_, registration)| {
+                        registration.descriptor.approval_scope_id == scope_id
+                    })
+                    .map(|(id, _)| id.clone()),
+            )
             .collect::<Vec<_>>();
         for id in &ids {
             self.registry.revoke_scope(id).map_err(|_| denied())?;
         }
-        dynamic.retain(|id, _| !ids.contains(id));
+        let dynamic_ids = dynamic
+            .iter()
+            .filter(|(_, registration)| registration.descriptor.approval_scope_id == scope_id)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        dynamic.retain(|id, _| !dynamic_ids.contains(id));
         self.pending
             .lock()
             .map_err(|_| denied())?
