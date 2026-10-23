@@ -61,8 +61,8 @@ fn a_live_registry_accepts_an_immutable_additional_subject_scope() -> TestResult
     second.subject.user = "another-user".into();
     second.durable_subject.user = "another-durable-user".into();
 
-    registry.register_scope(second.clone())?;
-    registry.register_scope(second)?;
+    registry.register_scope(second.clone(), 1)?;
+    registry.register_scope(second, 1)?;
 
     let first = registry.reserve(Request {
         registration: "first",
@@ -89,7 +89,8 @@ fn a_live_registry_accepts_an_immutable_additional_subject_scope() -> TestResult
 
     let mut conflicting = registration("second");
     conflicting.subject.user = "attacker-user".into();
-    assert!(registry.register_scope(conflicting).is_err());
+    assert!(registry.register_scope(conflicting, 1).is_err());
+    assert!(registry.register_scope(registration("stale"), 2).is_err());
     assert!(
         registry
             .reserve(Request {
