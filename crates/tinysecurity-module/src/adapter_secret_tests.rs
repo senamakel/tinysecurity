@@ -1,4 +1,4 @@
-use super::super::SECRET_SCOPE_LIFECYCLE;
+use super::super::{SECRET_SCOPE_LIFECYCLE, SECRET_SCOPE_TESTS};
 use super::*;
 use std::result::Result;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -1234,6 +1234,7 @@ mod linked_fixture {
 #[tokio::test]
 async fn actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_closed()
 -> TestResult {
+    let _test_lifecycle = SECRET_SCOPE_TESTS.lock().await;
     for mode in 0..=19 {
         let bus = MemoryBus::new();
         let owner = Broker::new();
@@ -1283,6 +1284,7 @@ async fn actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_
 
 #[tokio::test]
 async fn runtime_secret_registration_is_bound_to_approval_scope_and_retirement() -> TestResult {
+    let _test_lifecycle = SECRET_SCOPE_TESTS.lock().await;
     let bus = MemoryBus::new();
     let owner = Broker::new();
     let broker = owner.spawn(bus.clone());

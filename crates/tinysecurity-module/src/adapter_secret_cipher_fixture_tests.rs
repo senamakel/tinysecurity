@@ -499,6 +499,7 @@ impl Control {
 #[tokio::test]
 async fn actual_confidential_cipher_dispatch_stages_only_at_fixed_slots_and_fails_closed()
 -> TestResult {
+    let _test_lifecycle = SECRET_SCOPE_TESTS.lock().await;
     for mode in 20..=32 {
         let bus = MemoryBus::new();
         let owner = Broker::new();

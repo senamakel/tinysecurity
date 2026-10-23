@@ -20,6 +20,8 @@ static EXTENDED_REDACTORS: OnceLock<Arc<tinysecurity::ExtendedRedactors>> = Once
 static AUDIT_CLIENT: OnceLock<Option<Arc<crate::callbacks::AuditClient>>> = OnceLock::new();
 static HOST_BINDING: OnceLock<crate::callbacks::PeerBinding> = OnceLock::new();
 static SECRET_SCOPE_LIFECYCLE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+#[cfg(test)]
+static SECRET_SCOPE_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static APPROVALS: OnceLock<
     Option<(
         tinysecurity_bus::ApprovalConfig2,
