@@ -722,13 +722,15 @@ impl Control {
                     legacy: vec![],
                 },
             };
-            assert!(proxy
-                .call_confidential::<SecretScopeReceipt2>(
-                    names::methods::REGISTER_SECRET_SCOPE2,
-                    (&unknown,),
-                )
-                .await
-                .is_err());
+            assert!(
+                proxy
+                    .call_confidential::<SecretScopeReceipt2>(
+                        names::methods::REGISTER_SECRET_SCOPE2,
+                        (&unknown,),
+                    )
+                    .await
+                    .is_err()
+            );
             let receipt: SecretScopeReceipt2 = proxy
                 .call_confidential(names::methods::REGISTER_SECRET_SCOPE2, (&register_request,))
                 .await?;
