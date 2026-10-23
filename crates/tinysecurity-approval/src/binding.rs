@@ -113,6 +113,15 @@ pub(crate) fn original(
         || request.call.arguments_json.len() > 32768
         || request.call.checks.is_empty()
         || request.call.checks.len() > 128
+        || request.call.checks.iter().any(|check| {
+            matches!(
+                check,
+                Check::SkillScan {
+                    verdict: tinysecurity_bus::SkillScanVerdict::Block,
+                    ..
+                }
+            )
+        })
         || (reg.ceiling == AccessTier::Read && request.caller.tier != AccessTier::Read)
         || (reg.ceiling == AccessTier::Write && request.caller.tier == AccessTier::Full)
         || request

@@ -760,7 +760,17 @@ impl Engine {
         now: u64,
         native: bool,
     ) -> Result<(Option<ApprovalRow2>, bool)> {
+        let scan_warning = request.request.call.checks.iter().any(|check| {
+            matches!(
+                check,
+                Check::SkillScan {
+                    verdict: tinysecurity_bus::SkillScanVerdict::Warn,
+                    ..
+                }
+            )
+        });
         let human_only = native
+            || scan_warning
             || matches!(
                 request.request.call.tool.as_str(),
                 "sandbox_host_network" | "device_crypto"
