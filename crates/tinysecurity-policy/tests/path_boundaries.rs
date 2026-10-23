@@ -138,5 +138,8 @@ fn global_dosdevices_alias_cannot_hide_system_or_credential_roots()
     ] {
         assert!(protected_path(std::path::Path::new(path)), "{path}");
     }
+    assert!(!protected_path(std::path::Path::new(
+        r"\GLOBAL??\C:\Users\alice\Documents\report.txt"
+    )));
     Ok(())
 }
