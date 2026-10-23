@@ -49,7 +49,8 @@ reservation, trusted-root and unconditional-floor queries for host adapters.
 
 The unconditional credential, system-root, traversal and null-byte floor applies
 even with policy disabled. System paths include every Windows drive and native
-extended aliases, administrative UNC shares and GLOBALROOT device namespaces. Unlike the conservative bootstrap Check path contract, portable
+extended aliases, administrative UNC shares, and NT device paths through
+GLOBALROOT, GLOBAL??, or DosDevices. Unlike the conservative bootstrap Check path contract, portable
 acting scopes leave `/usr`, `/bin`, `/dev` and library roots to configurable
 forbidden roots, preserving explicit grants for legitimate tool workloads. Enabled scopes also protect host state regardless of
 trusted grants. To preserve the host contract, an absolute forbidden root containing the entire

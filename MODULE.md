@@ -58,8 +58,10 @@ resolution deny. Enabled action roots must resolve to existing directories;
 workspace and configured forbidden roots deny before approval. New files can
 be checked through their existing parent. Permission does not guarantee
 confinement against a later concurrent filesystem mutation; execution must
-retain its own safe-open/jail boundary. Full Windows alias/ADS/device handling
-and rich shell grammar parity remain T2. Bootstrap commands allow only exact,
+retain its own safe-open/jail boundary. The lexical floor normalizes the native
+`GLOBAL??` and `DosDevices` aliases before checking Windows drive and system
+roots; full Windows alias/ADS/device handling and rich shell grammar parity
+remain T2. Bootstrap commands allow only exact,
 argument-free `pwd`, `date`, `uname`, `whoami` through a trusted host executable
 search path. Compound commands, expansions, heredocs, arguments, executable
 paths and unrecognized commands deny conservatively on every OS.

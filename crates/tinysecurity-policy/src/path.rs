@@ -85,6 +85,8 @@ pub(super) fn strip_native_namespace(path: &str) -> &str {
     path.strip_prefix("//?/")
         .or_else(|| path.strip_prefix("//./"))
         .or_else(|| path.strip_prefix("/??/"))
+        .or_else(|| path.strip_prefix("/global??/"))
+        .or_else(|| path.strip_prefix("/dosdevices/"))
         .unwrap_or(path)
 }
 pub(super) fn credential_store(segments: &[&str]) -> bool {
