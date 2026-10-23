@@ -8,6 +8,10 @@ use tinysecurity_bus::{
     CheckRequest, CheckResponse, Decision, EvaluateRequest, ModuleConfig, PolicyInfo, names,
 };
 
+#[cfg(feature = "native-security-tests")]
+#[path = "native_test_resolver.rs"]
+mod native_test_resolver;
+
 static PATH_SCOPES: OnceLock<Arc<Mutex<PathPolicyRegistry>>> = OnceLock::new();
 static COMMAND_SCOPES: OnceLock<Arc<Mutex<CommandPolicyRegistry>>> = OnceLock::new();
 static SCOPED_POLICIES: OnceLock<Arc<Mutex<ScopedPolicyRegistry>>> = OnceLock::new();
