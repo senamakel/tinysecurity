@@ -8,6 +8,10 @@ use tinysecurity_bus::{
     CheckRequest, CheckResponse, Decision, EvaluateRequest, ModuleConfig, PolicyInfo, names,
 };
 
+#[cfg(all(feature = "native-security-tests", debug_assertions))]
+#[path = "native_test_resolver.rs"]
+mod native_test_resolver;
+
 static PATH_SCOPES: OnceLock<Arc<Mutex<PathPolicyRegistry>>> = OnceLock::new();
 static COMMAND_SCOPES: OnceLock<Arc<Mutex<CommandPolicyRegistry>>> = OnceLock::new();
 static SCOPED_POLICIES: OnceLock<Arc<Mutex<ScopedPolicyRegistry>>> = OnceLock::new();
@@ -50,6 +54,17 @@ struct PolicyService {
 fn failure(error: &tinysecurity_bus::Error) -> tinybus::Error {
     tinybus::Error::failed(error.to_string())
 }
+
+#[cfg(all(feature = "native-security-tests", debug_assertions))]
+fn egress_resolver() -> &'static dyn tinysecurity::Resolver {
+    native_test_resolver::resolver()
+}
+
+#[cfg(not(all(feature = "native-security-tests", debug_assertions)))]
+fn egress_resolver() -> &'static dyn tinysecurity::Resolver {
+    &tinysecurity::SystemResolver
+}
+
 impl PolicyService {
     fn requires_bound_audit(&self) -> bool {
         self.approvals.is_some() || self.audit.as_ref().is_some_and(|client| client.required())
@@ -684,12 +699,7 @@ impl PolicyService {
         };
         // Drop every state lock before parsing, payload checks and bounded DNS.
         tokio::task::spawn_blocking(move || {
-            scope.url_guard(
-                &request,
-                generation,
-                &tinysecurity::SystemResolver,
-                &redactor,
-            )
+            scope.url_guard(&request, generation, egress_resolver(), &redactor)
         })
         .await
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))
@@ -710,12 +720,7 @@ impl PolicyService {
             (policy.info().generation, policy.redactor())
         };
         tokio::task::spawn_blocking(move || {
-            scope.check_with_redactor(
-                &request,
-                generation,
-                &tinysecurity::SystemResolver,
-                &redactor,
-            )
+            scope.check_with_redactor(&request, generation, egress_resolver(), &redactor)
         })
         .await
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))
@@ -748,7 +753,7 @@ impl PolicyService {
             .map_err(|error| failure(&error))?;
         let generation = self.read()?.info().generation;
         tokio::task::spawn_blocking(move || {
-            scope.authorize_browser_dial(&request, generation, &tinysecurity::SystemResolver)
+            scope.authorize_browser_dial(&request, generation, egress_resolver())
         })
         .await
         .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))
