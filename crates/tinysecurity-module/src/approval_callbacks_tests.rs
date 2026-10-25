@@ -129,11 +129,6 @@ async fn real_store_clients_validate_exact_scope_receipt_and_fixed_unique_peer()
         mutation_id: "d".repeat(32),
     };
     request.verify_receipt(&client.cas(request.clone()).await?)?;
-    let purge = ApprovalPurgeSessionRequest2 {
-        scope: scope.clone(),
-        session_id: "session-private".into(),
-    };
-    assert_eq!(client.purge_session(purge.clone()).await?.removed, 1);
     let mut other = scope.clone();
     other.user = "other".into();
     assert!(
@@ -142,9 +137,6 @@ async fn real_store_clients_validate_exact_scope_receipt_and_fixed_unique_peer()
             .await
             .is_err()
     );
-    let mut outside_scope = purge.clone();
-    outside_scope.scope.user = "other".into();
-    assert!(client.purge_session(outside_scope).await.is_err());
     assert!(ApprovalStoreClient::new(module.clone(), Some("ai.unverified.Host"), &config).is_err());
     for deadline in [0, 30001] {
         let mut invalid = config.clone();
@@ -181,6 +173,40 @@ async fn real_store_clients_validate_exact_scope_receipt_and_fixed_unique_peer()
         .await?;
     assert!(client.load(ApprovalLoadRequest2 { scope }).await.is_err());
     assert!(!format!("{client:?}").contains("user"));
+    broker.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn store_client_purges_session_only_through_registered_scope()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = tinybus::Connection::connect(bus.connect().await?).await?;
+    let module = tinybus::Connection::connect(bus.connect().await?).await?;
+    let config = config();
+    let scope = tinysecurity::approval::scope_handle(&config.scopes[0].subject)?;
+    host.serve_at(
+        callback_names2::OBJECT_PATH.parse()?,
+        Store {
+            scope: scope.clone(),
+            wrong: false,
+        },
+    )
+    .await?;
+    let client = ApprovalStoreClient::new(
+        module,
+        host.unique_name().as_ref().map(tinybus::BusName::as_str),
+        &config,
+    )?;
+    let request = ApprovalPurgeSessionRequest2 {
+        scope: scope.clone(),
+        session_id: "session-private".into(),
+    };
+    assert_eq!(client.purge_session(request.clone()).await?.removed, 1);
+    let mut outside_scope = request;
+    outside_scope.scope.user = "other".into();
+    assert!(client.purge_session(outside_scope).await.is_err());
     broker.abort();
     Ok(())
 }
