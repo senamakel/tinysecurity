@@ -1,5 +1,6 @@
 //! Fixed linear-time patterns and validated identifiers; registry contents stay private.
 use crate::{MARKER, output_bounded};
+use base64::Engine as _;
 use regex::Regex;
 use tinysecurity_bus::{Error, RedactorConfig, Result};
 pub(crate) struct Patterns {
@@ -23,10 +24,10 @@ enum Validator {
 }
 impl Patterns {
     pub(crate) fn new(config: &RedactorConfig) -> Result<Self> {
-        let mut secrets: Vec<_> = config.secrets.iter().map(|s| s.0.as_str()).collect();
-        if secrets.len() > 128
-            || secrets.iter().map(|s| s.len()).sum::<usize>() > 16_384
-            || secrets.iter().any(|s| {
+        let raw: Vec<_> = config.secrets.iter().map(|secret| secret.0.as_str()).collect();
+        if raw.len() > 128
+            || raw.iter().map(|s| s.len()).sum::<usize>() > 16_384
+            || raw.iter().any(|s| {
                 !(4..=4096).contains(&s.len())
                     || [
                         MARKER,
@@ -44,6 +45,7 @@ impl Patterns {
         {
             return Err(Error::InvalidConfig);
         }
+        let mut secrets: Vec<String> = raw.into_iter().flat_map(encoded_forms).collect();
         secrets.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         secrets.dedup();
         let literal = if secrets.is_empty() {
@@ -164,7 +166,11 @@ impl Patterns {
         for (regex, validator) in &self.rules {
             out = regex
                 .replace_all(&out, |caps: &regex::Captures<'_>| {
-                    if validator.valid(&caps[0]) {
+                    let matched = caps.get(0).expect("every replacement has a full match");
+                    let start = matched.start().saturating_sub(64);
+                    let end = (matched.end() + 64).min(out.len());
+                    let context = &out[start..end];
+                    if validator_valid(*validator, &caps[0], context) {
                         MARKER.into()
                     } else {
                         caps[0].to_string()
@@ -223,6 +229,34 @@ impl Patterns {
                 .iter()
                 .any(|(rule, validator)| rule.find_iter(text).any(|m| validator.valid(m.as_str())))
     }
+}
+fn encoded_forms(secret: &str) -> Vec<String> {
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+    let mut percent = String::with_capacity(secret.len() * 3);
+    let mut form = String::with_capacity(secret.len() * 3);
+    for byte in secret.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            percent.push(char::from(byte));
+            form.push(char::from(byte));
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(percent, "%{byte:02X}");
+            if byte == b' ' {
+                form.push('+');
+            } else {
+                let _ = write!(form, "%{byte:02X}");
+            }
+        }
+    }
+    vec![
+        secret.into(),
+        percent,
+        form,
+        STANDARD.encode(secret),
+        STANDARD_NO_PAD.encode(secret),
+        URL_SAFE.encode(secret),
+        URL_SAFE_NO_PAD.encode(secret),
+    ]
 }
 /// Decide whether a labelled value is a credential rather than source code.
 fn secret_like(label: &str, raw: &str, prefix: &str, rest: &str) -> bool {
@@ -400,6 +434,32 @@ impl Validator {
             }
         }
     }
+}
+fn validator_valid(validator: Validator, text: &str, context: &str) -> bool {
+    if validator != Validator::Card {
+        return validator.valid(text);
+    }
+    if validator.valid(text) && card_issuer_and_length(text) {
+        return true;
+    }
+    let lowered = context.to_ascii_lowercase();
+    ["card", "credit", "debit", "visa", "mastercard", "amex", "discover"]
+        .iter()
+        .any(|keyword| lowered.contains(keyword))
+        && validator.luhn_valid(text)
+}
+fn card_issuer_and_length(text: &str) -> bool {
+    let digits: String = text.chars().filter(char::is_ascii_digit).collect();
+    let len = digits.len();
+    let starts = |prefix: &str| digits.starts_with(prefix);
+    let visa = starts("4") && matches!(len, 13 | 16 | 19);
+    let mastercard = ((51..=55).any(|prefix| digits.starts_with(&prefix.to_string()))
+        || (2221..=2720).any(|prefix| digits.starts_with(&prefix.to_string())))
+        && len == 16;
+    let amex = (starts("34") || starts("37")) && len == 15;
+    let discover = (starts("6011") || starts("65") || starts("644") || starts("645"))
+        && len == 16;
+    visa || mastercard || amex || discover
 }
 #[cfg(test)]
 #[path = "patterns_tests.rs"]
