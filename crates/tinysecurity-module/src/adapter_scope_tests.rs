@@ -170,19 +170,34 @@ async fn runtime_scope_registers_grants_replaces_and_retires_through_the_authent
     let handle = tinysecurity::approval::scope_handle(&tenant_subject())?;
     assert_eq!(created.scope_handle, Some(handle));
 
-    // A granted tool is approved without a prompt, persisted and audited as the grant.
+    // Required approval takes precedence over the registered tool allowlist.
     let granted: EvaluateApprovalResponse2 = proxy
         .call(
             names::methods::EVALUATE_APPROVAL2,
             (tenant_begin(2, 3, "shell"),),
         )
         .await?;
-    assert_eq!(granted.decision.verdict, Verdict::Allow);
-    assert_eq!(
-        granted.record.attribution.as_deref(),
-        Some("auto:tool-grant")
-    );
-    // Any other tool still needs the tenant's own human.
+    assert!(matches!(
+        granted.decision.verdict,
+        Verdict::RequireApproval { .. }
+    ));
+    let ticket = store
+        .lock()
+        .map_err(|_| "fixture lock")?
+        .human_action(granted.record.clone(), ApprovalChoice2::Once)?;
+    let granted = proxy
+        .call::<ApprovalRow2>(
+            names::methods::DECIDE2,
+            (DecideRequest2 {
+                scope_id: TENANT.into(),
+                request_id: granted.record.request_id.clone(),
+                decision_ticket: ticket,
+                audit: audit(4),
+            },),
+        )
+        .await?;
+    assert_eq!(granted.state, ApprovalLifecycle2::Approved);
+    // Other tools also require the tenant's own human.
     let pending: EvaluateApprovalResponse2 = proxy
         .call(
             names::methods::EVALUATE_APPROVAL2,

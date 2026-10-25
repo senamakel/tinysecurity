@@ -6,8 +6,9 @@ use tinysecurity::approval::{Error, NativeAuditAcknowledgement, Ports, Result};
 use tinysecurity_bus::{
     ApprovalCasRequest2, ApprovalCasResponse2, ApprovalConfig2, ApprovalDeliveryRequest2,
     ApprovalDeliveryResponse2, ApprovalLifecycle2, ApprovalLoadRequest2, ApprovalLoadResponse2,
-    ApprovalRow2, ApprovalScope2, AuditConfig2, AuditEvent2, AuditKind2, AuditSinkRequest2,
-    AuditSinkResponse2, HumanDecisionReceipt2, SubjectScope, VerifyHumanRequest2, callback_names2,
+    ApprovalPurgeSessionRequest2, ApprovalPurgeSessionResponse2, ApprovalRow2, ApprovalScope2,
+    AuditConfig2, AuditEvent2, AuditKind2, AuditSinkRequest2, AuditSinkResponse2,
+    HumanDecisionReceipt2, SubjectScope, VerifyHumanRequest2, callback_names2,
 };
 /// Captured registered callback identity; no model-provided destination or scope.
 pub(crate) struct ApprovalStoreClient {
@@ -112,6 +113,21 @@ impl ApprovalStoreClient {
             .map_err(|_| Error::Invalid)?;
         Ok(response)
     }
+    pub(crate) async fn purge_session(
+        &self,
+        request: ApprovalPurgeSessionRequest2,
+    ) -> Result<ApprovalPurgeSessionResponse2> {
+        self.scope(&request.scope)?;
+        let response = self
+            .proxy(callback_names2::APPROVAL_STORE)?
+            .call(callback_names2::PURGE_SESSION, (request.clone(),))
+            .await
+            .map_err(|_| Error::Unavailable)?;
+        request
+            .verify_response(&response)
+            .map_err(|_| Error::Invalid)?;
+        Ok(response)
+    }
 }
 /// Real authenticated store, delivery, human-ticket verification and audit ports.
 pub(crate) struct ApprovalClients {
@@ -195,6 +211,12 @@ impl Ports for ApprovalClients {
     }
     async fn cas(&self, request: ApprovalCasRequest2) -> Result<ApprovalCasResponse2> {
         self.store.cas(request).await
+    }
+    async fn purge_session(
+        &self,
+        request: ApprovalPurgeSessionRequest2,
+    ) -> Result<ApprovalPurgeSessionResponse2> {
+        self.store.purge_session(request).await
     }
     async fn prompt(&self, request: ApprovalDeliveryRequest2) -> Result<ApprovalDeliveryResponse2> {
         self.store.scope(&request.row.binding.scope)?;

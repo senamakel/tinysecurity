@@ -17,7 +17,7 @@ use tinysecurity_bus::{
     ApprovalScopeOutcome2, ApprovalScopeReceipt2, AuditConfig2, AuditCorrelation2,
     AuditEventReceipt2, AuditSinkRequest2, AuditSinkResponse2, CallerContext, Check,
     DecideRequest2, EvaluateApprovalRequest2, EvaluateApprovalResponse2, EvaluateRequest,
-    HumanDecisionReceipt2, ModuleConfig, RegisterApprovalScopeRequest2,
+    HumanDecisionReceipt2, ModuleConfig, Origin, RegisterApprovalScopeRequest2,
     RetireApprovalScopeRequest2, SubjectScope, ToolCall, Verdict, VerifyHumanRequest2, names,
 };
 
@@ -41,7 +41,7 @@ fn registration(grants: ApprovalGrants2) -> RegisterApprovalScopeRequest2 {
             policy_ref: "tenant-policy".into(),
             generation: 1,
             ceiling: AccessTier::Full,
-            require_approval: true,
+            require_approval: false,
             auto_approve_all: false,
         },
         grants,
@@ -64,6 +64,7 @@ fn begin(instance: u64, sequence: u64, tool: &str) -> EvaluateApprovalRequest2 {
                 agent: "tenant-agent".into(),
                 call_id: format!("execution-{instance}"),
                 tier: AccessTier::Full,
+                origin: Origin::Saas,
                 ..Default::default()
             },
             call: ToolCall {
