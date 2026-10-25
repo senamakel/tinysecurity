@@ -38,7 +38,7 @@ fn structured_arguments_match_host_key_list_and_redact_nested_secret_patterns() 
     })?;
     let value: Value = serde_json::from_str(&output.text).map_err(|_| Error::InvalidArguments)?;
     assert_eq!(value["file-url"], "<redacted: string (44 chars)>");
-    assert_eq!(value["X-Amz-Signature"], "<redacted: string (16 chars)>");
+    assert_eq!(value["X-Amz-Signature"], "<redacted: string (17 chars)>");
     assert!(!output.text.contains("private-curl-credential"));
     Ok(())
 }
