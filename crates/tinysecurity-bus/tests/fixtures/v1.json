@@ -404,7 +404,7 @@
     "timeout_ms": 1
   },
   "KeyringConsentResponse": {
-    "allowed": false
+    "outcome": "consent_denied"
   },
   "CallerContext": {
     "agent": "fixture",
