@@ -140,7 +140,12 @@ fn trusted_folder_plan_carries_pre_admitted_grants_and_credential_denials() -> R
     scope.executors = vec![seatbelt(IsolationLevel2::Process)];
     request.accept_process_isolation = true;
 
-    let ssh = scope.paths.home_dir.as_ref().ok_or("home missing")?.join(".ssh");
+    let ssh = scope
+        .paths
+        .home_dir
+        .as_ref()
+        .ok_or("home missing")?
+        .join(".ssh");
     std::fs::create_dir(&ssh)?;
     let app_credential = scope.paths.workspace_dir.join("credential.json");
     std::fs::write(&app_credential, "secret")?;
@@ -162,6 +167,32 @@ fn trusted_folder_plan_carries_pre_admitted_grants_and_credential_denials() -> R
         .ok_or("folder plan did not return deny_read paths")?;
     assert!(denied.contains(&serde_json::json!(app_credential)));
     assert!(denied.contains(&serde_json::json!(ssh)));
+    Ok(())
+}
+
+#[test]
+fn credential_denial_paths_must_be_bounded_absolute_and_traversal_free() -> Res {
+    let (_dir, scope, mut request) = operator()?;
+    request.credential_denials = vec![std::path::PathBuf::from("relative/credential")];
+    assert_eq!(
+        engine(scope.clone())?.plan(&request, 1, 100)?.denial,
+        Some(SandboxDenial2::InvalidRequest)
+    );
+
+    request.credential_denials = vec![std::path::PathBuf::from("/tmp/../secret")];
+    assert_eq!(
+        engine(scope.clone())?.plan(&request, 1, 100)?.denial,
+        Some(SandboxDenial2::InvalidRequest)
+    );
+
+    request.credential_denials = vec![std::path::PathBuf::from(format!(
+        "/tmp/{}",
+        "x".repeat(4096)
+    ))];
+    assert_eq!(
+        engine(scope)?.plan(&request, 1, 100)?.denial,
+        Some(SandboxDenial2::InvalidRequest)
+    );
     Ok(())
 }
 

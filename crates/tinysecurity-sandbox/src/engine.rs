@@ -11,10 +11,11 @@ use std::{
 };
 use tinysecurity_bus::{
     AccessTier, CallerContext, Check, ConstraintEnforcement2, Decision, DenialReason,
-    EvaluateRequest, IsolationLevel2, MAX_SANDBOX_SCOPES2, NetworkPolicy, Origin, ResourceLimits2,
-    SandboxArtifact2, SandboxBackend, SandboxConfig2, SandboxConstraint2, SandboxDenial2,
-    SandboxDeployment2, SandboxExecutor2, SandboxPlanRequest2, SandboxPlanResponse2, SandboxScope2,
-    SandboxSetting2, SandboxSource2, SourceTrust, SubjectScope, ToolCall, Verdict,
+    EvaluateRequest, IsolationLevel2, MAX_CREDENTIAL_ROOT_BYTES, MAX_CREDENTIAL_ROOTS,
+    MAX_SANDBOX_SCOPES2, NetworkPolicy, Origin, ResourceLimits2, SandboxArtifact2, SandboxBackend,
+    SandboxConfig2, SandboxConstraint2, SandboxDenial2, SandboxDeployment2, SandboxExecutor2,
+    SandboxPlanRequest2, SandboxPlanResponse2, SandboxScope2, SandboxSetting2, SandboxSource2,
+    SourceTrust, SubjectScope, ToolCall, Verdict,
 };
 use tinysecurity_policy::{PathPolicyRegistry, PathScope};
 #[derive(Clone)]
@@ -77,10 +78,10 @@ fn well_formed(request: &SandboxPlanRequest2, facts: &SandboxScope2) -> bool {
         && request.operation_json.len() <= 65_536
         && request.grants.len() <= 128
         && request.grants.iter().all(|g| g.path.len() <= 4096)
-        && request.credential_denials.len() <= 64
+        && request.credential_denials.len() <= MAX_CREDENTIAL_ROOTS
         && request.credential_denials.iter().all(|path| {
             path.is_absolute()
-                && path.as_os_str().len() <= 4096
+                && path.as_os_str().len() <= MAX_CREDENTIAL_ROOT_BYTES
                 && !path.to_string_lossy().contains('\0')
                 && !path
                     .components()

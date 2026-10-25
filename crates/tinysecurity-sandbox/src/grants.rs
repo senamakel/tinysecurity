@@ -1,7 +1,8 @@
 //! Canonical grant admission reuses the native owner filesystem policy.
 use std::path::Path;
 use tinysecurity_bus::{
-    PathGrant, PathValidationResult, SandboxDenial2, SandboxPlanRequest2, SandboxScope2,
+    MAX_CREDENTIAL_ROOT_BYTES, MAX_CREDENTIAL_ROOTS, PathGrant, PathValidationResult,
+    SandboxDenial2, SandboxPlanRequest2, SandboxScope2,
 };
 use tinysecurity_policy::{PathScope, protected_path, resolve_ancestor};
 fn floor(root: &Path, scope: &SandboxScope2) -> bool {
@@ -53,13 +54,10 @@ pub(crate) fn credential_denials(
 ) -> std::result::Result<Vec<std::path::PathBuf>, SandboxDenial2> {
     use std::collections::BTreeSet;
 
-    const MAX_DENIALS: usize = 64;
-    const MAX_PATH_BYTES: usize = 4096;
-
-    if request.credential_denials.len() > MAX_DENIALS
+    if request.credential_denials.len() > MAX_CREDENTIAL_ROOTS
         || request.credential_denials.iter().any(|path| {
             !path.is_absolute()
-                || path.as_os_str().len() > MAX_PATH_BYTES
+                || path.as_os_str().len() > MAX_CREDENTIAL_ROOT_BYTES
                 || path.to_string_lossy().contains('\0')
                 || path
                     .components()
@@ -69,24 +67,22 @@ pub(crate) fn credential_denials(
         return Err(SandboxDenial2::InvalidRequest);
     }
 
-    let mut roots: BTreeSet<_> = tinysecurity_policy::credential_roots(
-        scope.paths.home_dir.as_deref(),
-    )
-    .map_err(|_| SandboxDenial2::Floor)?
-    .into_iter()
-    .collect();
+    let mut roots: BTreeSet<_> =
+        tinysecurity_policy::credential_roots(scope.paths.home_dir.as_deref())
+            .map_err(|_| SandboxDenial2::Floor)?
+            .into_iter()
+            .collect();
     for path in &request.credential_denials {
         let resolved = resolve_ancestor(path).map_err(|_| SandboxDenial2::Floor)?;
         roots.insert(path.clone());
         roots.insert(resolved);
-        if roots.len() > MAX_DENIALS * 2 {
+        if roots.len() > MAX_CREDENTIAL_ROOTS * 2 {
             return Err(SandboxDenial2::InvalidRequest);
         }
     }
 
-    let mut granted = vec![
-        resolve_ancestor(&scope.paths.workspace_dir).map_err(|_| SandboxDenial2::Floor)?,
-    ];
+    let mut granted =
+        vec![resolve_ancestor(&scope.paths.workspace_dir).map_err(|_| SandboxDenial2::Floor)?];
     granted.extend(
         grants
             .iter()
