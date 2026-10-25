@@ -1,4 +1,5 @@
 use super::*;
+use tinysecurity_bus::GrantToolRequest2;
 
 const STREAM: &str = "5555555555555555555555555555555a";
 
