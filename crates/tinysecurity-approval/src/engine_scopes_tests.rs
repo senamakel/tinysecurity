@@ -988,7 +988,11 @@ async fn scope_replacement_waits_for_a_trusted_reservation_to_commit() -> Result
     }
     let replacing = tokio::spawn({
         let owner = owner.clone();
-        async move { owner.replace_scope(register(7)).await }
+        async move {
+            let mut next = register(7);
+            next.scope.policy_ref = "replacement-policy".into();
+            owner.replace_scope(next).await
+        }
     });
     tokio::task::yield_now().await;
     assert!(!replacing.is_finished());
