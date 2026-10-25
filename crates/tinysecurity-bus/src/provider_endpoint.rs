@@ -1,4 +1,4 @@
-//! Host endpoint locality classification for LocalOnly privacy mode (contract 1.32).
+//! Host endpoint locality classification for `LocalOnly` privacy mode (contract 1.32).
 use serde::{Deserialize, Serialize};
 
 /// Maximum size of a parsed URL host supplied for provider locality classification.
@@ -47,7 +47,7 @@ pub enum ProviderEndpointLocality2 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderEndpointResponse2 {
-    /// Locality used by the host's LocalOnly decision.
+    /// Locality used by the host's `LocalOnly` decision.
     pub locality: ProviderEndpointLocality2,
 }
 

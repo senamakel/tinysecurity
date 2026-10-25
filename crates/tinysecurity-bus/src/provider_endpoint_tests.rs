@@ -26,36 +26,39 @@ fn provider_endpoint_request_is_bounded_and_host_only() {
 }
 
 #[test]
-fn provider_endpoint_request_and_response_have_stable_wire_shapes() {
+fn provider_endpoint_request_and_response_have_stable_wire_shapes()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     let request = ProviderEndpointRequest2 {
         host: "localhost".into(),
     };
-    let encoded = serde_json::to_value(&request).unwrap();
+    let encoded = serde_json::to_value(&request)?;
     assert_eq!(encoded, serde_json::json!({"host": "localhost"}));
     assert_eq!(
-        serde_json::from_value::<ProviderEndpointRequest2>(encoded).unwrap(),
+        serde_json::from_value::<ProviderEndpointRequest2>(encoded)?,
         request
     );
 
     let response = ProviderEndpointResponse2 {
         locality: ProviderEndpointLocality2::OnDevice,
     };
-    let encoded = serde_json::to_value(&response).unwrap();
+    let encoded = serde_json::to_value(response)?;
     assert_eq!(encoded, serde_json::json!({"locality": "on_device"}));
     assert_eq!(
-        serde_json::from_value::<ProviderEndpointResponse2>(encoded).unwrap(),
+        serde_json::from_value::<ProviderEndpointResponse2>(encoded)?,
         response
     );
+    Ok(())
 }
 
 #[test]
-fn provider_endpoint_locality_has_stable_wire_names_and_method() {
+fn provider_endpoint_locality_has_stable_wire_names_and_method()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     assert_eq!(
-        serde_json::to_value(ProviderEndpointLocality2::OnDevice).unwrap(),
+        serde_json::to_value(ProviderEndpointLocality2::OnDevice)?,
         serde_json::json!("on_device")
     );
     assert_eq!(
-        serde_json::to_value(ProviderEndpointLocality2::External).unwrap(),
+        serde_json::to_value(ProviderEndpointLocality2::External)?,
         serde_json::json!("external")
     );
     assert_eq!(
@@ -66,4 +69,5 @@ fn provider_endpoint_locality_has_stable_wire_names_and_method() {
     assert_eq!(crate::CONTRACT_VERSION, (1, 32));
     assert!(crate::is_compatible((1, 32)));
     assert!(!crate::is_compatible((1, 31)));
+    Ok(())
 }
