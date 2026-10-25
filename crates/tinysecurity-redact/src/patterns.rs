@@ -418,7 +418,9 @@ impl Validator {
                     .map(|b| b - b'0')
                     .collect();
                 (13..=19).contains(&digits.len())
-                    && matches!(digits.first(), Some(3..=7))
+                    && (matches!(digits.first(), Some(3..=7))
+                        || (digits.first() == Some(&2)
+                            && digits.get(1).is_some_and(|digit| (2..=7).contains(digit))))
                     && digits
                         .iter()
                         .rev()
