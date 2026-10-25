@@ -42,6 +42,8 @@ fn context(
         secret_master_handle: None,
         legacy_import_handle: None,
         channel_id: channel.into(),
+        pairing_token: (source == DevicePairingSource2::RegisteredSocket)
+            .then(|| "host-pairing-token".into()),
         connection_nonce: nonce.into(),
         generation: 1,
         source,

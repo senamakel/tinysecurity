@@ -195,6 +195,7 @@ fn controller(channel: &str) -> tinysecurity_bus::DevicePairingContextResponse2 
         secret_master_handle: None,
         legacy_import_handle: None,
         channel_id: channel.into(),
+        pairing_token: None,
         connection_nonce: "pairing-test-nonce".into(),
         generation: 1,
         source: tinysecurity_bus::DevicePairingSource2::AuthenticatedUserController,
