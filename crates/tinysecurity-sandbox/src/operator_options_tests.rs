@@ -135,6 +135,37 @@ fn process_level_jail_runs_an_operator_command_only_when_the_request_accepts_it(
 }
 
 #[test]
+fn trusted_folder_plan_carries_pre_admitted_grants_and_credential_denials() -> Res {
+    let (home, mut scope, mut request) = operator()?;
+    scope.executors = vec![seatbelt(IsolationLevel2::Process)];
+    request.accept_process_isolation = true;
+
+    let ssh = home.path().join(".ssh");
+    std::fs::create_dir(&ssh)?;
+    let app_credential = scope.paths.workspace_dir.join("credential.json");
+    std::fs::write(&app_credential, "secret")?;
+    let mut wire_request = serde_json::to_value(&request)?;
+    wire_request["credential_denials"] = serde_json::json!([app_credential]);
+    let request: SandboxPlanRequest2 = serde_json::from_value(wire_request)?;
+
+    let artifact = engine(scope.clone())?
+        .plan(&request, 1, 100)?
+        .artifact
+        .ok_or("trusted folder plan was denied")?;
+
+    assert_eq!(artifact.minimum_isolation, IsolationLevel2::Process);
+    assert_eq!(artifact.grants.len(), 1);
+    assert!(artifact.grants[0].path.starts_with('/'));
+    let wire_artifact = serde_json::to_value(artifact)?;
+    let denied = wire_artifact["deny_read"]
+        .as_array()
+        .ok_or("folder plan did not return deny_read paths")?;
+    assert!(denied.contains(&serde_json::json!(app_credential)));
+    assert!(denied.contains(&serde_json::json!(ssh)));
+    Ok(())
+}
+
+#[test]
 fn process_level_jail_never_runs_untrusted_or_saas_plans() -> Res {
     let (_dir, scope, mut request) = operator()?;
     request.accept_process_isolation = true;
