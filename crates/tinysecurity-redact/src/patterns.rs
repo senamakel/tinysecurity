@@ -164,12 +164,13 @@ impl Patterns {
             .into_owned();
         out = self.home.replace_all(&out, "<HOME>").into_owned();
         for (regex, validator) in &self.rules {
+            let source = out;
             out = regex
-                .replace_all(&out, |caps: &regex::Captures<'_>| {
+                .replace_all(&source, |caps: &regex::Captures<'_>| {
                     let matched = caps.get(0).expect("every replacement has a full match");
                     let start = matched.start().saturating_sub(64);
-                    let end = (matched.end() + 64).min(out.len());
-                    let context = &out[start..end];
+                    let end = (matched.end() + 64).min(source.len());
+                    let context = &source[start..end];
                     if validator_valid(*validator, &caps[0], context) {
                         MARKER.into()
                     } else {
@@ -405,9 +406,6 @@ impl Validator {
                     .map(|b| b - b'0')
                     .collect();
                 (13..=19).contains(&digits.len())
-                    && (matches!(digits.first(), Some(3..=6))
-                        || (digits.first() == Some(&2)
-                            && digits.get(1).is_some_and(|d| (2..=7).contains(d))))
                     && digits
                         .iter()
                         .rev()
@@ -446,7 +444,7 @@ fn validator_valid(validator: Validator, text: &str, context: &str) -> bool {
     ["card", "credit", "debit", "visa", "mastercard", "amex", "discover"]
         .iter()
         .any(|keyword| lowered.contains(keyword))
-        && validator.luhn_valid(text)
+        && validator.valid(text)
 }
 fn card_issuer_and_length(text: &str) -> bool {
     let digits: String = text.chars().filter(char::is_ascii_digit).collect();
