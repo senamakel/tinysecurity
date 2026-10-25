@@ -535,6 +535,7 @@ impl Engine {
         if expiry <= now {
             return Err(Error::Denied);
         }
+        let session_id = bound.caller.thread.clone();
         let row = ApprovalRow2 {
             request_id: binding::opaque()?,
             version: 1,
@@ -542,7 +543,7 @@ impl Engine {
             host_instance: self.instance.clone(),
             nonce: binding::opaque()?,
             tool_name: self.begin_tool_label(&request.request.call.tool, deadline.is_some())?,
-            session_id: bound.caller.thread.clone(),
+            session_id,
             external_effect,
             args_redacted,
             summary: binding::text(&self.redactor()?, &request.summary, RedactMode::Text)?,
@@ -1056,6 +1057,7 @@ impl Engine {
             host_instance: self.instance.clone(),
             nonce: binding::opaque()?,
             tool_name: "imported-history".into(),
+            session_id: None,
             external_effect: false,
             args_redacted: "{}".into(),
             summary: "imported-history".into(),
