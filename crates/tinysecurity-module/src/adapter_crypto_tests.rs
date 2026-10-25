@@ -627,7 +627,11 @@ async fn initialization_requires_a_unique_authenticated_peer_and_valid_backends(
     if let Some(keyring) = &mut config.keyring {
         keyring.backend = KeyringBackend2::SecretService;
     }
-    assert!(configure(Some(config), None, &init).is_err());
+    let secret_service = configure(Some(config), None, &init);
+    #[cfg(all(target_os = "linux", feature = "keyring-secret-service"))]
+    assert!(secret_service.is_ok());
+    #[cfg(not(all(target_os = "linux", feature = "keyring-secret-service")))]
+    assert!(secret_service.is_err());
     let mut relative = self::config(&dir);
     if let Some(keyring) = &mut relative.keyring {
         keyring.backend = KeyringBackend2::EncryptedFile {
