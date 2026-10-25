@@ -34,7 +34,10 @@ fn relative_directory_and_unbuilt_secret_service_fail_closed() {
         Some(Error::InvalidInput)
     );
     #[cfg(not(all(target_os = "linux", feature = "keyring-secret-service")))]
-    assert_eq!(open("s", Backend::SecretService).err(), Some(Error::KeyringUnavailable));
+    assert_eq!(
+        open("s", Backend::SecretService).err(),
+        Some(Error::KeyringUnavailable)
+    );
 }
 
 #[cfg(all(target_os = "linux", feature = "keyring-secret-service"))]

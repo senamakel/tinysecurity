@@ -292,8 +292,19 @@ async fn keyring_requires_consent_for_each_operation() -> Result<(), Box<dyn std
     consenter
         .allow
         .store(false, std::sync::atomic::Ordering::SeqCst);
+    let refusal = fixture
+        .service
+        .keyring_access(keyring_request(KeyringOperation2::Get {
+            name: name.into(),
+        }))
+        .await
+        .err()
+        .ok_or("expected refusal")?;
+    assert_eq!(
+        refusal.wire_name(),
+        "ai.tinyhumans.tinysecurity.Error.ConsentDenied"
+    );
     for operation in [
-        KeyringOperation2::Get { name: name.into() },
         KeyringOperation2::Set {
             name: name.into(),
             value: b"x".to_vec(),

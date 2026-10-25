@@ -120,10 +120,13 @@ async fn absence_of_every_source_is_required_to_mint_once()
 }
 
 #[tokio::test]
-async fn read_only_resolution_never_mints_or_mutates() -> std::result::Result<(), Box<dyn std::error::Error>> {
+async fn read_only_resolution_never_mints_or_mutates()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     let target = Arc::new(MemorySecrets::new());
     let legacy = Arc::new(MemorySecrets::new());
-    legacy.set(".secret_key", b"AB".repeat(32).as_slice()).await?;
+    legacy
+        .set(".secret_key", b"AB".repeat(32).as_slice())
+        .await?;
     let mint = Arc::new(CountingMint::default());
     let resolver = MasterResolver::new_with_sources(
         target.clone(),
@@ -132,10 +135,18 @@ async fn read_only_resolution_never_mints_or_mutates() -> std::result::Result<()
         mint.clone(),
     )?;
 
-    let key = resolver.resolve_existing().await?.ok_or("expected existing legacy key")?;
+    let key = resolver
+        .resolve_existing()
+        .await?
+        .ok_or("expected existing legacy key")?;
     assert_eq!(key.bytes(), &[0xab; 32]);
     assert_eq!(mint.0.load(Ordering::SeqCst), 0);
-    assert!(target.get("profile:secretstore.master_key").await?.is_none());
+    assert!(
+        target
+            .get("profile:secretstore.master_key")
+            .await?
+            .is_none()
+    );
     assert!(legacy.get(".secret_key").await?.is_some());
 
     let absent = MasterResolver::new(

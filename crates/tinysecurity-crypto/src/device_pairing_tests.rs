@@ -62,8 +62,8 @@ fn owner() -> DevicePairingOwner {
 fn handshake_payload_accepts_legacy_raw_device_key() {
     let device = KeyPair::generate().unwrap();
     let frame_ephemeral = KeyPair::generate().unwrap().public_key();
-    let payload = parse_handshake_payload(device.public_key().encode().as_bytes(), &frame_ephemeral)
-        .unwrap();
+    let payload =
+        parse_handshake_payload(device.public_key().encode().as_bytes(), &frame_ephemeral).unwrap();
     assert_eq!(payload.device_pubkey, device.public_key().encode());
     assert_eq!(payload.client_ephemeral_pubkey, frame_ephemeral.encode());
 }
