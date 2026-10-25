@@ -264,7 +264,7 @@ impl ScopeEntry {
         durable_flow: bool,
         durable_tool: bool,
     ) -> Option<&'static str> {
-        if self.scope.require_approval && rule == tinysecurity_auto::rules::Rule::Approval {
+        if self.scope.require_approval && !durable_tool && !durable_flow {
             return None;
         }
         match rule {

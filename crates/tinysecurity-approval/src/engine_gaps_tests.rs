@@ -329,6 +329,7 @@ async fn audit_error_is_redacted_before_persistence_and_capped_after_redaction()
 async fn unlabelled_origin_is_approved_only_by_the_exact_whole_tool_grant() -> Result<()> {
     let (fixture, owner) = owner()?;
     let mut req = register(7);
+    req.scope.require_approval = false;
     req.grants = grants(&["shell"], &[]);
     owner.register_scope(req).await?;
     let row = owner
@@ -1398,6 +1399,7 @@ async fn source_import_validation_and_store_errors_fail_closed() -> Result<()> {
 async fn an_unlabelled_approval_dies_when_only_a_flow_grant_remains() -> Result<()> {
     let (_, owner) = owner()?;
     let mut req = register(7);
+    req.scope.require_approval = false;
     req.grants = grants(&["shell"], &[]);
     owner.register_scope(req.clone()).await?;
     let call = shell(7, Some("flow-1"), Origin::Unlabelled, "call-1");

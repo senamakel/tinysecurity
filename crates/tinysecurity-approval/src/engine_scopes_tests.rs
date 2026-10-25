@@ -358,6 +358,7 @@ async fn retire_denies_later_calls_releases_the_subject_and_reports_once() -> Re
 async fn tool_grant_approves_only_that_tool_with_a_persisted_audited_row() -> Result<()> {
     let (fixture, owner) = owner()?;
     let mut req = register(7);
+    req.scope.require_approval = false;
     req.grants = grants(&["shell"], &[]);
     owner.register_scope(req).await?;
     let row = owner
@@ -402,6 +403,7 @@ async fn tool_grant_approves_only_that_tool_with_a_persisted_audited_row() -> Re
 async fn flow_grant_is_scoped_to_that_flow_and_tool() -> Result<()> {
     let (_, owner) = owner()?;
     let mut req = register(7);
+    req.scope.require_approval = false;
     req.grants = grants(&[], &[("flow-1", "shell")]);
     owner.register_scope(req).await?;
     let granted = owner
@@ -427,6 +429,7 @@ async fn grants_reach_saas_but_never_override_cron_external_denial_or_human_only
 -> Result<()> {
     let (_, owner) = owner()?;
     let mut req = register(7);
+    req.scope.require_approval = false;
     req.grants = grants(&["shell", "local_diagnostic"], &[]);
     owner.register_scope(req).await?;
     let saas = owner
@@ -804,6 +807,7 @@ async fn generation_advance_while_waiting_for_the_lifecycle_denies_the_registrat
 async fn revoking_a_grant_blocks_consumption_of_its_unconsumed_approval() -> Result<()> {
     let (_, owner) = owner()?;
     let mut req = register(7);
+    req.scope.require_approval = false;
     req.grants = grants(&["shell"], &[]);
     owner.register_scope(req).await?;
     let call = begin_for(7, "shell", None, Origin::Operator);
@@ -823,6 +827,7 @@ async fn grant_revoked_while_the_ports_await_never_publishes_an_approval() -> Re
     let (fixture, owner) = owner()?;
     let owner = Arc::new(owner);
     let mut req = register(7);
+    req.scope.require_approval = false;
     req.grants = grants(&["shell"], &[]);
     owner.register_scope(req).await?;
     fixture.pause_load.store(1, Ordering::SeqCst);
@@ -964,6 +969,7 @@ async fn scope_replacement_waits_for_a_trusted_reservation_to_commit() -> Result
     let (fixture, owner) = owner()?;
     let owner = Arc::new(owner);
     let mut req = register(7);
+    req.scope.require_approval = false;
     req.grants = grants(&["shell"], &[]);
     owner.register_scope(req).await?;
     let call = begin_for(7, "shell", None, Origin::Operator);
@@ -1044,6 +1050,7 @@ async fn grant_revoked_while_the_approval_is_published_is_not_returned() -> Resu
     let (fixture, owner) = owner()?;
     let owner = Arc::new(owner);
     let mut req = register(7);
+    req.scope.require_approval = false;
     req.grants = grants(&["shell"], &[]);
     owner.register_scope(req).await?;
     let before = fixture.cas_calls.load(Ordering::SeqCst);
