@@ -877,9 +877,18 @@ impl DevicePairingOwner {
             .identities
             .get(&identity_id)
             .ok_or(Error::DeviceDenied)?;
-        let (_client_handshake_ephemeral, plaintext) = identity.key.open_handshake(frame)?;
-        let payload: HandshakePayload =
-            serde_json::from_slice(&plaintext).map_err(|_| Error::DeviceDenied)?;
+        let (client_handshake_ephemeral, plaintext) = identity.key.open_handshake(frame)?;
+        let payload: HandshakePayload = serde_json::from_slice(&plaintext).or_else(|_| {
+            // Older clients send the device static key as the entire plaintext.
+            // The sealed frame already carries the client ephemeral key.
+            let device_pubkey = std::str::from_utf8(&plaintext)
+                .map_err(|_| serde_json::Error::io(std::io::Error::other("invalid handshake")))?
+                .trim();
+            Ok(HandshakePayload {
+                device_pubkey: device_pubkey.to_owned(),
+                client_ephemeral_pubkey: client_handshake_ephemeral.encode(),
+            })
+        }).map_err(|_| Error::DeviceDenied)?;
         let peer_static = PublicKey::decode(&payload.device_pubkey)?;
         let client_session_ephemeral = PublicKey::decode(&payload.client_ephemeral_pubkey)?;
         if pending
