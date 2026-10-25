@@ -82,6 +82,32 @@ fn json_sanitization_drops_sensitive_keys_and_reports_changes() -> Result<()> {
 }
 
 #[test]
+fn json_sanitization_reports_text_pii_private_keys_arrays_and_depth() -> Result<()> {
+    let registry = Redactor::new(&RedactorConfig::default())?;
+    let input = serde_json::json!([
+        {"safe": "email private@example.com"},
+        {"safe": "address 192.0.2.1"},
+        {"safe": "-----BEGIN PRIVATE KEY-----\nprivate\n-----END PRIVATE KEY-----"}
+    ]);
+    let sanitized = registry.sanitize_json(&input)?;
+    assert_eq!(sanitized.value[0]["safe"], format!("email {MARKER}"));
+    assert_eq!(sanitized.value[1]["safe"], format!("address {MARKER}"));
+    assert_eq!(sanitized.value[2]["safe"], MARKER);
+    assert_eq!(sanitized.report.text_redactions, 3);
+    assert_eq!(sanitized.report.pii_redactions, 1);
+    assert_eq!(sanitized.report.blocked_secret_hits, 1);
+
+    let mut deep = serde_json::Value::Null;
+    for _ in 0..=MAX_DEPTH {
+        deep = serde_json::Value::Array(vec![deep]);
+    }
+    let deep = registry.sanitize_json(&deep)?;
+    assert_eq!(deep.report.depth_redactions, 1);
+    assert!(deep.report.changed());
+    Ok(())
+}
+
+#[test]
 fn direct_credential_transfers_block_prompts() -> Result<()> {
     let registry = Redactor::new(&RedactorConfig::default())?;
     let scans = [
