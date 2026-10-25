@@ -18,7 +18,8 @@ use tinysecurity_bus::{
     AuditEventReceipt2, AuditSinkRequest2, AuditSinkResponse2, CallerContext, Check,
     DecideRequest2, EvaluateApprovalRequest2, EvaluateApprovalResponse2, EvaluateRequest,
     HumanDecisionReceipt2, ModuleConfig, RegisterApprovalScopeRequest2,
-    RetireApprovalScopeRequest2, SubjectScope, ToolCall, Verdict, VerifyHumanRequest2, names,
+    RetireApprovalScopeRequest2, SubjectScope, ToolCall, Verdict, VerifyHumanRequest2, Origin,
+    names,
 };
 
 type Failure = Box<dyn std::error::Error>;
@@ -64,6 +65,7 @@ fn begin(instance: u64, sequence: u64, tool: &str) -> EvaluateApprovalRequest2 {
                 agent: "tenant-agent".into(),
                 call_id: format!("execution-{instance}"),
                 tier: AccessTier::Full,
+                origin: Origin::Unknown,
                 ..Default::default()
             },
             call: ToolCall {
