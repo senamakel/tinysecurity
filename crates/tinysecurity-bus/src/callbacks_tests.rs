@@ -1,6 +1,7 @@
 use super::*;
 #[test]
-fn session_purge_contract_roundtrips_and_rejects_unrelated_responses() {
+fn session_purge_contract_roundtrips_and_rejects_unrelated_responses()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     let request = ApprovalPurgeSessionRequest2 {
         scope: SubjectScope {
             user: "user-hash".into(),
@@ -9,8 +10,8 @@ fn session_purge_contract_roundtrips_and_rejects_unrelated_responses() {
         },
         session_id: "session-hash".into(),
     };
-    let encoded = serde_json::to_string(&request).unwrap();
-    let decoded: ApprovalPurgeSessionRequest2 = serde_json::from_str(&encoded).unwrap();
+    let encoded = serde_json::to_string(&request)?;
+    let decoded: ApprovalPurgeSessionRequest2 = serde_json::from_str(&encoded)?;
     assert_eq!(decoded, request);
     let response = ApprovalPurgeSessionResponse2 {
         scope: request.scope.clone(),
@@ -24,6 +25,7 @@ fn session_purge_contract_roundtrips_and_rejects_unrelated_responses() {
         request.verify_response(&unrelated),
         Err(crate::Error::InvalidArguments)
     );
+    Ok(())
 }
 
 fn mutation() -> ApprovalCasRequest2 {
