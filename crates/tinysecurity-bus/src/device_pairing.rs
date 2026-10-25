@@ -197,6 +197,10 @@ pub struct DevicePairingContextResponse2 {
     pub legacy_import_handle: Option<String>,
     /// Registered backend channel, empty for user-controller operations.
     pub channel_id: String,
+    /// Host-minted backend pairing token, present only for registered socket events.
+    /// It is bound to the pairing context and is never accepted from a module request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing_token: Option<String>,
     /// Fresh connection nonce, empty for user-controller operations.
     pub connection_nonce: String,
     /// Current module generation captured by the trusted host.

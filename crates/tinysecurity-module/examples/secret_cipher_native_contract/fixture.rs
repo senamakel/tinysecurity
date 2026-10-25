@@ -483,6 +483,7 @@ impl Callback {
             secret_master_handle: alias,
             legacy_import_handle,
             channel_id: channel.into(),
+            pairing_token: (!channel.is_empty()).then(|| "fixture-pairing-token".into()),
             connection_nonce: nonce.into(),
             generation: self.state.generation.load(Ordering::Acquire),
             source,

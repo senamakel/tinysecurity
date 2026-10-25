@@ -41,6 +41,9 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
+      - name: Install Linux Secret Service build dependency
+        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

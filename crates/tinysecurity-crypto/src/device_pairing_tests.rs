@@ -42,6 +42,7 @@ fn context(
         secret_master_handle: None,
         legacy_import_handle: None,
         channel_id: channel.into(),
+        pairing_token: (!channel.is_empty()).then(|| "host-pairing-token".into()),
         connection_nonce: nonce.into(),
         generation: 1,
         source,
@@ -56,6 +57,55 @@ fn owner() -> DevicePairingOwner {
         [(SCOPE.into(), Zeroizing::new([0x41; 32]))].into(),
     )
     .unwrap()
+}
+
+#[test]
+fn handshake_payload_accepts_legacy_raw_device_key() {
+    let device = KeyPair::generate().unwrap();
+    let frame_ephemeral = KeyPair::generate().unwrap().public_key();
+    let payload =
+        parse_handshake_payload(device.public_key().encode().as_bytes(), &frame_ephemeral).unwrap();
+    assert_eq!(payload.device_pubkey, device.public_key().encode());
+    assert_eq!(payload.client_ephemeral_pubkey, frame_ephemeral.encode());
+}
+
+#[test]
+fn handshake_rejects_a_substituted_host_pairing_token() {
+    let mut owner = owner();
+    let (receipt, core_public, _) = owner
+        .begin(
+            &context(
+                DevicePairingSource2::AuthenticatedUserController,
+                "channel-a",
+                "nonce-a",
+                10_000,
+            ),
+            5_000,
+            time(1_000),
+        )
+        .unwrap();
+    let core = PublicKey::decode(&core_public).unwrap();
+    let device = KeyPair::generate().unwrap();
+    let frame_ephemeral = KeyPair::generate().unwrap();
+    let session_ephemeral = KeyPair::generate().unwrap();
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "device_pubkey": device.public_key().encode(),
+        "client_ephemeral_pubkey": session_ephemeral.public_key().encode(),
+    }))
+    .unwrap();
+    let frame = frame_ephemeral.seal_handshake(core, &payload).unwrap();
+    let mut substituted = context(
+        DevicePairingSource2::RegisteredSocket,
+        "channel-a",
+        "nonce-a",
+        10_000,
+    );
+    substituted.pairing_token = Some("attacker-token".into());
+    assert!(
+        owner
+            .handshake(&receipt, &substituted, &frame, time(1_001))
+            .is_err()
+    );
 }
 fn start_handshake(
     owner: &mut DevicePairingOwner,
@@ -1206,6 +1256,7 @@ fn legacy_import_is_atomic_idempotent_and_channel_recovery_is_user_scoped() {
     assert_eq!(again, imported);
     let authorized_channel = DevicePairingContextResponse2 {
         channel_id: "legacy-channel-a".into(),
+        pairing_token: Some("host-pairing-token".into()),
         ..authorized.clone()
     };
     let recovered = owner
@@ -1223,6 +1274,7 @@ fn legacy_import_is_atomic_idempotent_and_channel_recovery_is_user_scoped() {
                 "legacy-channel-a",
                 &DevicePairingContextResponse2 {
                     channel_id: "legacy-channel-a".into(),
+                    pairing_token: Some("host-pairing-token".into()),
                     ..foreign
                 },
                 time(1_013),
