@@ -1820,6 +1820,8 @@ dependencies = [
 name = "tinysecurity-redact"
 version = "0.17.1"
 dependencies = [
+ "base64 0.22.1",
+ "percent-encoding",
  "regex",
  "serde_json",
  "sha2",
