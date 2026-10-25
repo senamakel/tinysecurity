@@ -13,7 +13,7 @@ pub(crate) struct Patterns {
     home: Regex,
     endpoint: Regex,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Validator {
     Always,
     Card,
