@@ -23,6 +23,39 @@ fn markers_are_fixed_points_and_lookalikes_are_not() {
     assert!(!uuid("00000000000004000800000000000000123"));
     assert!(!uuid("gggggggg-0000-4000-8000-000000000123"));
 }
+
+#[test]
+fn structured_arguments_match_host_key_list_and_redact_nested_secret_patterns() -> Result<()> {
+    let registry = Redactor::new(&RedactorConfig::default())?;
+    let input = serde_json::json!({
+        "file-url": "https://storage.example/download?sig=private",
+        "X-Amz-Signature": "private-signature",
+        "command": "curl -H \"Authorization: Bearer private-curl-credential\" https://example.test"
+    });
+    let output = registry.redact(&tinysecurity_bus::RedactRequest {
+        text: input.to_string(),
+        mode: RedactMode::StructuredArguments,
+    })?;
+    let value: Value = serde_json::from_str(&output.text).map_err(|_| Error::InvalidArguments)?;
+    assert_eq!(value["file-url"], "<redacted: string (43 chars)>");
+    assert_eq!(value["X-Amz-Signature"], "<redacted: string (16 chars)>");
+    assert!(!output.text.contains("private-curl-credential"));
+    Ok(())
+}
+
+#[test]
+fn scan_tool_definition_requires_a_json_object() -> Result<()> {
+    let registry = Redactor::new(&RedactorConfig::default())?;
+    for definition in ["null", "[]", "\"schema\""] {
+        assert!(registry
+            .scan_tool_definition(&ScanToolDefinitionRequest {
+                name: "safe".into(),
+                definition_json: definition.into(),
+            })
+            .is_err());
+    }
+    Ok(())
+}
 #[test]
 fn collision_keys_embedded_json_depth_and_browser_fixed_points() -> Result<()> {
     let registry = Redactor::new(&RedactorConfig {
