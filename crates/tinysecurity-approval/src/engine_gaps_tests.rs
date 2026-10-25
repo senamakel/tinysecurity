@@ -384,9 +384,28 @@ async fn audit_error_rejects_empty_diagnostic_before_loading_a_row() -> Result<(
 
 #[tokio::test]
 async fn default_session_purge_port_fails_closed() -> Result<()> {
-    let fixture = Fixture::default();
+    #[derive(Debug)]
+    struct DefaultPurgePort;
+    #[async_trait::async_trait]
+    impl Ports for DefaultPurgePort {
+        async fn load(&self, _: ApprovalLoadRequest2) -> Result<ApprovalLoadResponse2> {
+            Err(Error::Unavailable)
+        }
+        async fn cas(&self, _: ApprovalCasRequest2) -> Result<ApprovalCasResponse2> {
+            Err(Error::Unavailable)
+        }
+        async fn prompt(&self, _: ApprovalDeliveryRequest2) -> Result<ApprovalDeliveryResponse2> {
+            Err(Error::Unavailable)
+        }
+        async fn human(&self, _: VerifyHumanRequest2) -> Result<HumanDecisionReceipt2> {
+            Err(Error::Unavailable)
+        }
+        async fn audit(&self, _: ApprovalRow2) -> Result<()> {
+            Err(Error::Unavailable)
+        }
+    }
     let result = Ports::purge_session(
-        &fixture,
+        &DefaultPurgePort,
         tinysecurity_bus::ApprovalPurgeSessionRequest2 {
             scope: tinysecurity_bus::SubjectScope {
                 user: "user".into(),
