@@ -38,8 +38,8 @@ impl Interface for Callback {
             &[callback_names2::PROMPT, callback_names2::VERIFY_HUMAN]
         };
         names
-            .into_iter()
-            .filter_map(|name| name.parse().ok())
+            .iter()
+            .filter_map(|name| (*name).parse().ok())
             .collect()
     }
 
