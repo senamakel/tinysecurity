@@ -136,11 +136,11 @@ fn process_level_jail_runs_an_operator_command_only_when_the_request_accepts_it(
 
 #[test]
 fn trusted_folder_plan_carries_pre_admitted_grants_and_credential_denials() -> Res {
-    let (home, mut scope, mut request) = operator()?;
+    let (_dir, mut scope, mut request) = operator()?;
     scope.executors = vec![seatbelt(IsolationLevel2::Process)];
     request.accept_process_isolation = true;
 
-    let ssh = home.path().join(".ssh");
+    let ssh = scope.paths.home_dir.as_ref().ok_or("home missing")?.join(".ssh");
     std::fs::create_dir(&ssh)?;
     let app_credential = scope.paths.workspace_dir.join("credential.json");
     std::fs::write(&app_credential, "secret")?;
