@@ -28,6 +28,27 @@ fn session_purge_contract_roundtrips_and_rejects_unrelated_responses()
     Ok(())
 }
 
+#[test]
+fn session_purge_debug_redacts_the_session_identifier() {
+    let request = ApprovalPurgeSessionRequest2 {
+        scope: SubjectScope {
+            user: "user-hash".into(),
+            workspace: "workspace-hash".into(),
+            agent: "agent-hash".into(),
+        },
+        session_id: "private-session-hash".into(),
+    };
+    let response = ApprovalPurgeSessionResponse2 {
+        scope: request.scope.clone(),
+        session_id: request.session_id.clone(),
+        removed: 1,
+    };
+    let debug = format!("{request:?}{response:?}");
+    assert!(debug.contains("ApprovalPurgeSessionRequest2([REDACTED])"));
+    assert!(debug.contains("ApprovalPurgeSessionResponse2([REDACTED])"));
+    assert!(!debug.contains("private-session-hash"));
+}
+
 fn mutation() -> ApprovalCasRequest2 {
     ApprovalCasRequest2 {
         scope: SubjectScope {
