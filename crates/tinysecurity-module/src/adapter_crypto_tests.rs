@@ -1,6 +1,29 @@
 use super::*;
 use tinysecurity_bus::names;
 
+#[test]
+fn keyring_consent_outcomes_are_distinct_and_name_free() {
+    for (outcome, expected) in [
+        (
+            KeyringConsentOutcome2::ConsentPending,
+            "ai.tinyhumans.tinysecurity.Error.ConsentPending",
+        ),
+        (
+            KeyringConsentOutcome2::ConsentDenied,
+            "ai.tinyhumans.tinysecurity.Error.ConsentDenied",
+        ),
+        (
+            KeyringConsentOutcome2::Unavailable,
+            "ai.tinyhumans.tinysecurity.Error.Unavailable",
+        ),
+    ] {
+        let error = consent_error(outcome);
+        assert_eq!(error.wire_name(), expected);
+        assert_eq!(error.wire_message(), "keyring consent outcome");
+        assert!(!error.wire_message().contains("secret-name"));
+    }
+}
+
 fn initialization(connection: &tinybus::Connection, peer: &str) -> Initialization<'static> {
     // The connection outlives each test body; leak a clone for a 'static borrow.
     let leaked: &'static tinybus::Connection = Box::leak(Box::new(connection.clone()));
