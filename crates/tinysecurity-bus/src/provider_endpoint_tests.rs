@@ -2,21 +2,27 @@ use super::*;
 
 #[test]
 fn provider_endpoint_request_is_bounded_and_host_only() {
-    assert!(ProviderEndpointRequest2 {
-        host: "[::1]".into()
-    }
-    .validate()
-    .is_ok());
+    assert!(
+        ProviderEndpointRequest2 {
+            host: "[::1]".into()
+        }
+        .validate()
+        .is_ok()
+    );
     for host in ["", "has white space", "host\nname"] {
-        assert!(ProviderEndpointRequest2 { host: host.into() }
-            .validate()
-            .is_err());
+        assert!(
+            ProviderEndpointRequest2 { host: host.into() }
+                .validate()
+                .is_err()
+        );
     }
-    assert!(ProviderEndpointRequest2 {
-        host: "a".repeat(MAX_PROVIDER_HOST_BYTES + 1)
-    }
-    .validate()
-    .is_err());
+    assert!(
+        ProviderEndpointRequest2 {
+            host: "a".repeat(MAX_PROVIDER_HOST_BYTES + 1)
+        }
+        .validate()
+        .is_err()
+    );
 }
 
 #[test]

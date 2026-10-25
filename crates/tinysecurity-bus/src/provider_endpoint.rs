@@ -21,7 +21,10 @@ impl ProviderEndpointRequest2 {
     pub fn validate(&self) -> crate::Result<()> {
         if self.host.is_empty()
             || self.host.len() > MAX_PROVIDER_HOST_BYTES
-            || self.host.chars().any(|c| c.is_control() || c.is_whitespace())
+            || self
+                .host
+                .chars()
+                .any(|c| c.is_control() || c.is_whitespace())
         {
             return Err(crate::Error::InvalidArguments);
         }
