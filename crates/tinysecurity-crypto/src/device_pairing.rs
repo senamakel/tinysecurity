@@ -1575,6 +1575,9 @@ fn valid_channel(channel: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':'))
 }
+fn valid_pairing_token(token: &str) -> bool {
+    !token.is_empty() && token.len() <= 512 && token.bytes().all(|byte| byte.is_ascii_graphic())
+}
 fn validate_pending(p: &Pending, b: &Binding, now: Time) -> Result<()> {
     if p.binding != *b || now.wall >= p.expires_wall || now.monotonic >= p.expires_mono {
         Err(Error::DeviceDenied)
