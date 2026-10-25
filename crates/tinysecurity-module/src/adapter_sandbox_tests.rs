@@ -92,6 +92,7 @@ async fn legacy_plan_and_missing_registered_scope_never_authorize()
         limits: tinysecurity_bus::ResourceLimits2::default(),
         deny_subprocesses: false,
         accept_process_isolation: false,
+        credential_denials: vec![],
         options: tinysecurity_bus::SandboxPlanOptions2::default(),
         generation: 1,
         ttl_ms: 1000,
