@@ -41,7 +41,7 @@ fn registration(grants: ApprovalGrants2) -> RegisterApprovalScopeRequest2 {
             policy_ref: "tenant-policy".into(),
             generation: 1,
             ceiling: AccessTier::Full,
-            require_approval: true,
+            require_approval: false,
             auto_approve_all: false,
         },
         grants,
