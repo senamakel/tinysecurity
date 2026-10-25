@@ -83,6 +83,7 @@ fn new_members_are_advertised_and_named_by_contract_constants() {
         names::methods::LIST_RECENT_DECISIONS2,
         names::methods::PURGE_APPROVAL_SESSION2,
         names::methods::RECORD_AUDIT_ERROR2,
+        names::methods::CLASSIFY_PROVIDER_ENDPOINT2,
     ] {
         assert!(names::METHODS.contains(&name), "{name}");
     }
@@ -91,10 +92,11 @@ fn new_members_are_advertised_and_named_by_contract_constants() {
 
 #[test]
 fn contract_bump_is_additive_for_older_hosts_and_modules() {
-    assert_eq!(CONTRACT_VERSION, (1, 31));
-    // A host built against 1.31 accepts this module and newer minors, not a 1.30 module.
-    assert!(is_compatible((1, 31)));
+    assert_eq!(CONTRACT_VERSION, (1, 32));
+    // A host built against 1.32 accepts this module and newer minors, not a 1.31 module.
     assert!(is_compatible((1, 32)));
+    assert!(is_compatible((1, 33)));
+    assert!(!is_compatible((1, 31)));
     assert!(!is_compatible((1, 30)));
     assert!(!is_compatible((1, 29)));
     assert!(!is_compatible((1, 28)));
