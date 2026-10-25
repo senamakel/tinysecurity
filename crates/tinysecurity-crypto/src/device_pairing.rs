@@ -59,6 +59,7 @@ struct Binding {
     scope: String,
     user: String,
     channel: String,
+    pairing_token: Option<String>,
     nonce: String,
     generation: u64,
 }
@@ -68,6 +69,7 @@ impl From<&DevicePairingContextResponse2> for Binding {
             scope: c.scope_id.clone(),
             user: c.user_binding.clone(),
             channel: c.channel_id.clone(),
+            pairing_token: c.pairing_token.clone(),
             nonce: c.connection_nonce.clone(),
             generation: c.generation,
         }
@@ -78,6 +80,7 @@ impl PartialEq for Binding {
         self.scope == other.scope
             && self.user == other.user
             && self.channel == other.channel
+            && self.pairing_token == other.pairing_token
             && self.nonce == other.nonce
             && self.generation == other.generation
     }
@@ -1307,6 +1310,8 @@ impl DevicePairingOwner {
                 && !valid_channel(&c.channel_id))
             || (source != DevicePairingSource2::AuthenticatedUserController
                 && c.connection_nonce.is_empty())
+            || (source == DevicePairingSource2::RegisteredSocket
+                && !c.pairing_token.as_deref().is_some_and(valid_pairing_token))
             || c.expires_at_ms <= self.last.wall
             || !self.scope_identities.contains_key(&c.scope_id)
         {
@@ -1324,6 +1329,7 @@ impl DevicePairingOwner {
             || context.scope_id.is_empty()
             || context.user_binding.is_empty()
             || (!context.channel_id.is_empty() && !valid_channel(&context.channel_id))
+            || context.pairing_token.is_some()
             || context.expires_at_ms <= now.wall
             || !self.scope_identities.contains_key(&context.scope_id)
         {
