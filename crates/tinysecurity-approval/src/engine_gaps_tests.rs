@@ -203,6 +203,42 @@ async fn unlabelled_origin_is_denied_without_a_whole_tool_grant_and_leaves_nothi
 }
 
 #[tokio::test]
+async fn unknown_origin_denies_without_a_whole_tool_grant() -> Result<()> {
+    let (fixture, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    let mut request = shell(7, None, Origin::Unknown, "unknown-origin");
+    request.audit = at(1);
+    assert_eq!(owner.begin(request).await.err(), Some(Error::Denied));
+    assert_eq!(prompts(&fixture)?, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn recent_decisions_include_all_registered_scopes_and_skip_pending_rows() -> Result<()> {
+    let (_, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    owner.register_scope(register(8)).await?;
+    let mut first = shell(7, None, Origin::TrustedAutomation, "decision-1");
+    first.audit = at(1);
+    owner.begin(first).await?;
+    let mut pending = shell(7, None, Origin::Operator, "pending");
+    pending.audit = at(2);
+    owner.begin(pending).await?;
+    let mut second = shell(8, None, Origin::TrustedAutomation, "decision-2");
+    second.audit = at(3);
+    owner.begin(second).await?;
+
+    let rows = owner.list_recent_decisions(10).await?;
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter()
+            .all(|row| row.state == ApprovalLifecycle2::Approved)
+    );
+    assert_eq!(rows[0].binding.caller.agent, "agent-8");
+    Ok(())
+}
+
+#[tokio::test]
 async fn unlabelled_origin_is_approved_only_by_the_exact_whole_tool_grant() -> Result<()> {
     let (fixture, owner) = owner()?;
     let mut req = register(7);

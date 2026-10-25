@@ -54,6 +54,18 @@ Being the trusted bus peer alone does not make model input a human action.
 Tickets are never persisted or printed by the module; only their SHA-256
 correlation and sanitized attribution enter durable rows.
 
+Forced, user-requested approval is a host routing mode: the host may start it
+only from a validated WebChat request, must suppress all allowlists and
+automatic decisions, and must allow only a once choice. A forced request from
+any other origin is denied before `EvaluateApproval2`. Detached sub-agent
+classification and keeping its approval card visible after the parent turn
+ends also remain host responsibilities; the host must preserve the verified
+origin when delegating and must not infer it from prompt or tool arguments.
+The approval engine owns only the typed origin and durable decision. When a
+parked request reaches its deadline, the host should call `ExpireApproval2` so
+the row records `expired`; `CancelApproval2` is reserved for explicit host
+cancellation.
+
 ## Authority and lifecycle
 
 Version-one bindings use domain-separated SHA-256 of bounded original parsed

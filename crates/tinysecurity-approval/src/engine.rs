@@ -255,7 +255,7 @@ impl ScopeEntry {
         durable_flow: bool,
         durable_tool: bool,
     ) -> Option<&'static str> {
-        if self.scope.require_approval {
+        if self.scope.require_approval && rule == tinysecurity_auto::rules::Rule::Approval {
             return None;
         }
         match rule {
@@ -1856,6 +1856,37 @@ impl Engine {
     /// Rejects malformed, cross-owner or unavailable storage.
     pub async fn list(&self, scope_id: &str) -> Result<Vec<ApprovalRow2>> {
         self.rows(&self.registration(scope_id)?).await
+    }
+    /// Read the newest durable decisions across currently registered scopes.
+    /// Pending requests are excluded; the result is bounded to 1..=500 rows.
+    /// # Errors
+    /// Rejects malformed rows or unavailable scope stores.
+    pub async fn list_recent_decisions(&self, limit: usize) -> Result<Vec<ApprovalRow2>> {
+        let scopes = self
+            .scopes
+            .read()
+            .map_err(|_| Error::Unavailable)?
+            .by_id
+            .values()
+            .map(|entry| entry.scope.clone())
+            .collect::<Vec<_>>();
+        let mut rows = Vec::new();
+        for scope in scopes {
+            rows.extend(
+                self.rows(&scope)
+                    .await?
+                    .into_iter()
+                    .filter(|row| row.state != ApprovalLifecycle2::Pending),
+            );
+        }
+        rows.sort_by(|left, right| {
+            right
+                .created_at_ms
+                .cmp(&left.created_at_ms)
+                .then_with(|| left.request_id.cmp(&right.request_id))
+        });
+        rows.truncate(limit.clamp(1, 500));
+        Ok(rows)
     }
     /// Resolve pending or approved state as cancelled, retaining its captured scope.
     /// # Errors
