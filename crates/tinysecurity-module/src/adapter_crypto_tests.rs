@@ -42,7 +42,11 @@ impl Consenter {
         assert!(!serde_json::to_string(&request)?.contains("private-value"));
         self.seen.lock().map_err(|_| denied())?.push(request);
         std::future::ready(Ok(KeyringConsentResponse2 {
-            allowed: self.allow.load(std::sync::atomic::Ordering::SeqCst),
+            outcome: if self.allow.load(std::sync::atomic::Ordering::SeqCst) {
+                KeyringConsentOutcome2::Allowed
+            } else {
+                KeyringConsentOutcome2::ConsentDenied
+            },
         }))
         .await
     }

@@ -491,7 +491,6 @@ async fn consent(
             },),
         )
         .await
-        .await
         .map_err(|error| match error {
             tinybus::Error::Timeout { .. } => consent_error(KeyringConsentOutcome2::ConsentPending),
             _ => consent_error(KeyringConsentOutcome2::Unavailable),
