@@ -82,9 +82,6 @@ async fn real_store_clients_validate_exact_scope_receipt_and_fixed_unique_peer()
     let scope = tinysecurity::approval::scope_handle(&config.scopes[0].subject)?;
     let peer = host.unique_name().ok_or("host peer")?;
     let client = ApprovalStoreClient::new(module.clone(), Some(peer.as_str()), &config)?;
-    let mut no_scopes = config.clone();
-    no_scopes.scopes.clear();
-    assert!(ApprovalStoreClient::new(module.clone(), Some(peer.as_str()), &no_scopes).is_err());
     assert!(
         client
             .load(ApprovalLoadRequest2 {
@@ -173,6 +170,28 @@ async fn real_store_clients_validate_exact_scope_receipt_and_fixed_unique_peer()
         .await?;
     assert!(client.load(ApprovalLoadRequest2 { scope }).await.is_err());
     assert!(!format!("{client:?}").contains("user"));
+    broker.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn store_client_rejects_empty_init_scope_list()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let broker = Broker::new().spawn(bus.clone());
+    let host = tinybus::Connection::connect(bus.connect().await?).await?;
+    let module = tinybus::Connection::connect(bus.connect().await?).await?;
+    let mut config = config();
+    config.scopes.clear();
+
+    assert!(
+        ApprovalStoreClient::new(
+            module,
+            host.unique_name().as_ref().map(tinybus::BusName::as_str),
+            &config,
+        )
+        .is_err()
+    );
     broker.abort();
     Ok(())
 }
