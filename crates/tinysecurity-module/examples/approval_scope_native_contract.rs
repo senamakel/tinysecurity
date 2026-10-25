@@ -65,7 +65,7 @@ fn begin(instance: u64, sequence: u64, tool: &str) -> EvaluateApprovalRequest2 {
                 agent: "tenant-agent".into(),
                 call_id: format!("execution-{instance}"),
                 tier: AccessTier::Full,
-                origin: Origin::Unknown,
+                origin: Origin::Saas,
                 ..Default::default()
             },
             call: ToolCall {
