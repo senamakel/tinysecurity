@@ -397,13 +397,17 @@ compact) so space-padded single-token triggers still score. Its false-positive t
 recalled-memory transcripts that merely mention "system prompt" or a "token push", the plural
 "tokens" of language-model text, and a colleague named Dan. A base64-like run and an
 invisible character are reported (`obfuscation.base64_run`, `obfuscation.invisible_character`) but
-carry no weight: they are common in benign content. The host's optional environment classifier is
-not part of the module. A tier is context and never authorizes execution. Input is bounded at
-64 KiB; larger input is refused, never truncated. Latency budget: about 20 us per KiB in release
+carry no weight: they are common in benign content. The optional
+`OPENHUMAN_PROMPT_INJECTION_CLASSIFIER=heuristic` host classifier is dropped;
+the deterministic owner scorer is the only classifier signal. A tier is context
+and never authorizes execution. Input is bounded at 64 KiB; larger `ScanPrompt2`
+input returns `review` with `input.oversized`, never a partial score. Latency budget: about 20 us per KiB in release
 (1 KiB 19 us, 4 KiB 65 us, 64 KiB 1.0 ms on the reference machine), so p99 under 5 ms for any
 accepted input.
 
-`ScanPrompt` and `ScanToolDefinition` keep their verdict wire. Their scanner now also reports a
+`ScanPrompt` and `ScanToolDefinition` keep their verdict wire. The latter accepts a
+serialized JSON object, which the MCP registry caller must build from the tool's
+complete definition; arrays, scalars and malformed JSON are refused. Their scanner now also reports a
 space-padded `jailbreak` as `override.obfuscated_role`, so a remote tool description with spaced-out
 trigger words no longer slips through.
 
