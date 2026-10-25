@@ -131,7 +131,7 @@ impl Ports for Fixture {
         Ok(tinysecurity_bus::ApprovalPurgeSessionResponse2 {
             scope: request.scope,
             session_id: request.session_id,
-            removed: remove.len() as u32,
+            removed: u32::try_from(remove.len()).map_err(|_| Error::Invalid)?,
         })
     }
     async fn load(&self, r: ApprovalLoadRequest2) -> Result<ApprovalLoadResponse2> {
