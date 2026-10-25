@@ -17,9 +17,8 @@ use tinysecurity_bus::{
     ApprovalScopeOutcome2, ApprovalScopeReceipt2, AuditConfig2, AuditCorrelation2,
     AuditEventReceipt2, AuditSinkRequest2, AuditSinkResponse2, CallerContext, Check,
     DecideRequest2, EvaluateApprovalRequest2, EvaluateApprovalResponse2, EvaluateRequest,
-    HumanDecisionReceipt2, ModuleConfig, RegisterApprovalScopeRequest2,
-    RetireApprovalScopeRequest2, SubjectScope, ToolCall, Verdict, VerifyHumanRequest2, Origin,
-    names,
+    HumanDecisionReceipt2, ModuleConfig, Origin, RegisterApprovalScopeRequest2,
+    RetireApprovalScopeRequest2, SubjectScope, ToolCall, Verdict, VerifyHumanRequest2, names,
 };
 
 type Failure = Box<dyn std::error::Error>;
