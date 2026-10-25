@@ -9,12 +9,12 @@ use tinysecurity_bus::{
     ApprovalActionRequest2, ApprovalCasRequest2, ApprovalCasResponse2, ApprovalChoice2,
     ApprovalConfig2, ApprovalDeliveryRequest2, ApprovalDeliveryResponse2, ApprovalGrants2,
     ApprovalHistoryImport2, ApprovalLifecycle2, ApprovalLoadRequest2, ApprovalLoadResponse2,
-    ApprovalRecordRequest2, ApprovalRow2, ApprovalScope2, ApprovalScopeOutcome2,
-    ApprovalScopeReceipt2, AuditCorrelation2, CallerContext, Check, DecideRequest2,
-    EvaluateApprovalRequest2, EvaluateRequest, HUMAN_ONLY_TOOLS2, HumanDecisionReceipt2,
-    MAX_APPROVAL_SCOPES2, Origin, PreauthorizeFlowRequest2, RecordExecutionRequest2, RedactMode,
-    RegisterApprovalScopeRequest2, RetireApprovalScopeRequest2, SubjectScope, ToolCall,
-    VerifyHumanRequest2,
+    ApprovalPurgeSessionRequest2, ApprovalRecordRequest2, ApprovalRow2, ApprovalScope2,
+    ApprovalScopeOutcome2, ApprovalScopeReceipt2, AuditCorrelation2, CallerContext, Check,
+    DecideRequest2, EvaluateApprovalRequest2, EvaluateRequest, HUMAN_ONLY_TOOLS2,
+    HumanDecisionReceipt2, MAX_APPROVAL_SCOPES2, Origin, PreauthorizeFlowRequest2,
+    RecordExecutionRequest2, RedactMode, RegisterApprovalScopeRequest2,
+    RetireApprovalScopeRequest2, SubjectScope, ToolCall, VerifyHumanRequest2,
 };
 use tinysecurity_redact::Redactor;
 /// Trusted acknowledgement binding an exact row to the untouched actual sink receipt.
@@ -122,6 +122,15 @@ pub trait Ports: Send + Sync + std::fmt::Debug {
     /// # Errors
     /// Timeout is indeterminate; conflicting mutation reuse must reject.
     async fn cas(&self, request: ApprovalCasRequest2) -> Result<ApprovalCasResponse2>;
+    /// Remove undecided rows for one exact session in one exact subject.
+    /// # Errors
+    /// Rejects an unavailable store or a response that does not echo the request.
+    async fn purge_session(
+        &self,
+        _request: ApprovalPurgeSessionRequest2,
+    ) -> Result<tinysecurity_bus::ApprovalPurgeSessionResponse2> {
+        Err(Error::Denied)
+    }
     /// Deliver a verified per-user prompt; never a decision.
     /// # Errors
     /// Rejects unavailable or unverified human channels.
@@ -544,6 +553,7 @@ impl Engine {
             nonce: binding::opaque()?,
             tool_name: self.begin_tool_label(&request.request.call.tool, deadline.is_some())?,
             session_id,
+            audit_error: None,
             external_effect,
             args_redacted,
             summary: binding::text(&self.redactor()?, &request.summary, RedactMode::Text)?,
@@ -1058,6 +1068,7 @@ impl Engine {
             nonce: binding::opaque()?,
             tool_name: "imported-history".into(),
             session_id: None,
+            audit_error: None,
             external_effect: false,
             args_redacted: "{}".into(),
             summary: "imported-history".into(),
@@ -1800,6 +1811,41 @@ impl Engine {
         self.persist(Some(previous), &row).await?;
         Ok(row)
     }
+    /// Persist only a redacted diagnostic after an audit sink failure.
+    /// This metadata mutation never changes the approval lifecycle or grants authority.
+    /// # Errors
+    /// Rejects invalid diagnostics, stale rows, mismatched scopes or unavailable storage.
+    pub async fn record_audit_error(
+        &self,
+        request: tinysecurity_bus::RecordAuditErrorRequest2,
+    ) -> Result<ApprovalRow2> {
+        if request.audit_error.is_empty() || request.audit_error.len() > 8192 {
+            return Err(Error::Invalid);
+        }
+        let reg = self.registration(&request.scope_id)?;
+        let mut row = self.row(&reg, &request.request_id).await?;
+        Self::current(&reg, &row)?;
+        let sanitized = binding::text(&self.redactor()?, &request.audit_error, RedactMode::Text)?;
+        let sanitized = if sanitized.chars().count() > 512 {
+            let head: String = sanitized.chars().take(511).collect();
+            format!("{head}…")
+        } else {
+            sanitized
+        };
+        Self::correlation(&request.audit, reg.generation)?;
+        if row.audit_error.as_deref() == Some(&sanitized) && row.audit == request.audit {
+            return Ok(row);
+        }
+        if row.audit_error.is_some() {
+            return Err(Error::Conflict);
+        }
+        let previous = row.version;
+        row.version = previous.checked_add(1).ok_or(Error::Invalid)?;
+        row.audit_error = Some(sanitized);
+        row.audit = request.audit;
+        self.persist(Some(previous), &row).await?;
+        Ok(row)
+    }
     fn current(reg: &ApprovalScope2, row: &ApprovalRow2) -> Result<()> {
         if row.binding.generation != reg.generation
             || row.binding.scope != binding::scope_handle(&reg.subject)?
@@ -1890,6 +1936,40 @@ impl Engine {
         });
         rows.truncate(limit.clamp(1, 500));
         Ok(rows)
+    }
+    /// Remove undecided rows belonging to one session across registered subjects.
+    /// The session identifier is redacted once and matched against stored row hashes.
+    /// Decided rows remain as durable audit history.
+    /// # Errors
+    /// Rejects invalid identifiers, malformed responses or unavailable stores.
+    pub async fn purge_session(&self, session_id: &str) -> Result<usize> {
+        if session_id.trim().is_empty() || session_id.len() > 1024 {
+            return Err(Error::Invalid);
+        }
+        let session_id = binding::text(&self.redactor()?, session_id, RedactMode::IdentifierHash)?;
+        let scopes = self
+            .scopes
+            .read()
+            .map_err(|_| Error::Unavailable)?
+            .by_id
+            .values()
+            .map(|entry| entry.scope.clone())
+            .collect::<Vec<_>>();
+        let mut removed = 0_usize;
+        for scope in scopes {
+            let request = ApprovalPurgeSessionRequest2 {
+                scope: binding::scope_handle(&scope.subject)?,
+                session_id: session_id.clone(),
+            };
+            let response = self.ports.purge_session(request.clone()).await?;
+            request
+                .verify_response(&response)
+                .map_err(|_| Error::Invalid)?;
+            removed = removed
+                .checked_add(response.removed as usize)
+                .ok_or(Error::Invalid)?;
+        }
+        Ok(removed)
     }
     /// Resolve pending or approved state as cancelled, retaining its captured scope.
     /// # Errors

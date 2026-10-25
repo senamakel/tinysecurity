@@ -153,6 +153,7 @@ impl Engine {
             nonce: binding::opaque()?,
             tool_name: binding::text(&redactor, &request.tool, RedactMode::Text)?,
             session_id: None,
+            audit_error: None,
             external_effect: true,
             args_redacted: "{}".into(),
             summary: "whole-tool trust".into(),

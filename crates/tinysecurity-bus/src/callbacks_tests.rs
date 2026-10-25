@@ -1,4 +1,31 @@
 use super::*;
+#[test]
+fn session_purge_contract_roundtrips_and_rejects_unrelated_responses() {
+    let request = ApprovalPurgeSessionRequest2 {
+        scope: SubjectScope {
+            user: "user-hash".into(),
+            workspace: "workspace-hash".into(),
+            agent: "agent-hash".into(),
+        },
+        session_id: "session-hash".into(),
+    };
+    let encoded = serde_json::to_string(&request).unwrap();
+    let decoded: ApprovalPurgeSessionRequest2 = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded, request);
+    let response = ApprovalPurgeSessionResponse2 {
+        scope: request.scope.clone(),
+        session_id: request.session_id.clone(),
+        removed: 3,
+    };
+    assert_eq!(request.verify_response(&response), Ok(()));
+    let mut unrelated = response;
+    unrelated.session_id = "other-session".into();
+    assert_eq!(
+        request.verify_response(&unrelated),
+        Err(crate::Error::InvalidArguments)
+    );
+}
+
 fn mutation() -> ApprovalCasRequest2 {
     ApprovalCasRequest2 {
         scope: SubjectScope {

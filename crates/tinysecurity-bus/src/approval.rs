@@ -126,6 +126,9 @@ pub struct ApprovalRow2 {
     /// Session correlation copied from the trusted caller context, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Redacted audit sink failure detail, capped at 512 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_error: Option<String>,
     /// Concrete effect class derived from actual checks.
     pub external_effect: bool,
     /// Redacted canonical original argument JSON.
@@ -232,6 +235,19 @@ pub struct RecordExecutionRequest2 {
     /// Immutable terminal outcome.
     pub outcome: ExecutionOutcome,
 }
+/// Record a sanitized diagnostic after the host's audit sink failed.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordAuditErrorRequest2 {
+    /// Trusted registration.
+    pub scope_id: String,
+    /// Exact durable approval row.
+    pub request_id: String,
+    /// Raw sink error; the engine redacts and caps it before persistence.
+    pub audit_error: String,
+    /// Exact next-version audit correlation for the metadata CAS.
+    pub audit: AuditCorrelation2,
+}
 /// Scoped listing, expiry or cancellation request; no ambient subject lookup.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -267,6 +283,7 @@ redacted_debug!(
     HumanDecisionReceipt2,
     ApprovalActionRequest2,
     RecordExecutionRequest2,
+    RecordAuditErrorRequest2,
     ApprovalRecordRequest2,
     PreauthorizeFlowRequest2
 );
