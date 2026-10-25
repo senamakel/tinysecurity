@@ -244,7 +244,10 @@ pub(crate) fn parse(record: &ApprovalRecord2, scope: &SubjectScope) -> Result<Ap
         || &row.binding.scope != scope
         || row.binding.binding_version != 1
         || row.binding.origin != row.binding.caller.origin
-        || row.session_id != row.binding.caller.thread
+        || row
+            .session_id
+            .as_ref()
+            .is_some_and(|session| Some(session) != row.binding.caller.thread.as_ref())
         || row
             .session_id
             .as_ref()
