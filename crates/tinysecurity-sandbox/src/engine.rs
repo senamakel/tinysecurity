@@ -124,6 +124,23 @@ fn suitable_for_untrusted(executor: &SandboxExecutor2) -> bool {
             IsolationLevel2::Kernel | IsolationLevel2::MicroVm
         )
 }
+fn minimum_isolation(
+    executor: &SandboxExecutor2,
+    constraints: &[SandboxConstraint2],
+    isolation: bool,
+) -> IsolationLevel2 {
+    if !isolation {
+        IsolationLevel2::None
+    } else if suitable_for_untrusted(executor) && constraints.iter().all(|c| supports(executor, *c))
+    {
+        IsolationLevel2::Kernel
+    } else {
+        // Only an executor chosen for a request that accepted process isolation can be
+        // here: the kernel-level pass found nothing exact. This is trusted folder
+        // confinement (for example Seatbelt), not a kernel-isolation claim.
+        IsolationLevel2::Process
+    }
+}
 fn requirements(request: &SandboxPlanRequest2) -> Vec<SandboxConstraint2> {
     let mut constraints = vec![SandboxConstraint2::Filesystem, SandboxConstraint2::Network];
     for (required, constraint) in [
@@ -479,18 +496,7 @@ impl Engine {
                     || facts.configured == SandboxSetting2::Enabled));
         let constraints = requirements(request);
         let executor = select(facts, request, &constraints, isolation)?;
-        let minimum_isolation = if !isolation {
-            IsolationLevel2::None
-        } else if suitable_for_untrusted(executor)
-            && constraints.iter().all(|c| supports(executor, *c))
-        {
-            IsolationLevel2::Kernel
-        } else {
-            // Only an executor chosen for a request that accepted process isolation can
-            // be here: the kernel-level pass found nothing exact. This is trusted folder
-            // confinement (for example Seatbelt), not a kernel-isolation claim.
-            IsolationLevel2::Process
-        };
+        let minimum_isolation = minimum_isolation(executor, &constraints, isolation);
         let deny_read = if minimum_isolation == IsolationLevel2::Process {
             grants::credential_denials(facts, request, &grants)?
         } else {
