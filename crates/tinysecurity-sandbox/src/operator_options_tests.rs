@@ -160,7 +160,7 @@ fn trusted_folder_plan_carries_pre_admitted_grants_and_credential_denials() -> R
 
     assert_eq!(artifact.minimum_isolation, IsolationLevel2::Process);
     assert_eq!(artifact.grants.len(), 1);
-    assert!(artifact.grants[0].path.starts_with('/'));
+    assert!(std::path::Path::new(&artifact.grants[0].path).is_absolute());
     let wire_artifact = serde_json::to_value(artifact)?;
     let denied = wire_artifact["deny_read"]
         .as_array()
