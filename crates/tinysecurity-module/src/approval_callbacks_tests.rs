@@ -32,6 +32,26 @@ impl Store {
         }))
         .await
     }
+
+    async fn purge_session(
+        &self,
+        request: ApprovalPurgeSessionRequest2,
+    ) -> tinybus::Result<ApprovalPurgeSessionResponse2> {
+        std::future::ready(Ok(ApprovalPurgeSessionResponse2 {
+            scope: if self.wrong {
+                self.scope.clone()
+            } else {
+                request.scope
+            },
+            session_id: if self.wrong {
+                "wrong-session".into()
+            } else {
+                request.session_id
+            },
+            removed: 1,
+        }))
+        .await
+    }
 }
 fn config() -> ApprovalConfig2 {
     ApprovalConfig2 {
@@ -62,6 +82,9 @@ async fn real_store_clients_validate_exact_scope_receipt_and_fixed_unique_peer()
     let scope = tinysecurity::approval::scope_handle(&config.scopes[0].subject)?;
     let peer = host.unique_name().ok_or("host peer")?;
     let client = ApprovalStoreClient::new(module.clone(), Some(peer.as_str()), &config)?;
+    let mut no_scopes = config.clone();
+    no_scopes.scopes.clear();
+    assert!(ApprovalStoreClient::new(module.clone(), Some(peer.as_str()), &no_scopes).is_err());
     assert!(
         client
             .load(ApprovalLoadRequest2 {
@@ -106,6 +129,11 @@ async fn real_store_clients_validate_exact_scope_receipt_and_fixed_unique_peer()
         mutation_id: "d".repeat(32),
     };
     request.verify_receipt(&client.cas(request.clone()).await?)?;
+    let purge = ApprovalPurgeSessionRequest2 {
+        scope: scope.clone(),
+        session_id: "session-private".into(),
+    };
+    assert_eq!(client.purge_session(purge.clone()).await?.removed, 1);
     let mut other = scope.clone();
     other.user = "other".into();
     assert!(
@@ -114,6 +142,9 @@ async fn real_store_clients_validate_exact_scope_receipt_and_fixed_unique_peer()
             .await
             .is_err()
     );
+    let mut outside_scope = purge.clone();
+    outside_scope.scope.user = "other".into();
+    assert!(client.purge_session(outside_scope).await.is_err());
     assert!(ApprovalStoreClient::new(module.clone(), Some("ai.unverified.Host"), &config).is_err());
     for deadline in [0, 30001] {
         let mut invalid = config.clone();
@@ -201,6 +232,15 @@ async fn unrelated_receipts_do_not_confirm_store_commits()
                     record_json: "{}".into()
                 },
                 mutation_id: "d".repeat(32)
+            })
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .purge_session(ApprovalPurgeSessionRequest2 {
+                scope,
+                session_id: "session-private".into(),
             })
             .await
             .is_err()
@@ -871,6 +911,19 @@ async fn clients_admit_a_runtime_subject_with_its_own_stream_and_release_it()
         &native_audit_config(base.scopes[0].subject.clone(), false),
         &redactor,
     )?;
+    assert_eq!(format!("{clients:?}"), "ApprovalClients([REDACTED])");
+    let mut invalid_audit = native_audit_config(base.scopes[0].subject.clone(), false);
+    invalid_audit.stream_id = "short".into();
+    assert!(
+        ApprovalClients::new(
+            &module,
+            Some(peer.as_str()),
+            &base,
+            &invalid_audit,
+            &redactor,
+        )
+        .is_err()
+    );
     let scope = runtime_scope(2);
     let handle = tinysecurity::approval::scope_handle(&scope.subject)?;
     // A malformed stream never admits the subject.
@@ -882,6 +935,18 @@ async fn clients_admit_a_runtime_subject_with_its_own_stream_and_release_it()
     assert!(clients.admit_scope(&scope, &"e".repeat(32)).await.is_err());
     clients.admit_scope(&scope, &"d".repeat(32)).await?;
     assert!(clients.store.scope(&handle).is_ok());
+    let purge = ApprovalPurgeSessionRequest2 {
+        scope: handle.clone(),
+        session_id: "session-private".into(),
+    };
+    assert_eq!(
+        clients.purge_session(purge).await?,
+        ApprovalPurgeSessionResponse2 {
+            scope: handle,
+            session_id: "session-private".into(),
+            removed: 1,
+        }
+    );
     {
         let held = clients.audit.read().map_err(|_| "lock")?;
         assert_eq!(held.iter().filter(|(s, _)| s == &handle).count(), 1);
