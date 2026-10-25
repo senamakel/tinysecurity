@@ -16,6 +16,7 @@ fn cron_external_denies_before_shortcuts_and_saas_has_no_implicit_permission() {
         auto_approve_all: false,
     };
     assert_eq!(evaluate(&scope, &Origin::Operator, false), Rule::Approval);
+    assert_eq!(evaluate(&scope, &Origin::Unknown, false), Rule::GrantOnly);
     for automatic in [false, true] {
         scope.auto_approve_all = automatic;
         for required in [false, true] {
@@ -25,7 +26,7 @@ fn cron_external_denies_before_shortcuts_and_saas_has_no_implicit_permission() {
             assert_eq!(evaluate(&scope, &Origin::Cron, false), Rule::Automatic);
             assert_eq!(
                 evaluate(&scope, &Origin::Operator, false),
-                if automatic || !required {
+                if !required && automatic {
                     Rule::Automatic
                 } else {
                     Rule::Approval
@@ -62,6 +63,7 @@ fn trusted_automation_and_local_operator_are_automatic_whatever_the_posture() {
                     evaluate(&scope, &Origin::Unlabelled, external),
                     Rule::GrantOnly
                 );
+                assert_eq!(evaluate(&scope, &Origin::Unknown, external), Rule::GrantOnly);
             }
         }
     }
