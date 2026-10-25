@@ -227,7 +227,7 @@ pub struct SandboxPlanRequest2 {
     /// exactly enforced constraints.
     #[serde(default)]
     pub accept_process_isolation: bool,
-    /// Additional credential files known to the trusted host. TinySecurity merges these
+    /// Additional credential files known to the trusted host. `TinySecurity` merges these
     /// with native credential roots for an allow-default folder jail and returns the
     /// canonical list in the artifact's `deny_read` field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -315,7 +315,7 @@ pub struct SandboxArtifact2 {
     /// Canonical approved roots.
     pub grants: Vec<PathGrant>,
     /// Canonical credential paths to exclude from an allow-default folder jail. Hosts
-    /// pass this list directly to TinyBox `NativeJailConfig::deny_read`.
+    /// pass this list directly to `TinyBox` `NativeJailConfig::deny_read`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deny_read: Vec<std::path::PathBuf>,
     /// Exact admitted reach.
