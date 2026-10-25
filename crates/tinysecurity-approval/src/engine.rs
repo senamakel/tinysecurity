@@ -255,6 +255,9 @@ impl ScopeEntry {
         durable_flow: bool,
         durable_tool: bool,
     ) -> Option<&'static str> {
+        if self.scope.require_approval {
+            return None;
+        }
         match rule {
             tinysecurity_auto::rules::Rule::Approval => self
                 .grant(
@@ -1675,7 +1678,7 @@ impl Engine {
         let entry = self.entry(&request.scope_id)?;
         // An unlabelled call is approved by a whole-tool grant alone; a flow grant
         // added since never keeps its approval alive.
-        let mut granted = if row.binding.origin == Origin::Unlabelled {
+        let mut granted = if matches!(row.binding.origin, Origin::Unlabelled | Origin::Unknown) {
             entry.tool_grant(&request.request.call.tool).is_some()
         } else {
             entry

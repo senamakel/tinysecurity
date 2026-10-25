@@ -63,7 +63,10 @@ fn trusted_automation_and_local_operator_are_automatic_whatever_the_posture() {
                     evaluate(&scope, &Origin::Unlabelled, external),
                     Rule::GrantOnly
                 );
-                assert_eq!(evaluate(&scope, &Origin::Unknown, external), Rule::GrantOnly);
+                assert_eq!(
+                    evaluate(&scope, &Origin::Unknown, external),
+                    Rule::GrantOnly
+                );
             }
         }
     }
