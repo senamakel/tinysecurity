@@ -99,10 +99,18 @@ Unsupported member calls return the bus's unknown-member error.
 ## Packaging and smoke checks
 
 CI builds/tests on Linux, macOS and Windows, checks the host contract dependency
-tree and enforces per-file coverage. The release workflow retains eleven
-native platform keys and produces platform archives, modules.toml and
-checksum.toml. No artifact/digest is treated as production-published merely
-because a local library builds.
+tree and enforces per-file coverage. The release workflow builds eleven native
+platforms and five distro variants, then produces platform archives,
+modules.toml and checksum.toml. Its verifier requires all sixteen archives and
+checks every manifest digest against the hosted release files.
+
+For OpenHuman migration #8369, the `senamakel/tinysecurity` epic publishes the
+additive contract 1.x line as package version 0.18.0. It does not include
+`tinyhumansai/tinysecurity#43`, whose `abandoned` outcome changes the wire
+contract to 2.0; that breaking contract change remains a separate decision.
+The release is dispatched from `epic/8369-security-migration` on the fork, and
+the release workflow only permits release jobs in the `senamakel/tinysecurity`
+repository.
 
 ```sh
 cargo run -p tinysecurity-module --example verify_module -- <native-library>
