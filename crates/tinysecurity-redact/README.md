@@ -19,8 +19,9 @@ local patterns reduce accidental disclosure and do not detect every identifier
 or establish that arbitrary text is safe for publication.
 
 Structured arguments use approval count/type markers for the host's sensitive
-content keys, including presigned URL fields; embedded string values still pass
-through secret-pattern redaction. Structured log arguments redact credential keys without hiding ordinary
+content keys (58 entries in the current OpenHuman approval table), including
+presigned URL fields; embedded string values still pass through secret-pattern
+redaction. Structured log arguments redact credential keys without hiding ordinary
 content. Credential keys compare after lowercasing and dropping `-` and `_`
 (`X-Api-Key`, `api_key` and `apiKey` are one key) and by exact name only, so
 `cancellation_token` stays ordinary content. Both scan unknown fields, keys and embedded JSON. Key collisions retain
