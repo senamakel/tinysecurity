@@ -575,13 +575,10 @@ async fn provider_endpoint_classification_is_locality_only_not_lan_reachability(
         assert_eq!(response.locality, expected, "{host}");
         let mut privacy_request =
             privacy(PrivacyMode::LocalOnly, PrivacyDataClass2::UserContent, None);
-        privacy_request.external = expected == tinysecurity_bus::ProviderEndpointLocality2::External;
-        let privacy_response: PrivacyCheckResponse2 = call(
-            &service,
-            names::methods::PRIVACY_CHECK2,
-            privacy_request,
-        )
-        .await?;
+        privacy_request.external =
+            expected == tinysecurity_bus::ProviderEndpointLocality2::External;
+        let privacy_response: PrivacyCheckResponse2 =
+            call(&service, names::methods::PRIVACY_CHECK2, privacy_request).await?;
         let expected_verdict = if expected == tinysecurity_bus::ProviderEndpointLocality2::OnDevice
         {
             Verdict::Allow
@@ -590,7 +587,10 @@ async fn provider_endpoint_classification_is_locality_only_not_lan_reachability(
                 reason: DenialReason::Privacy,
             }
         };
-        assert_eq!(privacy_response.decision.verdict, expected_verdict, "{host}");
+        assert_eq!(
+            privacy_response.decision.verdict, expected_verdict,
+            "{host}"
+        );
     }
     assert!(
         call::<_, tinysecurity_bus::ProviderEndpointResponse2>(
