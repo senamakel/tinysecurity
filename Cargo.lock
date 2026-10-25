@@ -1813,6 +1813,7 @@ dependencies = [
  "tinysecurity-bus",
  "tinysecurity-redact",
  "unicode-normalization",
+ "url",
 ]
 
 [[package]]
