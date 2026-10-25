@@ -26,7 +26,7 @@ fn cron_external_denies_before_shortcuts_and_saas_has_no_implicit_permission() {
             assert_eq!(evaluate(&scope, &Origin::Cron, false), Rule::Automatic);
             assert_eq!(
                 evaluate(&scope, &Origin::Operator, false),
-                if !required && automatic {
+                if automatic || !required {
                     Rule::Automatic
                 } else {
                     Rule::Approval
