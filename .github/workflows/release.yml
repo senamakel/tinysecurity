@@ -60,6 +60,9 @@ jobs:
       - name: Fetch the complete locked dependency graph
         run: cargo fetch --locked
 
+      - name: Test release asset verifier
+        run: python3 .github/scripts/verify_release_assets_tests.py
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
