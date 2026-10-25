@@ -878,17 +878,7 @@ impl DevicePairingOwner {
             .get(&identity_id)
             .ok_or(Error::DeviceDenied)?;
         let (client_handshake_ephemeral, plaintext) = identity.key.open_handshake(frame)?;
-        let payload: HandshakePayload = serde_json::from_slice(&plaintext).or_else(|_| {
-            // Older clients send the device static key as the entire plaintext.
-            // The sealed frame already carries the client ephemeral key.
-            let device_pubkey = std::str::from_utf8(&plaintext)
-                .map_err(|_| serde_json::Error::io(std::io::Error::other("invalid handshake")))?
-                .trim();
-            Ok(HandshakePayload {
-                device_pubkey: device_pubkey.to_owned(),
-                client_ephemeral_pubkey: client_handshake_ephemeral.encode(),
-            })
-        }).map_err(|_| Error::DeviceDenied)?;
+        let payload = parse_handshake_payload(&plaintext, &client_handshake_ephemeral)?;
         let peer_static = PublicKey::decode(&payload.device_pubkey)?;
         let client_session_ephemeral = PublicKey::decode(&payload.client_ephemeral_pubkey)?;
         if pending
@@ -1636,6 +1626,22 @@ fn random_id() -> Result<String> {
 struct HandshakePayload {
     device_pubkey: String,
     client_ephemeral_pubkey: String,
+}
+
+fn parse_handshake_payload(bytes: &[u8], frame_ephemeral: &PublicKey) -> Result<HandshakePayload> {
+    if let Ok(payload) = serde_json::from_slice(bytes) {
+        return Ok(payload);
+    }
+    // Older clients send the device static key as the entire plaintext. The
+    // sealed frame already carries the client ephemeral key in this format.
+    let device_pubkey = std::str::from_utf8(bytes)
+        .map_err(|_| Error::DeviceDenied)?
+        .trim();
+    PublicKey::decode(device_pubkey)?;
+    Ok(HandshakePayload {
+        device_pubkey: device_pubkey.to_owned(),
+        client_ephemeral_pubkey: frame_ephemeral.encode(),
+    })
 }
 
 #[cfg(test)]
