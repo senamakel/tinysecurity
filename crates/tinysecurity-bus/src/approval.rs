@@ -304,7 +304,6 @@ redacted_debug!(
     RecordExecutionRequest2,
     RecordAuditErrorRequest2,
     ApprovalRecordRequest2,
-    PurgeApprovalSessionRequest2,
     PreauthorizeFlowRequest2
 );
 
