@@ -1,6 +1,6 @@
 //! Same-machine local provider endpoint classification for LocalOnly privacy mode.
 use std::net::{Ipv4Addr, Ipv6Addr};
-use tinysecurity_bus::{ProviderEndpointLocality2, ProviderEndpointRequest2};
+use tinysecurity_bus::ProviderEndpointLocality2;
 use url::Host;
 
 /// Classify a host literal for a local provider endpoint without performing DNS.

@@ -40,7 +40,7 @@ fn provider_endpoint_locality_has_stable_wire_names_and_method() {
         "ClassifyProviderEndpoint2"
     );
     assert!(crate::names::METHODS.contains(&crate::names::methods::CLASSIFY_PROVIDER_ENDPOINT2));
-    assert_eq!(CONTRACT_VERSION, (1, 32));
+    assert_eq!(crate::CONTRACT_VERSION, (1, 32));
     assert!(crate::is_compatible((1, 32)));
     assert!(!crate::is_compatible((1, 31)));
 }
