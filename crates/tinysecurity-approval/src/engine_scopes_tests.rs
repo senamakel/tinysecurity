@@ -830,10 +830,10 @@ async fn grant_revoked_while_the_ports_await_never_publishes_an_approval() -> Re
     owner.replace_scope(register(7)).await?;
     fixture.release_load.notify_one();
     assert_eq!(
-        racing.await.map_err(|_| Error::Unavailable)?.err(),
-        Some(Error::Denied)
+        racing.await.map_err(|_| Error::Unavailable)??.state,
+        ApprovalLifecycle2::Pending
     );
-    // Asking again under the replaced scope needs a human.
+    // The configured allowlist never bypasses the human decision.
     let again = owner
         .begin(begin_for(7, "shell", None, Origin::Operator))
         .await?;
@@ -955,13 +955,18 @@ async fn policy_replaced_while_consume_awaits_never_reserves_the_old_approval() 
 async fn scope_replacement_waits_for_a_trusted_reservation_to_commit() -> Result<()> {
     let (fixture, owner) = owner()?;
     let owner = Arc::new(owner);
-    let mut req = register(7);
-    req.scope.auto_approve_all = true;
-    owner.register_scope(req).await?;
+    owner.register_scope(register(7)).await?;
+    owner
+        .grant_tool(GrantToolRequest2 {
+            scope_id: id(7),
+            tool: "shell".into(),
+            audit: audit(1),
+        })
+        .await?;
     let call = begin_for(7, "shell", None, Origin::Operator);
     let row = owner.begin(call.clone()).await?;
     assert_eq!(row.state, ApprovalLifecycle2::Approved);
-    // The automatic posture disappears after checks but before the write commits.
+    // The trusted grant disappears after checks but before the write commits.
     let before = fixture.cas_calls.load(Ordering::SeqCst);
     fixture
         .barrier
@@ -1052,7 +1057,7 @@ async fn grant_revoked_while_the_approval_is_published_is_not_returned() -> Resu
                 .await
         }
     });
-    // The new row's write is parked: the grant is revoked after the early checks.
+    // The new row's write is parked while the configured allowlist is replaced.
     while fixture.cas_calls.load(Ordering::SeqCst) == before {
         tokio::task::yield_now().await;
     }
@@ -1065,8 +1070,8 @@ async fn grant_revoked_while_the_approval_is_published_is_not_returned() -> Resu
         .ok_or(Error::Unavailable)?;
     barrier.wait().await;
     assert_eq!(
-        racing.await.map_err(|_| Error::Unavailable)?.err(),
-        Some(Error::Denied)
+        racing.await.map_err(|_| Error::Unavailable)??.state,
+        ApprovalLifecycle2::Pending
     );
     Ok(())
 }
