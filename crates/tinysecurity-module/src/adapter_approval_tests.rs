@@ -134,25 +134,37 @@ async fn recent_decisions_session_purge_and_audit_error_use_the_approval_engine(
     let module_peer = module.unique_name().ok_or("module peer")?;
     let proxy = host.proxy(module_peer.as_str(), names::OBJECT_PATH, names::INTERFACE)?;
 
-    let pending: EvaluateApprovalResponse2 = proxy
+    let approved: EvaluateApprovalResponse2 = proxy
         .call(names::methods::EVALUATE_APPROVAL2, (begin(1, 1),))
+        .await?;
+    let reserved: ApprovalRow2 = proxy
+        .call(
+            names::methods::CONSUME_APPROVAL2,
+            (action(&approved.record, 1, 3),),
+        )
+        .await?;
+    let terminal: ApprovalRow2 = proxy
+        .call(
+            names::methods::RECORD_EXECUTION2,
+            (RecordExecutionRequest2 {
+                action: action(&reserved, 1, 4),
+                outcome: ExecutionOutcome::Succeeded,
+            },),
+        )
         .await?;
     let saved_error: ApprovalRow2 = proxy
         .call(
             names::methods::RECORD_AUDIT_ERROR2,
             (RecordAuditErrorRequest2 {
                 scope_id: "a".repeat(32),
-                request_id: pending.record.request_id.clone(),
+                request_id: terminal.request_id.clone(),
                 audit_error: "sink unavailable".into(),
-                audit: audit(2),
+                audit: audit(5),
             },),
         )
         .await?;
     assert_eq!(saved_error.audit_error.as_deref(), Some("sink unavailable"));
 
-    let approved: EvaluateApprovalResponse2 = proxy
-        .call(names::methods::EVALUATE_APPROVAL2, (begin(2, 3),))
-        .await?;
     let recent: Vec<ApprovalRow2> = proxy
         .call(
             names::methods::LIST_RECENT_DECISIONS2,
