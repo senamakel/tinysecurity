@@ -295,12 +295,21 @@ async fn session_purge_matches_one_redacted_id_across_scopes_and_keeps_decisions
 
 #[tokio::test]
 async fn audit_error_is_redacted_before_persistence_and_capped_after_redaction() -> Result<()> {
-    let (fixture, owner) = owner()?;
+    let fixture = Arc::new(Fixture::default());
+    let redactor_secret = "private-audit-secret";
+    let mut redactor_config = RedactorConfig::default();
+    redactor_config.secrets.push(Secret(redactor_secret.into()));
+    let owner = Engine::new(
+        config(),
+        fixture.clone(),
+        Arc::new(TestClock::default()),
+        Redactor::new(&redactor_config).map_err(|_| Error::Invalid)?,
+    )?;
     owner.register_scope(register(7)).await?;
     let mut request = shell(7, None, Origin::Operator, "audit-error");
     request.audit = at(1);
     let row = owner.begin(request).await?;
-    let raw = format!("sink rejected Bearer {}", "x".repeat(700));
+    let raw = format!("sink rejected {redactor_secret} {}", "x".repeat(700));
 
     let recorded = owner
         .record_audit_error(tinysecurity_bus::RecordAuditErrorRequest2 {
@@ -313,6 +322,7 @@ async fn audit_error_is_redacted_before_persistence_and_capped_after_redaction()
 
     let value = recorded.audit_error.as_deref().ok_or(Error::Invalid)?;
     assert!(value.chars().count() <= 512);
+    assert!(!value.contains(redactor_secret));
     assert!(!value.contains(&"x".repeat(700)));
     assert_eq!(recorded.state, ApprovalLifecycle2::Pending);
     assert!(
@@ -1038,8 +1048,8 @@ async fn require_approval_overrides_whole_tool_allowlist() -> Result<()> {
     let (_, owner) = owner()?;
     let mut scope = register(7);
     scope.scope.require_approval = true;
+    scope.grants = grants(&["shell"], &[]);
     owner.register_scope(scope).await?;
-    owner.grant_tool(tool_grant(7, "shell", 1)).await?;
 
     let mut request = shell(7, None, Origin::Operator, "required-call");
     request.audit = at(2);

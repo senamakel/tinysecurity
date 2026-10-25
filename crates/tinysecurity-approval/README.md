@@ -66,6 +66,21 @@ parked request reaches its deadline, the host should call `ExpireApproval2` so
 the row records `expired`; `CancelApproval2` is reserved for explicit host
 cancellation.
 
+Rows carry optional `session_id`, copied from the already identifier-redacted
+caller thread and checked against that binding when loaded. `ListRecentDecisions2`
+reads terminal/approved decisions across currently registered scopes and omits
+pending rows. `PurgeSession` receives that same hashed session identifier once
+per registered scope; the host store removes only pending rows for the exact
+scope/session pair and preserves decision history. The engine verifies each
+scope/session echo and caps each callback's removal count.
+
+After an audit sink failure, the host may call `RecordAuditError2` with the raw
+failure detail and a new audit correlation. The engine applies the configured
+`RedactMode::Text` redactor, then caps the sanitized text to 512 characters,
+and CAS-persists only `ApprovalRow2.audit_error`. This metadata update never
+changes approval state or grants authority. The host must store/use the
+returned sanitized row value and must never persist the raw callback argument.
+
 ## Authority and lifecycle
 
 Version-one bindings use domain-separated SHA-256 of bounded original parsed

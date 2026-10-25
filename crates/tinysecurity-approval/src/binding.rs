@@ -252,6 +252,10 @@ pub(crate) fn parse(record: &ApprovalRecord2, scope: &SubjectScope) -> Result<Ap
             .session_id
             .as_ref()
             .is_some_and(|session| session.is_empty() || session.len() > 1024)
+        || row
+            .audit_error
+            .as_ref()
+            .is_some_and(|error| error.chars().count() > 512)
         || !hex(&row.request_id, 32)
         || !hex(&row.host_instance, 32)
         || !hex(&row.nonce, 32)

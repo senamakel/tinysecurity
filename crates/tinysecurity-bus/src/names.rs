@@ -39,6 +39,12 @@ pub mod methods {
     pub const RECORD_EXECUTION2: &str = "RecordExecution2";
     /// Scoped sanitized durable rows.
     pub const LIST_APPROVALS2: &str = "ListApprovals2";
+    /// Bounded recent decisions across active approval scopes (contract 1.30).
+    pub const LIST_RECENT_DECISIONS2: &str = "ListRecentDecisions2";
+    /// Purge undecided rows for one session across active approval scopes (contract 1.30).
+    pub const PURGE_APPROVAL_SESSION2: &str = "PurgeApprovalSession2";
+    /// Persist redacted metadata after an audit sink failure (contract 1.30).
+    pub const RECORD_AUDIT_ERROR2: &str = "RecordAuditError2";
     /// Captured-scope cancellation phase.
     pub const CANCEL_APPROVAL2: &str = "CancelApproval2";
     /// Durable exact-boundary expiry phase.

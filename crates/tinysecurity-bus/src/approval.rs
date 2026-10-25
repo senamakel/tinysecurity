@@ -259,6 +259,25 @@ pub struct ApprovalRecordRequest2 {
     /// Audit correlation for lifecycle changes.
     pub audit: AuditCorrelation2,
 }
+/// Bounded cross-scope recent-decision read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecentApprovalDecisionsRequest2 {
+    /// Maximum number of rows, clamped by the engine to 1..=500.
+    pub limit: usize,
+}
+/// Cross-scope request to remove undecided rows for one session.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PurgeApprovalSessionRequest2 {
+    /// Raw host session identity, redacted once by the engine before store calls.
+    pub session_id: String,
+}
+impl std::fmt::Debug for PurgeApprovalSessionRequest2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PurgeApprovalSessionRequest2([REDACTED])")
+    }
+}
 /// Bounded flow review referencing already human-reviewed exact rows.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -285,6 +304,7 @@ redacted_debug!(
     RecordExecutionRequest2,
     RecordAuditErrorRequest2,
     ApprovalRecordRequest2,
+    PurgeApprovalSessionRequest2,
     PreauthorizeFlowRequest2
 );
 
