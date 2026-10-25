@@ -1312,6 +1312,9 @@ impl DevicePairingOwner {
                 && c.connection_nonce.is_empty())
             || (source == DevicePairingSource2::RegisteredSocket
                 && !c.pairing_token.as_deref().is_some_and(valid_pairing_token))
+            || c.pairing_token
+                .as_deref()
+                .is_some_and(|token| !valid_pairing_token(token))
             || c.expires_at_ms <= self.last.wall
             || !self.scope_identities.contains_key(&c.scope_id)
         {
@@ -1329,7 +1332,15 @@ impl DevicePairingOwner {
             || context.scope_id.is_empty()
             || context.user_binding.is_empty()
             || (!context.channel_id.is_empty() && !valid_channel(&context.channel_id))
-            || context.pairing_token.is_some()
+            || (!context.channel_id.is_empty()
+                && !context
+                    .pairing_token
+                    .as_deref()
+                    .is_some_and(valid_pairing_token))
+            || context
+                .pairing_token
+                .as_deref()
+                .is_some_and(|token| !valid_pairing_token(token))
             || context.expires_at_ms <= now.wall
             || !self.scope_identities.contains_key(&context.scope_id)
         {
