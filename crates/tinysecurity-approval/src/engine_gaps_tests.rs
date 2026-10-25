@@ -220,13 +220,13 @@ async fn recent_decisions_include_all_registered_scopes_and_skip_pending_rows() 
     owner.register_scope(register(8)).await?;
     let mut first = shell(7, None, Origin::TrustedAutomation, "decision-1");
     first.audit = at(1);
-    owner.begin(first).await?;
+    let first_row = owner.begin(first).await?;
     let mut pending = shell(7, None, Origin::Operator, "pending");
     pending.audit = at(2);
-    owner.begin(pending).await?;
+    let pending_row = owner.begin(pending).await?;
     let mut second = shell(8, None, Origin::TrustedAutomation, "decision-2");
     second.audit = at(3);
-    owner.begin(second).await?;
+    let second_row = owner.begin(second).await?;
 
     let rows = owner.list_recent_decisions(10).await?;
     assert_eq!(rows.len(), 2);
@@ -234,7 +234,9 @@ async fn recent_decisions_include_all_registered_scopes_and_skip_pending_rows() 
         rows.iter()
             .all(|row| row.state == ApprovalLifecycle2::Approved)
     );
-    assert_eq!(rows[0].binding.caller.agent, "agent-8");
+    assert!(rows.iter().any(|row| row.request_id == first_row.request_id));
+    assert!(rows.iter().any(|row| row.request_id == second_row.request_id));
+    assert!(!rows.iter().any(|row| row.request_id == pending_row.request_id));
     Ok(())
 }
 

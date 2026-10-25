@@ -542,6 +542,7 @@ impl Engine {
             host_instance: self.instance.clone(),
             nonce: binding::opaque()?,
             tool_name: self.begin_tool_label(&request.request.call.tool, deadline.is_some())?,
+            session_id: bound.caller.thread.clone(),
             external_effect,
             args_redacted,
             summary: binding::text(&self.redactor()?, &request.summary, RedactMode::Text)?,

@@ -123,6 +123,9 @@ pub struct ApprovalRow2 {
     pub nonce: String,
     /// Sanitized tool name.
     pub tool_name: String,
+    /// Session correlation copied from the trusted caller context, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     /// Concrete effect class derived from actual checks.
     pub external_effect: bool,
     /// Redacted canonical original argument JSON.
