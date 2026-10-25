@@ -220,7 +220,7 @@ async fn unrelated_receipts_do_not_confirm_store_commits()
     assert!(
         client
             .cas(ApprovalCasRequest2 {
-                scope,
+                scope: scope.clone(),
                 record_id: "b".repeat(32),
                 expected_version: None,
                 next_record: ApprovalRecord2 {
@@ -942,7 +942,7 @@ async fn clients_admit_a_runtime_subject_with_its_own_stream_and_release_it()
     assert_eq!(
         clients.purge_session(purge).await?,
         ApprovalPurgeSessionResponse2 {
-            scope: handle,
+            scope: handle.clone(),
             session_id: "session-private".into(),
             removed: 1,
         }
