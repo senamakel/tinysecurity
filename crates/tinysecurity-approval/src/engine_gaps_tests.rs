@@ -910,6 +910,23 @@ async fn whole_tool_trust_keeps_cron_unlabelled_and_human_only_boundaries() -> R
 }
 
 #[tokio::test]
+async fn require_approval_overrides_whole_tool_allowlist() -> Result<()> {
+    let (_, owner) = owner()?;
+    let mut scope = register(7);
+    scope.scope.require_approval = true;
+    owner.register_scope(scope).await?;
+    owner.grant_tool(tool_grant(7, "shell", 1)).await?;
+
+    let mut request = shell(7, None, Origin::Operator, "required-call");
+    request.audit = at(2);
+    let row = owner.begin(request).await?;
+
+    assert_eq!(row.state, ApprovalLifecycle2::Pending);
+    assert_eq!(row.attribution, None);
+    Ok(())
+}
+
+#[tokio::test]
 async fn whole_tool_grant_fails_closed_when_the_store_cannot_persist() -> Result<()> {
     let (fixture, owner) = owner()?;
     owner.register_scope(register(7)).await?;
