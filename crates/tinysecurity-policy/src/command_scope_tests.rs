@@ -139,9 +139,13 @@ fn command_vocabulary_matches_host_policy_regressions()
     ] {
         assert_eq!(p.classify_command(command)?, expected, "{command}");
     }
+    #[cfg(windows)]
+    let protected_file_url = "file:///C:/Users/test/.ssh/id_ed25519";
+    #[cfg(not(windows))]
+    let protected_file_url = "file:///home/test/.ssh/id_ed25519";
     let file_url = p.0.classify(&CommandRequest {
         policy_id: CommandPolicyId(String::new()),
-        command: "cat file:///home/test/.ssh/id_ed25519".into(),
+        command: format!("cat {protected_file_url}"),
         declared_class: None,
     })?;
     assert_eq!(file_url.gate, CommandGate::Block);
