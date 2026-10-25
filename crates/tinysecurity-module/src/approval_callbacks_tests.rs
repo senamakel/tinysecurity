@@ -486,6 +486,8 @@ fn audit_row(scope: SubjectScope) -> ApprovalRow2 {
         host_instance: "f".repeat(32),
         nonce: "1".repeat(32),
         tool_name: "native_secret_grant".into(),
+        session_id: None,
+        audit_error: None,
         external_effect: true,
         args_redacted: "{}".into(),
         summary: "native grant".into(),
