@@ -67,7 +67,10 @@ fn card_numbers_need_issuer_or_nearby_context() -> Result<()> {
         .find(|value| Validator::Card.valid(value))
         .ok_or(Error::Faulted)?;
     assert_eq!(patterns.text(&candidate)?, candidate);
-    assert_eq!(patterns.text(&format!("card number {candidate}"))?, format!("card number {MARKER}"));
+    assert_eq!(
+        patterns.text(&format!("card number {candidate}"))?,
+        format!("card number {MARKER}")
+    );
     Ok(())
 }
 #[test]

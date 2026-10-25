@@ -232,8 +232,7 @@ impl Redactor {
                 let mut counters = std::collections::BTreeMap::new();
                 for (key, value) in map {
                     let sensitive = credential_key(key)
-                        || (*mode == RedactMode::StructuredArguments
-                            && content_key(key));
+                        || (*mode == RedactMode::StructuredArguments && content_key(key));
                     let value = if sensitive {
                         if *mode == RedactMode::StructuredArguments {
                             let counted = count_marker(value);

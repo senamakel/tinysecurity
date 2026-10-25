@@ -56,8 +56,12 @@ impl SanitizationReport {
     /// Whether sanitation changed at least one value or key.
     #[must_use]
     pub fn changed(&self) -> bool {
-        self.text_redactions + self.key_redactions + self.blocked_secret_hits
-            + self.depth_redactions + self.pii_redactions > 0
+        self.text_redactions
+            + self.key_redactions
+            + self.blocked_secret_hits
+            + self.depth_redactions
+            + self.pii_redactions
+            > 0
     }
 }
 /// Immutable shared matching registry; Debug intentionally exposes no patterns or secrets.
@@ -152,7 +156,10 @@ impl Redactor {
                     if crate::structured::sensitive_json_key(key) {
                         report.key_redactions += 1;
                     } else {
-                        clean.insert(key.clone(), self.sanitize_json_node(value, depth + 1, report)?);
+                        clean.insert(
+                            key.clone(),
+                            self.sanitize_json_node(value, depth + 1, report)?,
+                        );
                     }
                 }
                 Ok(serde_json::Value::Object(clean))

@@ -38,7 +38,7 @@ fn a_call_literal_is_removed_in_url_encoded_and_base64_forms() -> Result<()> {
     let base64 = "Q29tcG9zaW8tS2V5XzEyMw==";
     let url_base64 = "Q29tcG9zaW8tS2V5XzEyMw";
     let output = cache.redact(
-        &base(&[])? ,
+        &base(&[])?,
         &request(
             &format!("url={encoded} basic={base64} urlsafe={url_base64}"),
             RedactMode::Text,

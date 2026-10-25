@@ -24,7 +24,11 @@ enum Validator {
 }
 impl Patterns {
     pub(crate) fn new(config: &RedactorConfig) -> Result<Self> {
-        let raw: Vec<_> = config.secrets.iter().map(|secret| secret.0.as_str()).collect();
+        let raw: Vec<_> = config
+            .secrets
+            .iter()
+            .map(|secret| secret.0.as_str())
+            .collect();
         if raw.len() > 128
             || raw.iter().map(|s| s.len()).sum::<usize>() > 16_384
             || raw.iter().any(|s| {
@@ -456,9 +460,17 @@ fn validator_valid(validator: Validator, text: &str, context: &str) -> bool {
         return true;
     }
     let lowered = context.to_ascii_lowercase();
-    ["card", "credit", "debit", "visa", "mastercard", "amex", "discover"]
-        .iter()
-        .any(|keyword| lowered.contains(keyword))
+    [
+        "card",
+        "credit",
+        "debit",
+        "visa",
+        "mastercard",
+        "amex",
+        "discover",
+    ]
+    .iter()
+    .any(|keyword| lowered.contains(keyword))
         && luhn_checksum(text)
 }
 fn luhn_checksum(text: &str) -> bool {
@@ -489,8 +501,7 @@ fn card_issuer_and_length(text: &str) -> bool {
         || (2221..=2720).any(|prefix| digits.starts_with(&prefix.to_string())))
         && len == 16;
     let amex = (starts("34") || starts("37")) && len == 15;
-    let discover = (starts("6011") || starts("65") || starts("644") || starts("645"))
-        && len == 16;
+    let discover = (starts("6011") || starts("65") || starts("644") || starts("645")) && len == 16;
     visa || mastercard || amex || discover
 }
 #[cfg(test)]
