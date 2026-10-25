@@ -351,7 +351,7 @@ fn a_request_without_new_folder_fields_keeps_the_1_30_wire_shape()
     assert!(serde_json::from_value::<SandboxPlanRequest2>(with_unknown).is_err());
     let back: SandboxPlanRequest2 = serde_json::from_value(value).required()?;
     assert!(back.options.is_default());
-    assert_eq!(back.credential_denials, []);
+    assert_eq!(back.credential_denials, Vec::<std::path::PathBuf>::new());
 
     let mut with_credentials = serde_json::to_value(&back).required()?;
     with_credentials["credential_denials"] = serde_json::json!(["/home/user/.app/credentials"]);
