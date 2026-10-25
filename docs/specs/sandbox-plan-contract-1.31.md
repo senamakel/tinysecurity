@@ -20,6 +20,12 @@ confinement. The resulting artifact continues to state
 sources and mandatory-isolation deployments still require an eligible kernel
 or microVM executor.
 
+OpenHuman's `SandboxMode::ReadOnly` is a host-side tool filter that removes
+write and execute tools. It maps to no sandbox backend, with network allowed;
+it does not create a filesystem-confinement claim or a `Plan2` artifact. The
+host must preserve that tool filter independently of TinySecurity's sandbox
+planner.
+
 The artifact's `grants` are canonical, floor-checked, pre-admitted roots. Hosts
 may use these roots directly at execution and must still revalidate TinyBox's
 live capability and enforcement before launch.

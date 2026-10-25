@@ -284,7 +284,8 @@ impl SandboxPlanOptions2 {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SandboxArtifact2 {
-    /// Minimum verified isolation required at actual launch.
+    /// Minimum verified isolation required at launch. `Process` can represent trusted
+    /// folder confinement such as Seatbelt; it never represents a kernel-isolation floor.
     pub minimum_isolation: IsolationLevel2,
     /// Opaque module-issued identity; a public fingerprint never supplies permission.
     pub plan_id: String,
