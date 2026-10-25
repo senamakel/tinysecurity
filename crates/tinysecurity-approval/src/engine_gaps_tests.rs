@@ -273,6 +273,7 @@ async fn session_purge_matches_one_redacted_id_across_scopes_and_keeps_decisions
     let decided = owner.begin(decided).await?;
 
     assert_eq!(owner.purge_session("session-A").await?, 2);
+    assert_eq!(owner.purge_session("").await.err(), Some(Error::Invalid));
     let first_scope = owner.list(&id(7)).await?;
     let second_scope = owner.list(&id(8)).await?;
     assert!(
@@ -332,6 +333,71 @@ async fn audit_error_is_redacted_before_persistence_and_capped_after_redaction()
             .map_err(|_| Error::Unavailable)?
             .contains_key(&row.request_id)
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn audit_error_short_value_is_idempotent_and_conflicting_updates_are_rejected() -> Result<()> {
+    let (_, owner) = owner()?;
+    owner.register_scope(register(7)).await?;
+    let mut request = shell(7, None, Origin::Operator, "audit-error-short");
+    request.audit = at(1);
+    let row = owner.begin(request).await?;
+    let input = tinysecurity_bus::RecordAuditErrorRequest2 {
+        scope_id: id(7),
+        request_id: row.request_id.clone(),
+        audit_error: "sink unavailable".into(),
+        audit: at(2),
+    };
+    let recorded = owner.record_audit_error(input.clone()).await?;
+    assert_eq!(recorded.audit_error.as_deref(), Some("sink unavailable"));
+    assert_eq!(owner.record_audit_error(input).await?, recorded);
+    assert_eq!(
+        owner
+            .record_audit_error(tinysecurity_bus::RecordAuditErrorRequest2 {
+                scope_id: id(7),
+                request_id: row.request_id,
+                audit_error: "different failure".into(),
+                audit: at(3),
+            })
+            .await
+            .err(),
+        Some(Error::Conflict)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn audit_error_rejects_empty_diagnostic_before_loading_a_row() -> Result<()> {
+    let (_, owner) = owner()?;
+    let result = owner
+        .record_audit_error(tinysecurity_bus::RecordAuditErrorRequest2 {
+            scope_id: id(7),
+            request_id: "missing".into(),
+            audit_error: String::new(),
+            audit: at(1),
+        })
+        .await;
+    assert_eq!(result.err(), Some(Error::Invalid));
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_session_purge_port_fails_closed() -> Result<()> {
+    let fixture = Fixture::default();
+    let result = Ports::purge_session(
+        &fixture,
+        tinysecurity_bus::ApprovalPurgeSessionRequest2 {
+            scope: tinysecurity_bus::SubjectScope {
+                user: "user".into(),
+                workspace: "workspace".into(),
+                agent: "agent".into(),
+            },
+            session_id: "redacted-session".into(),
+        },
+    )
+    .await;
+    assert_eq!(result.err(), Some(Error::Denied));
     Ok(())
 }
 
