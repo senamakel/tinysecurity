@@ -9,8 +9,8 @@ use tinybus::{BusName, CallContext, Connection, Interface, InterfaceName, Member
 use tinysecurity_bus::{
     ApprovalCasRequest2, ApprovalChoice2, ApprovalDeliveryRequest2, ApprovalDeliveryResponse2,
     ApprovalLifecycle2, ApprovalLoadRequest2, ApprovalPurgeSessionRequest2,
-    ApprovalPurgeSessionResponse2, ApprovalRow2, DecideRequest2, SubjectScope,
-    VerifyHumanRequest2, callback_names2, names,
+    ApprovalPurgeSessionResponse2, ApprovalRow2, DecideRequest2, SubjectScope, VerifyHumanRequest2,
+    callback_names2, names,
 };
 #[derive(Clone)]
 pub(crate) struct Callback {

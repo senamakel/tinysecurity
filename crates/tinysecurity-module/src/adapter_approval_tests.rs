@@ -171,7 +171,11 @@ async fn recent_decisions_session_purge_and_audit_error_use_the_approval_engine(
             (RecentApprovalDecisionsRequest2 { limit: 10 },),
         )
         .await?;
-    assert!(recent.iter().any(|row| row.request_id == approved.record.request_id));
+    assert!(
+        recent
+            .iter()
+            .any(|row| row.request_id == approved.record.request_id)
+    );
 
     let removed: usize = proxy
         .call(

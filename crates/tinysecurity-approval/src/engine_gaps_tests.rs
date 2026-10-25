@@ -337,7 +337,8 @@ async fn audit_error_is_redacted_before_persistence_and_capped_after_redaction()
 }
 
 #[tokio::test]
-async fn audit_error_short_value_is_idempotent_and_conflicting_updates_are_rejected() -> Result<()> {
+async fn audit_error_short_value_is_idempotent_and_conflicting_updates_are_rejected() -> Result<()>
+{
     let (_, owner) = owner()?;
     owner.register_scope(register(7)).await?;
     let mut request = shell(7, None, Origin::Operator, "audit-error-short");
