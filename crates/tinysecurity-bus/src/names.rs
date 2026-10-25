@@ -105,6 +105,8 @@ pub mod methods {
     pub const CLASSIFY_HOST_ACTION2: &str = "ClassifyHostAction2";
     /// Descriptor-level privacy decision for a transfer with no pinned destination (contract 1.22).
     pub const PRIVACY_CHECK2: &str = "PrivacyCheck2";
+    /// Classify a configured provider host as same-machine or external (contract 1.32).
+    pub const CLASSIFY_PROVIDER_ENDPOINT2: &str = "ClassifyProviderEndpoint2";
     /// Register an immutable per-subject policy over path and command scopes.
     pub const REGISTER_POLICY: &str = "RegisterPolicy";
     /// Atomically replace an active policy, with human review when it widens.
@@ -221,6 +223,7 @@ pub const METHODS: &[&str] = &[
     methods::PEEK_BUDGET2,
     methods::CLASSIFY_HOST_ACTION2,
     methods::PRIVACY_CHECK2,
+    methods::CLASSIFY_PROVIDER_ENDPOINT2,
     methods::REGISTER_COMMAND_POLICY,
     methods::CLASSIFY_COMMAND,
     methods::CHECK_COMMAND,
