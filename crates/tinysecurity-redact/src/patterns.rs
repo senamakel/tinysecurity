@@ -236,7 +236,7 @@ fn encoded_forms(secret: &str) -> Vec<String> {
     let mut percent = String::with_capacity(secret.len() * 3);
     let mut form = String::with_capacity(secret.len() * 3);
     for byte in secret.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+        if byte.is_ascii_alphanumeric() {
             percent.push(char::from(byte));
             form.push(char::from(byte));
         } else {
@@ -251,7 +251,8 @@ fn encoded_forms(secret: &str) -> Vec<String> {
     }
     vec![
         secret.into(),
-        percent,
+        percent.clone(),
+        percent.to_ascii_lowercase(),
         form,
         STANDARD.encode(secret),
         STANDARD_NO_PAD.encode(secret),
@@ -406,6 +407,7 @@ impl Validator {
                     .map(|b| b - b'0')
                     .collect();
                 (13..=19).contains(&digits.len())
+                    && matches!(digits.first(), Some(3..=7))
                     && digits
                         .iter()
                         .rev()
@@ -444,7 +446,26 @@ fn validator_valid(validator: Validator, text: &str, context: &str) -> bool {
     ["card", "credit", "debit", "visa", "mastercard", "amex", "discover"]
         .iter()
         .any(|keyword| lowered.contains(keyword))
-        && validator.valid(text)
+        && luhn_checksum(text)
+}
+fn luhn_checksum(text: &str) -> bool {
+    let digits: Vec<_> = text
+        .bytes()
+        .filter(u8::is_ascii_digit)
+        .map(|b| b - b'0')
+        .collect();
+    (13..=19).contains(&digits.len())
+        && digits
+            .iter()
+            .rev()
+            .enumerate()
+            .map(|(i, &d)| {
+                let n = u32::from(d) * if i % 2 == 1 { 2 } else { 1 };
+                if n > 9 { n - 9 } else { n }
+            })
+            .sum::<u32>()
+            % 10
+            == 0
 }
 fn card_issuer_and_length(text: &str) -> bool {
     let digits: String = text.chars().filter(char::is_ascii_digit).collect();

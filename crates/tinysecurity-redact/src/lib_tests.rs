@@ -65,12 +65,12 @@ fn debug_and_bounds_are_content_free() -> Result<()> {
 fn json_sanitization_drops_sensitive_keys_and_reports_changes() -> Result<()> {
     let registry = Redactor::new(&RedactorConfig::default())?;
     let input = serde_json::json!({
-        "title": "safe title",
+        "label": "safe title",
         "api_key": "secret-value",
         "nested": {"password": "private", "count": 4},
     });
     let sanitized = registry.sanitize_json(&input)?;
-    assert_eq!(sanitized.value, serde_json::json!({"title":"safe title","nested":{"count":4}}));
+    assert_eq!(sanitized.value, serde_json::json!({"label":"safe title","nested":{"count":4}}));
     assert_eq!(sanitized.report.key_redactions, 2);
     assert!(sanitized.report.changed());
     let unchanged = registry.sanitize_json(&serde_json::json!({"count": 4}))?;
