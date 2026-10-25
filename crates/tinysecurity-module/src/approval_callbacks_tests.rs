@@ -904,6 +904,14 @@ async fn clients_admit_a_runtime_subject_with_its_own_stream_and_release_it()
     let base = config();
     let redactor =
         tinysecurity::Redactor::new(&tinysecurity_bus::RedactorConfig { secrets: vec![] })?;
+    host.serve_at(
+        callback_names2::OBJECT_PATH.parse()?,
+        Store {
+            scope: base.scopes[0].subject.clone(),
+            wrong: false,
+        },
+    )
+    .await?;
     let clients = ApprovalClients::new(
         &module,
         Some(peer.as_str()),
