@@ -134,6 +134,10 @@ impl Redactor {
     }
     /// Sanitize JSON content, dropping entries with credential or personal-data keys.
     /// String values are passed through the same bounded pattern registry as [`Self::redact`].
+    ///
+    /// # Errors
+    /// Returns a content-free error if a string value exceeds the work/output bounds or
+    /// contains input that cannot be safely sanitized.
     pub fn sanitize_json(&self, value: &serde_json::Value) -> Result<Sanitized<serde_json::Value>> {
         let mut report = SanitizationReport::default();
         let value = self.sanitize_json_node(value, 0, &mut report)?;

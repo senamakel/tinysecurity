@@ -171,7 +171,9 @@ impl Patterns {
             let source = out;
             out = regex
                 .replace_all(&source, |caps: &regex::Captures<'_>| {
-                    let matched = caps.get(0).expect("every replacement has a full match");
+                    let Some(matched) = caps.get(0) else {
+                        return String::new();
+                    };
                     let start = matched.start().saturating_sub(64);
                     let end = (matched.end() + 64).min(source.len());
                     let mut start = start;
