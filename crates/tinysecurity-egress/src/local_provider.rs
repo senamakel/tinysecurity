@@ -18,11 +18,8 @@ pub fn classify_provider_endpoint(host: &str) -> ProviderEndpointLocality2 {
         Host::Ipv4(address) => local_v4(address),
         Host::Ipv6(address) => local_v6(address),
         Host::Domain(name) => {
-            let name = name.trim_end_matches('.');
+            let name = name.strip_suffix('.').unwrap_or(&name);
             name.eq_ignore_ascii_case("localhost")
-                || name
-                    .rsplit_once('.')
-                    .is_some_and(|(_, suffix)| suffix.eq_ignore_ascii_case("localhost"))
                 || name.to_ascii_lowercase().ends_with(".localhost")
         }
     };
