@@ -404,6 +404,9 @@
     "timeout_ms": 1
   },
   "KeyringConsentResponse": {
+    "allowed": false
+  },
+  "KeyringConsentResponse2": {
     "outcome": "consent_denied"
   },
   "CallerContext": {
