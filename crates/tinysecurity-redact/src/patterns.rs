@@ -170,6 +170,14 @@ impl Patterns {
                     let matched = caps.get(0).expect("every replacement has a full match");
                     let start = matched.start().saturating_sub(64);
                     let end = (matched.end() + 64).min(source.len());
+                    let mut start = start;
+                    let mut end = end;
+                    while !source.is_char_boundary(start) {
+                        start -= 1;
+                    }
+                    while !source.is_char_boundary(end) {
+                        end += 1;
+                    }
                     let context = &source[start..end];
                     if validator_valid(*validator, &caps[0], context) {
                         MARKER.into()
@@ -234,14 +242,17 @@ impl Patterns {
 fn encoded_forms(secret: &str) -> Vec<String> {
     use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
     let mut percent = String::with_capacity(secret.len() * 3);
+    let mut percent_lower = String::with_capacity(secret.len() * 3);
     let mut form = String::with_capacity(secret.len() * 3);
     for byte in secret.bytes() {
         if byte.is_ascii_alphanumeric() {
             percent.push(char::from(byte));
+            percent_lower.push(char::from(byte));
             form.push(char::from(byte));
         } else {
             use std::fmt::Write as _;
             let _ = write!(percent, "%{byte:02X}");
+            let _ = write!(percent_lower, "%{byte:02x}");
             if byte == b' ' {
                 form.push('+');
             } else {
@@ -252,7 +263,7 @@ fn encoded_forms(secret: &str) -> Vec<String> {
     vec![
         secret.into(),
         percent.clone(),
-        percent.to_ascii_lowercase(),
+        percent_lower,
         form,
         STANDARD.encode(secret),
         STANDARD_NO_PAD.encode(secret),
