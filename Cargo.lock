@@ -2159,7 +2159,7 @@ dependencies = [
 
 [[package]]
 name = "tinysecurity"
-version = "0.17.1"
+version = "0.18.0"
 dependencies = [
  "serde_json",
  "tinysecurity-approval",
@@ -2175,7 +2175,7 @@ dependencies = [
 
 [[package]]
 name = "tinysecurity-approval"
-version = "0.17.1"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "getrandom 0.3.4",
@@ -2191,7 +2191,7 @@ dependencies = [
 
 [[package]]
 name = "tinysecurity-audit"
-version = "0.17.1"
+version = "0.18.0"
 dependencies = [
  "fs4",
  "getrandom 0.3.4",
@@ -2208,7 +2208,7 @@ dependencies = [
 
 [[package]]
 name = "tinysecurity-auto"
-version = "0.17.1"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "serde_json",
@@ -2222,7 +2222,7 @@ dependencies = [
 
 [[package]]
 name = "tinysecurity-bus"
-version = "0.17.1"
+version = "0.18.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2231,7 +2231,7 @@ dependencies = [
 
 [[package]]
 name = "tinysecurity-crypto"
-version = "0.17.1"
+version = "0.18.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2261,7 +2261,7 @@ dependencies = [
 
 [[package]]
 name = "tinysecurity-egress"
-version = "0.17.1"
+version = "0.18.0"
 dependencies = [
  "getrandom 0.3.4",
  "percent-encoding",
@@ -2275,7 +2275,7 @@ dependencies = [
 
 [[package]]
 name = "tinysecurity-module"
-version = "0.17.1"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2294,7 +2294,7 @@ dependencies = [
 
 [[package]]
 name = "tinysecurity-policy"
-version = "0.17.1"
+version = "0.18.0"
 dependencies = [
  "getrandom 0.3.4",
  "serde_json",
@@ -2310,7 +2310,7 @@ dependencies = [
 
 [[package]]
 name = "tinysecurity-redact"
-version = "0.17.1"
+version = "0.18.0"
 dependencies = [
  "base64 0.22.1",
  "percent-encoding",
@@ -2324,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "tinysecurity-sandbox"
-version = "0.17.1"
+version = "0.18.0"
 dependencies = [
  "getrandom 0.3.4",
  "serde_json",
