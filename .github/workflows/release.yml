@@ -47,10 +47,6 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev
 
       - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Linux Secret Service build dependency
-        if: ${{ runner.os == 'Linux' }}
-        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev
         with:
           components: rustfmt, clippy
 
@@ -244,6 +240,10 @@ jobs:
           submodules: recursive
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux Secret Service build dependency
+        if: ${{ runner.os == 'Linux' }}
+        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev
 
       # Key by distro: a Linux x64 cache written by one bundle (for example Fedora or
       # Arch) holds native build output linked against a newer glibc, which the
