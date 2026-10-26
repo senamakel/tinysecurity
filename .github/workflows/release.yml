@@ -47,6 +47,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux Secret Service build dependency
+        if: ${{ runner.os == 'Linux' }}
+        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev
         with:
           components: rustfmt, clippy
 
@@ -280,7 +284,14 @@ jobs:
           fi
 
       - name: Build installable module
-        run: cargo build --locked --release --lib --package ${{ env.RELEASE_PACKAGE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--locked --release --lib --package "${RELEASE_PACKAGE}")
+          if [[ "$RUNNER_OS" == 'Linux' ]]; then
+            args+=(--features tinysecurity-module/keyring-secret-service)
+          fi
+          cargo build "${args[@]}"
 
       - name: Verify Unix module through TinyBus loader
         if: ${{ runner.os != 'Windows' }}
@@ -468,11 +479,11 @@ jobs:
     steps:
       - name: Install Fedora build tools
         if: ${{ matrix.family == 'fedora' }}
-        run: dnf install -y gcc git gzip make perl tar
+        run: dnf install -y dbus-devel gcc git gzip make perl tar
 
       - name: Install Arch Linux build tools
         if: ${{ matrix.family == 'archlinux' }}
-        run: pacman -Syu --noconfirm base-devel git
+        run: pacman -Syu --noconfirm base-devel dbus git
 
       - uses: actions/checkout@v7
         with:
@@ -494,7 +505,7 @@ jobs:
           fi
 
       - name: Build installable module
-        run: cargo build --locked --release --lib --package ${{ env.RELEASE_PACKAGE }}
+        run: cargo build --locked --release --lib --package ${{ env.RELEASE_PACKAGE }} --features tinysecurity-module/keyring-secret-service
 
       - name: Verify module through TinyBus loader
         env:
