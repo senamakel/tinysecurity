@@ -1024,13 +1024,15 @@ fn invalid_initialization_inputs_and_every_operation_shape_fail_closed() -> Test
     assert!(init(config(), &regs, "well.known", 1).is_err());
     assert!(init(config(), &regs, ":1.1", 0).is_err());
     assert!(init(config(), &[], ":1.1", 1).is_err());
+    let mut runtime_only = config();
+    runtime_only.scopes.clear();
+    assert!(init(runtime_only, &regs, ":1.1", 1).is_ok());
     let mut duplicate = config();
     duplicate.scopes.push(duplicate.scopes[0].clone());
     assert!(init(duplicate, &regs, ":1.1", 1).is_err());
-    for change in 0..9 {
+    for change in 1..9 {
         let mut cfg = config();
         match change {
-            0 => cfg.scopes.clear(),
             1 => cfg.max_handles = 0,
             2 => cfg.max_in_flight = 33,
             3 => cfg.operations_per_minute = 0,
