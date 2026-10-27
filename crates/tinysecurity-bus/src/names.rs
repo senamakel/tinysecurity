@@ -266,6 +266,7 @@ pub const METHODS: &[&str] = &[
     methods::IMPORT_TRUST_SOURCE2,
     methods::REGISTER_APPROVAL_SCOPE2,
     methods::REGISTER_SECRET_SCOPE2,
+    methods::REGISTER_DEVICE_PAIRING_SCOPE2,
     methods::REPLACE_APPROVAL_SCOPE2,
     methods::RETIRE_APPROVAL_SCOPE2,
     methods::REGISTER_SANDBOX_SCOPE2,
