@@ -91,6 +91,27 @@ fn runtime_pairing_scope_derives_secret_and_backend_bindings_from_init_policy() 
         Some(secret.registration_id.as_str())
     );
     assert_eq!(origin, Origin::Operator);
+    let denied_approval = ApprovalScope2 {
+        require_approval: false,
+        ..approval.clone()
+    };
+    assert!(derive_runtime_scope(&denied_approval, &secret, &defaults).is_err());
+    let mut wrong_purpose = secret.clone();
+    wrong_purpose.purpose = MasterPurpose2::AppEncryptionMaster;
+    assert!(derive_runtime_scope(&approval, &wrong_purpose, &defaults).is_err());
+    let mut wrong_slot = secret.clone();
+    wrong_slot.target.slot = MasterSlotKind2::App;
+    assert!(derive_runtime_scope(&approval, &wrong_slot, &defaults).is_err());
+    let denied_defaults = DevicePairingRuntimeScope2 {
+        allowed_origins: vec![Origin::Backend],
+        ..defaults.clone()
+    };
+    assert!(derive_runtime_scope(&approval, &secret, &denied_defaults).is_err());
+    let denied_defaults = DevicePairingRuntimeScope2 {
+        persistence_backend_id: "invalid\nbackend".into(),
+        ..defaults
+    };
+    assert!(derive_runtime_scope(&approval, &secret, &denied_defaults).is_err());
     Ok(())
 }
 
@@ -182,6 +203,24 @@ fn runtime_pairing_scope_admission_is_idempotent_and_fails_closed_without_partia
     assert_eq!(catalog.len(), 1);
     assert_eq!(epochs.len(), 1);
 
+    let mismatched_scope = DevicePairingScope2 {
+        scope_id: "e".repeat(32),
+        ..catalog[SCOPE_ID].clone()
+    };
+    assert!(admit_runtime_scope(
+        mismatched_scope,
+        approval.clone(),
+        Origin::Operator,
+        &registry,
+        1,
+        now,
+        &mut epochs,
+        &mut catalog,
+    )
+    .is_err());
+    assert_eq!(catalog.len(), 1);
+    assert_eq!(epochs.len(), 1);
+
     let mut changed = scope;
     changed.persistence_backend_id = "changed-backend".into();
     assert!(
@@ -252,6 +291,43 @@ fn runtime_pairing_scope_admission_is_idempotent_and_fails_closed_without_partia
     );
     assert_eq!(catalog.len(), 1);
     assert_eq!(epochs.len(), 1);
+
+    let mut full_epochs = (0..128)
+        .map(|index| (format!("{index:032x}"), 0))
+        .collect::<BTreeMap<_, _>>();
+    let mut full_catalog = (0..128)
+        .map(|index| {
+            let id = format!("{index:032x}");
+            (
+                id.clone(),
+                DevicePairingScope2 {
+                    scope_id: id,
+                    ..catalog[SCOPE_ID].clone()
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let full_scope = DevicePairingScope2 {
+        scope_id: "f".repeat(32),
+        ..catalog[SCOPE_ID].clone()
+    };
+    let full_approval = ApprovalScope2 {
+        scope_id: full_scope.scope_id.clone(),
+        ..approval.clone()
+    };
+    assert!(admit_runtime_scope(
+        full_scope,
+        full_approval,
+        Origin::Operator,
+        &registry,
+        1,
+        now,
+        &mut full_epochs,
+        &mut full_catalog,
+    )
+    .is_err());
+    assert_eq!(full_catalog.len(), 128);
+    assert_eq!(full_epochs.len(), 128);
     Ok(())
 }
 
