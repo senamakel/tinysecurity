@@ -1195,7 +1195,8 @@ async fn device_pairing_roundtrip(
                     },
                 ),),
             )
-            .await?;
+            .await
+            .map_err(|error| format!("legacy channel Recover {index} failed: {error}"))?;
         let expected = KeyPair::from_secret(Zeroizing::new(*secret))?
             .public_key()
             .encode();
@@ -1350,7 +1351,8 @@ async fn device_pairing_roundtrip(
                 },
             ),),
         )
-        .await?;
+        .await
+        .map_err(|error| format!("reloaded legacy Recover failed: {error}"))?;
     let expected_legacy = KeyPair::from_secret(Zeroizing::new(legacy_secrets[1]))?
         .public_key()
         .encode();
@@ -1893,7 +1895,8 @@ async fn device_pairing_roundtrip(
                 },
             ),),
         )
-        .await?;
+        .await
+        .map_err(|error| format!("lost-confirm Recover failed: {error}"))?;
     assert!(orphan.pairing_id.is_some());
     assert!(orphan.device_public_key.is_some());
     let _: DevicePairingResponse2 = proxy
