@@ -392,6 +392,76 @@ fn legacy_callback_consumption_locks_and_records_the_one_shot_handle() {
     assert!(consume_legacy_import(&consumed, SCOPE_ID, "callback-handle").is_err());
 }
 
+#[tokio::test]
+async fn legacy_host_callback_consumes_its_handle_before_dispatch() -> TestResult {
+    use tinybus::{Connection, broker::Broker, transport::memory::MemoryBus};
+    use tinysecurity_bus::{
+        DevicePairingConfig2, DevicePairingContextResponse2, DevicePairingRuntimeScope2,
+        DevicePairingScope2, DevicePairingSource2, Origin,
+    };
+
+    let bus = MemoryBus::new();
+    let owner = Broker::new();
+    let broker = owner.spawn(bus.clone());
+    let connection = Connection::connect(bus.connect().await?).await?;
+    let peer = connection.unique_name().ok_or("fixture peer")?;
+    let scope = DevicePairingScope2 {
+        scope_id: SCOPE_ID.into(),
+        secret_registration_id: "b".repeat(32),
+        persistence_backend_id: "pairing-state".into(),
+        legacy_device_backend_id: Some("c".repeat(32)),
+        legacy_source_registration_id: Some("b".repeat(32)),
+    };
+    let callbacks = HostCallbacks {
+        connection,
+        peer,
+        config: DevicePairingConfig2 {
+            scopes: vec![],
+            runtime_scope: Some(DevicePairingRuntimeScope2 {
+                persistence_backend_id: "pairing-state".into(),
+                legacy_device_backend_id: Some("c".repeat(32)),
+                allowed_origins: vec![Origin::Operator],
+            }),
+            max_pairings: 32,
+            max_pending: 8,
+            max_pending_ttl_ms: 30_000,
+            max_session_ttl_ms: 3_600_000,
+            max_state_bytes: 65_536,
+            callback_timeout_ms: 1_000,
+        },
+        scope_catalog: Arc::new(RwLock::new([(SCOPE_ID.into(), scope.clone())].into())),
+        consumed_legacy_imports: Mutex::new(BTreeSet::new()),
+    };
+    assert_eq!(callbacks.scope(SCOPE_ID)?, scope);
+    let context = DevicePairingContextResponse2 {
+        scope_id: SCOPE_ID.into(),
+        user_binding: "opaque-user-binding".into(),
+        secret_master_handle: None,
+        legacy_import_handle: Some("callback-handle".into()),
+        channel_id: String::new(),
+        pairing_token: None,
+        connection_nonce: String::new(),
+        generation: 1,
+        source: DevicePairingSource2::AuthenticatedUserController,
+        expires_at_ms: 2_000,
+    };
+    assert!(
+        callbacks
+            .load_legacy(SCOPE_ID, "callback-handle", &context)
+            .await
+            .is_err()
+    );
+    assert!(
+        callbacks
+            .load_legacy(SCOPE_ID, "callback-handle", &context)
+            .await
+            .is_err()
+    );
+    assert_eq!(callbacks.consumed_legacy_imports.lock()?.len(), 1);
+    broker.abort();
+    Ok(())
+}
+
 fn registry_with_frame()
 -> Result<Arc<tinysecurity::crypto::device_handles::Registry>, Box<dyn std::error::Error>> {
     use tinysecurity::crypto::{
