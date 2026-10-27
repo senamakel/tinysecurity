@@ -1055,7 +1055,8 @@ async fn device_pairing_roundtrip(
                 },
             ),),
         )
-        .await?;
+        .await
+        .map_err(|error| format!("unlock after logout race failed: {error}"))?;
     let initial_public = unlock.core_public_key.ok_or("pairing public identity")?;
     let legacy_secrets = [[0x31; 32], [0x32; 32]];
     let legacy_devices = [KeyPair::generate()?, KeyPair::generate()?];
