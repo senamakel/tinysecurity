@@ -1038,7 +1038,8 @@ async fn device_pairing_roundtrip(
                 },
             ),),
         )
-        .await?;
+        .await
+        .map_err(|error| format!("logout lock during unlock race failed: {error}"))?;
     state.pairing_release_load.notify_one();
     assert!(
         racing_unlock.await?.is_err(),
