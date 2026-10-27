@@ -475,14 +475,10 @@ impl Callback {
         {
             return Err(denied());
         }
-        if tokenless_recovery {
-            eprintln!(
-                "fixture Recover context event={} requested_exact_channel={} token_absent={} nonce_empty={}",
-                request.host_event_id,
-                request.requested_channel_id.as_deref() == Some(channel),
-                tokenless_recovery || channel.is_empty(),
-                nonce.is_empty(),
-            );
+        let pairing_token = (!channel.is_empty() && !tokenless_recovery)
+            .then(|| "fixture-pairing-token".into());
+        if tokenless_recovery && pairing_token.is_some() {
+            return Err(denied());
         }
         let expires_at_ms = if matches!(
             request.host_event_id.as_str(),
@@ -503,8 +499,7 @@ impl Callback {
             secret_master_handle: alias,
             legacy_import_handle,
             channel_id: channel.into(),
-            pairing_token: (!channel.is_empty() && !tokenless_recovery)
-                .then(|| "fixture-pairing-token".into()),
+            pairing_token,
             connection_nonce: nonce.into(),
             generation: self.state.generation.load(Ordering::Acquire),
             source,
