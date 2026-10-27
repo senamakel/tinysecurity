@@ -40,6 +40,7 @@ const FRAME_HANDLE: &str = "abcdef0123456789abcdef0123456789";
 const SECOND_FRAME_HANDLE: &str = "bcdef0123456789abcdef0123456789a";
 
 #[test]
+#[allow(clippy::too_many_lines)] // Pins the admitted scope bindings and each rejected authority input.
 fn runtime_pairing_scope_derives_secret_and_backend_bindings_from_init_policy() -> TestResult {
     use tinysecurity_bus::{
         AccessTier, ApprovalScope2, DevicePairingRuntimeScope2, MasterPurpose2, MasterSlotKind2,
