@@ -1143,8 +1143,7 @@ impl State {
     }
 }
 fn validate_config(config: &DeviceConfig2) -> Result<()> {
-    if config.scopes.is_empty()
-        || config.scopes.len() > 128
+    if config.scopes.len() > 128
         || !(1..=4096).contains(&config.max_handles)
         || !(1..=32).contains(&config.max_in_flight)
         || !(1..=4096).contains(&config.operations_per_minute)
