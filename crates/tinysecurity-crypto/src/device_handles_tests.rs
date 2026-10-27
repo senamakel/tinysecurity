@@ -95,6 +95,40 @@ fn authenticated_bootstrap_is_accepted_once_and_duplicate_is_denied() -> TestRes
 }
 
 #[test]
+fn runtime_scope_registration_is_idempotent_and_rejects_changed_authority() -> TestResult {
+    use tinysecurity_bus::Origin;
+
+    let registry = registry()?;
+    let scope_id = "c".repeat(32);
+    let canonical = ApprovalScope2 {
+        scope_id: scope_id.clone(),
+        subject: SubjectScope {
+            user: "runtime-user".into(),
+            workspace: "runtime-workspace".into(),
+            agent: "runtime-agent".into(),
+        },
+        policy_ref: "immutable".into(),
+        generation: 1,
+        ceiling: AccessTier::Full,
+        require_approval: true,
+        auto_approve_all: false,
+    };
+    registry.register_scope(canonical.clone(), Origin::Operator, 1, time(1))?;
+    registry.register_scope(canonical.clone(), Origin::Operator, 1, time(2))?;
+    assert!(key(&registry, 'c', DeviceKeyPurpose2::Static).is_ok());
+
+    let mut changed = canonical;
+    changed.subject.user = "different-user".into();
+    assert!(registry
+        .register_scope(changed, Origin::Operator, 1, time(3))
+        .is_err());
+    assert!(registry
+        .register_scope(registration(&scope_id), Origin::Operator, 2, time(4))
+        .is_err());
+    Ok(())
+}
+
+#[test]
 fn static_key_aliases_cannot_bypass_bootstrap_replay() -> TestResult {
     let reg = registry()?;
     let (first, public) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
