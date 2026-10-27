@@ -296,6 +296,7 @@ impl SecretState {
             .chain(dynamic.values())
             .map(|registration| &registration.descriptor);
         let descriptor = unique_config_master_for_scope(descriptors, scope_id)?.clone();
+        drop(dynamic);
         let registration = self.registration_id(&descriptor.registration_id)?;
         let canonical = registration.scope.read().map_err(|_| denied())?.clone();
         if canonical.scope_id != scope_id {
