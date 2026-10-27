@@ -466,6 +466,15 @@ impl Callback {
         {
             return Err(denied());
         }
+        let tokenless_recovery = matches!(
+            request.host_event_id.as_str(),
+            "recover-legacy-a" | "recover-legacy-b" | "recover-lost-confirm"
+        );
+        if tokenless_recovery
+            && (request.requested_channel_id.as_deref() != Some(channel) || !nonce.is_empty())
+        {
+            return Err(denied());
+        }
         let expires_at_ms = if matches!(
             request.host_event_id.as_str(),
             "expired-user-event" | "legacy-import-expired"
@@ -485,7 +494,8 @@ impl Callback {
             secret_master_handle: alias,
             legacy_import_handle,
             channel_id: channel.into(),
-            pairing_token: (!channel.is_empty()).then(|| "fixture-pairing-token".into()),
+            pairing_token: (!channel.is_empty() && !tokenless_recovery)
+                .then(|| "fixture-pairing-token".into()),
             connection_nonce: nonce.into(),
             generation: self.state.generation.load(Ordering::Acquire),
             source,
