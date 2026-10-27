@@ -166,6 +166,7 @@ fn owner() -> Result<DevicePairingOwner, Box<dyn std::error::Error>> {
             legacy_device_backend_id: None,
             legacy_source_registration_id: None,
         }],
+        runtime_scope: None,
         max_pairings: 1,
         max_pending: 1,
         max_pending_ttl_ms: 1_000,

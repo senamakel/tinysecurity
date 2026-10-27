@@ -793,6 +793,7 @@ fn configuration(
                 legacy_device_backend_id: Some("e".repeat(32)),
                 legacy_source_registration_id: Some("b".repeat(32)),
             }],
+            runtime_scope: None,
             max_pairings: 32,
             max_pending: 8,
             max_pending_ttl_ms: 300_000,
