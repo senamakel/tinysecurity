@@ -1257,7 +1257,8 @@ fn legacy_import_is_atomic_idempotent_and_channel_recovery_is_user_scoped() {
     assert_eq!(again, imported);
     let authorized_channel = DevicePairingContextResponse2 {
         channel_id: "legacy-channel-a".into(),
-        pairing_token: Some("host-pairing-token".into()),
+        pairing_token: None,
+        connection_nonce: String::new(),
         ..authorized.clone()
     };
     let recovered = owner
@@ -1275,8 +1276,19 @@ fn legacy_import_is_atomic_idempotent_and_channel_recovery_is_user_scoped() {
                 "legacy-channel-a",
                 &DevicePairingContextResponse2 {
                     channel_id: "legacy-channel-a".into(),
-                    pairing_token: Some("host-pairing-token".into()),
                     ..foreign
+                },
+                time(1_013),
+            )
+            .is_err()
+    );
+    assert!(
+        owner
+            .recover_channel(
+                "legacy-channel-a",
+                &DevicePairingContextResponse2 {
+                    pairing_token: Some("reused-qr-token".into()),
+                    ..authorized_channel.clone()
                 },
                 time(1_013),
             )
