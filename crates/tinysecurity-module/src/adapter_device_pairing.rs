@@ -410,9 +410,15 @@ impl HostCallbacks {
         if handle.is_empty() || handle.len() > 256 {
             return Err(denied());
         }
-        let mut consumed = self.consumed_legacy_imports.lock().map_err(|_| denied())?;
-        consume_legacy_import_handle(&mut consumed, scope_id, handle, MAX_LEGACY_IMPORT_HANDLES)?;
-        drop(consumed);
+        {
+            let mut consumed = self.consumed_legacy_imports.lock().map_err(|_| denied())?;
+            consume_legacy_import_handle(
+                &mut consumed,
+                scope_id,
+                handle,
+                MAX_LEGACY_IMPORT_HANDLES,
+            )?;
+        }
         let request = DevicePairingLegacyLoadRequest2 {
             handle: handle.into(),
         };
