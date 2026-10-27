@@ -1295,6 +1295,7 @@ mod linked_fixture {
         super::super::super::device::activate(device_registry.as_ref())?;
         super::super::super::device_pairing::activate(pairing_state)
     }
+    #[allow(clippy::too_many_lines)] // The linked fixture wires all authority owners in one setup.
     async fn setup(
         connection: tinybus::Connection,
         fixture_config: serde_json::Value,
