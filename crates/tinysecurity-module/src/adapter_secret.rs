@@ -283,7 +283,7 @@ impl SecretState {
         }
         Ok(reg.scope.read().map_err(|_| denied())?.clone())
     }
-    /// Find the unique live ConfigUserMaster binding for one canonical approval scope.
+    /// Find the unique live `ConfigUserMaster` binding for one canonical approval scope.
     /// The caller supplies no registration alias; ambiguity fails closed.
     pub(super) fn config_master_for_scope(
         &self,

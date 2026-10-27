@@ -40,7 +40,7 @@ const FRAME_HANDLE: &str = "abcdef0123456789abcdef0123456789";
 const SECOND_FRAME_HANDLE: &str = "bcdef0123456789abcdef0123456789a";
 
 #[test]
-fn runtime_pairing_scope_derives_secret_and_backend_bindings_from_init_policy() {
+fn runtime_pairing_scope_derives_secret_and_backend_bindings_from_init_policy() -> TestResult {
     use tinysecurity_bus::{
         AccessTier, ApprovalScope2, DevicePairingRuntimeScope2, MasterPurpose2, MasterSlotKind2,
         Origin, SecretBinding2, SecretRegistration2, SubjectScope,
@@ -75,7 +75,7 @@ fn runtime_pairing_scope_derives_secret_and_backend_bindings_from_init_policy() 
         legacy_device_backend_id: Some("d".repeat(32)),
         allowed_origins: vec![Origin::Operator],
     };
-    let (scope, origin) = derive_runtime_scope(&approval, &secret, &defaults).unwrap();
+    let (scope, origin) = derive_runtime_scope(&approval, &secret, &defaults)?;
     assert_eq!(scope.scope_id, approval.scope_id);
     assert_eq!(scope.secret_registration_id, secret.registration_id);
     assert_eq!(
@@ -91,9 +91,11 @@ fn runtime_pairing_scope_derives_secret_and_backend_bindings_from_init_policy() 
         Some(secret.registration_id.as_str())
     );
     assert_eq!(origin, Origin::Operator);
+    Ok(())
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // Exercises successful, duplicate, and two rejected admissions.
 fn runtime_pairing_scope_admission_is_idempotent_and_fails_closed_without_partial_state()
 -> TestResult {
     use std::collections::BTreeMap;

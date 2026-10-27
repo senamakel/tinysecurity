@@ -1265,7 +1265,7 @@ impl PolicyService {
             .approvals
             .as_ref()
             .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?;
-        device_pairing::register_scope(request, approvals)
+        device_pairing::register_scope(&request, approvals)
     }
     async fn replace_approval_scope2(
         &self,

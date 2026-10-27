@@ -127,6 +127,7 @@ fn derive_runtime_scope(
     };
     Ok((scope, secret.origin.clone()))
 }
+#[allow(clippy::too_many_arguments)] // Both registries are updated under the caller's lock pair.
 fn admit_runtime_scope(
     scope: tinysecurity_bus::DevicePairingScope2,
     approval: tinysecurity_bus::ApprovalScope2,
@@ -738,7 +739,7 @@ impl PairingState {
     /// Bind one live approval scope to pairing using init-fixed authority defaults.
     pub(super) fn register_scope(
         &self,
-        request: tinysecurity_bus::RegisterDevicePairingScopeRequest2,
+        request: &tinysecurity_bus::RegisterDevicePairingScopeRequest2,
         approvals: &tinysecurity::approval::Engine,
     ) -> tinybus::Result<tinysecurity_bus::DevicePairingScopeReceipt2> {
         let approval = approvals
@@ -1630,6 +1631,7 @@ impl PairingState {
     }
 }
 
+#[allow(clippy::too_many_lines)] // Init-time policy validation and registry construction stay together.
 pub(super) fn configured(
     config: Option<DevicePairingConfig2>,
     connection: &tinybus::Connection,
@@ -1662,8 +1664,8 @@ pub(super) fn configured(
             {
                 return Err(denied());
             }
-            if let Some(runtime) = &config.runtime_scope {
-                if !valid_persistence_backend_id(&runtime.persistence_backend_id)
+            if let Some(runtime) = &config.runtime_scope
+                && (!valid_persistence_backend_id(&runtime.persistence_backend_id)
                     || runtime.allowed_origins.is_empty()
                     || runtime.allowed_origins.len() > 8
                     || runtime.legacy_device_backend_id.as_ref().is_some_and(|id| {
@@ -1673,7 +1675,7 @@ pub(super) fn configured(
                         .allowed_origins
                         .iter()
                         .enumerate()
-                        .any(|(index, origin)| runtime.allowed_origins[..index].contains(origin))
+                        .any(|(index, origin)| runtime.allowed_origins[..index].contains(origin)))
                 {
                     return Err(denied());
                 }
@@ -1779,7 +1781,7 @@ pub(super) async fn invoke(
 
 /// Register one dynamically admitted scope against canonical approval state.
 pub(super) fn register_scope(
-    request: tinysecurity_bus::RegisterDevicePairingScopeRequest2,
+    request: &tinysecurity_bus::RegisterDevicePairingScopeRequest2,
     approvals: &tinysecurity::approval::Engine,
 ) -> tinybus::Result<tinysecurity_bus::DevicePairingScopeReceipt2> {
     PAIRING
