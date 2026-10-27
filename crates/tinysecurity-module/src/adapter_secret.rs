@@ -103,6 +103,20 @@ fn slot(value: MasterSlotKind2, user: &str) -> (MasterSlot, String) {
 fn id(value: &str) -> bool {
     value.len() == 32 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
+fn unique_config_master_for_scope<'a>(
+    registrations: impl Iterator<Item = &'a SecretRegistration2>,
+    scope_id: &str,
+) -> tinybus::Result<&'a SecretRegistration2> {
+    let mut matches = registrations.filter(|registration| {
+        registration.approval_scope_id == scope_id
+            && registration.purpose == MasterPurpose2::ConfigUserMaster
+    });
+    let registration = matches.next().ok_or_else(denied)?;
+    if matches.next().is_some() {
+        return Err(denied());
+    }
+    Ok(registration)
+}
 #[derive(Default)]
 struct Inventory {
     registrations: BTreeSet<String>,
@@ -276,19 +290,14 @@ impl SecretState {
         scope_id: &str,
     ) -> tinybus::Result<(SecretRegistration2, ApprovalScope2)> {
         let dynamic = self.dynamic.lock().map_err(|_| denied())?;
-        let mut matches = self
+        let descriptors = self
             .registered
             .values()
             .chain(dynamic.values())
-            .filter(|registration| {
-                registration.descriptor.approval_scope_id == scope_id
-                    && registration.descriptor.purpose == MasterPurpose2::ConfigUserMaster
-            });
-        let registration = matches.next().ok_or_else(denied)?;
-        if matches.next().is_some() {
-            return Err(denied());
-        }
-        let descriptor = registration.descriptor.clone();
+            .map(|registration| &registration.descriptor);
+        let descriptor = unique_config_master_for_scope(descriptors, scope_id)?.clone();
+        let registration = self
+            .registration_id(&descriptor.registration_id)?;
         let canonical = registration.scope.read().map_err(|_| denied())?.clone();
         if canonical.scope_id != scope_id {
             return Err(denied());

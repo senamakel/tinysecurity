@@ -96,6 +96,24 @@ fn request(call: u32) -> SecretRequest2 {
         operation: SecretOperation2::ResolveConfigMaster,
     }
 }
+
+#[test]
+fn pairing_master_lookup_requires_one_config_user_registration_for_the_scope() {
+    let descriptor = config().registrations.remove(0);
+    let selected = unique_config_master_for_scope(std::iter::once(&descriptor), "a".repeat(32).as_str())
+        .expect("the exact ConfigUserMaster registration should be selected");
+    assert_eq!(selected.registration_id, "b".repeat(32));
+
+    assert!(unique_config_master_for_scope(std::iter::empty(), &"a".repeat(32)).is_err());
+    assert!(unique_config_master_for_scope(
+        std::iter::once(&descriptor).chain(std::iter::once(&descriptor)),
+        &"a".repeat(32),
+    )
+    .is_err());
+    let mut app = descriptor.clone();
+    app.purpose = MasterPurpose2::AppEncryptionMaster;
+    assert!(unique_config_master_for_scope(std::iter::once(&app), &"a".repeat(32)).is_err());
+}
 struct Backend {
     mode: u32,
     loads: AtomicU32,
