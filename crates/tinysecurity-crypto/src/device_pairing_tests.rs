@@ -1208,7 +1208,7 @@ fn renewed_pairing_keeps_legacy_channel_claim_until_every_channel_is_revoked() {
         ..authorized.clone()
     };
     merged
-        .merge_durable_state(&snapshot, &recovery_context, time(1_040))
+        .merge_recovered_durable_state(&snapshot, &recovery_context, time(1_040))
         .unwrap();
     assert!(merged.records.is_empty());
     assert_eq!(merged.revocations.len(), 2);
@@ -1281,7 +1281,7 @@ fn legacy_import_is_atomic_idempotent_and_channel_recovery_is_user_scoped() {
     )
     .unwrap();
     reloaded
-        .merge_durable_state(&durable, &authorized_channel, time(1_012))
+        .merge_recovered_durable_state(&durable, &authorized_channel, time(1_012))
         .expect("channel-bound tokenless Recover may rehydrate the same user's durable state");
     let foreign = DevicePairingContextResponse2 {
         user_binding: "another-user".into(),

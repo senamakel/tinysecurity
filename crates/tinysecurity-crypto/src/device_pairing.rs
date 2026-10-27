@@ -629,11 +629,11 @@ impl DevicePairingOwner {
         Ok(batch.imported)
     }
 
-    /// Merge the latest authenticated persistence snapshot without discarding live tunnels.
+    /// Merge the latest authenticated persistence snapshot during Recover without discarding live tunnels.
     /// This repairs the in-memory owner after a CAS committed but its response was lost.
     /// # Errors
     /// Rejects corrupt, foreign, conflicting or incompatible durable state.
-    pub fn merge_durable_state(
+    pub fn merge_recovered_durable_state(
         &mut self,
         plaintext: &[u8],
         context: &DevicePairingContextResponse2,
