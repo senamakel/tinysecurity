@@ -4,7 +4,7 @@ use super::Arc;
 use std::sync::OnceLock;
 use std::{
     collections::BTreeMap,
-    sync::Mutex,
+    sync::{Mutex, RwLock},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use tinysecurity::crypto::{
@@ -194,13 +194,15 @@ struct HostCallbacks {
     connection: tinybus::Connection,
     peer: tinybus::BusName,
     config: DevicePairingConfig2,
+    scope_catalog: Arc<RwLock<BTreeMap<String, tinysecurity_bus::DevicePairingScope2>>>,
 }
 impl HostCallbacks {
-    fn scope(&self, scope_id: &str) -> tinybus::Result<&tinysecurity_bus::DevicePairingScope2> {
-        self.config
-            .scopes
-            .iter()
-            .find(|scope| scope.scope_id == scope_id)
+    fn scope(&self, scope_id: &str) -> tinybus::Result<tinysecurity_bus::DevicePairingScope2> {
+        self.scope_catalog
+            .read()
+            .map_err(|_| denied())?
+            .get(scope_id)
+            .cloned()
             .ok_or_else(denied)
     }
     async fn resolve(
@@ -556,6 +558,7 @@ pub(super) struct PairingState {
     clock: Arc<dyn tinysecurity::approval::Clock>,
     generation: AtomicU64,
     scopes: LoadedScopes,
+    scope_catalog: Arc<RwLock<BTreeMap<String, tinysecurity_bus::DevicePairingScope2>>>,
 }
 impl std::fmt::Debug for PairingState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -599,8 +602,87 @@ impl PairingState {
     }
     fn one_scope_config(&self, scope_id: &str) -> tinybus::Result<DevicePairingConfig2> {
         let mut config = self.config.clone();
-        config.scopes = vec![self.callbacks.scope(scope_id)?.clone()];
+        config.scopes = vec![self.callbacks.scope(scope_id)?];
         Ok(config)
+    }
+
+    /// Bind one live approval scope to pairing using init-fixed authority defaults.
+    pub(super) fn register_scope(
+        &self,
+        request: tinysecurity_bus::RegisterDevicePairingScopeRequest2,
+        approvals: &tinysecurity::approval::Engine,
+    ) -> tinybus::Result<tinysecurity_bus::DevicePairingScopeReceipt2> {
+        let approval = approvals
+            .scope_snapshot(&request.approval_scope_id)
+            .map_err(|_| denied())?;
+        let generation = self.generation.load(Ordering::Acquire);
+        if approval.generation != generation || !approval.require_approval || approval.auto_approve_all {
+            return Err(denied());
+        }
+        let defaults = self.config.runtime_scope.as_ref().ok_or_else(denied)?;
+        let (secret_registration, secret_scope) = self
+            .secret
+            .config_master_for_scope(&approval.scope_id)?;
+        if secret_scope != approval
+            || !defaults.allowed_origins.contains(&secret_registration.origin)
+        {
+            return Err(denied());
+        }
+        let verified_secret_scope = self
+            .secret
+            .cipher_scope(&secret_registration.registration_id)?;
+        if verified_secret_scope != approval {
+            return Err(denied());
+        }
+        let scope = tinysecurity_bus::DevicePairingScope2 {
+            scope_id: approval.scope_id.clone(),
+            secret_registration_id: secret_registration.registration_id.clone(),
+            persistence_backend_id: defaults.persistence_backend_id.clone(),
+            legacy_device_backend_id: defaults.legacy_device_backend_id.clone(),
+            legacy_source_registration_id: defaults
+                .legacy_device_backend_id
+                .as_ref()
+                .map(|_| secret_registration.registration_id.clone()),
+        };
+        let now = time(self.clock.as_ref())?;
+        let mut scopes = self.scopes.lock().map_err(|_| denied())?;
+        let mut catalog = self.scope_catalog.write().map_err(|_| denied())?;
+        if let Some(existing) = catalog.get(&scope.scope_id) {
+            if existing != &scope {
+                return Err(denied());
+            }
+            self.registry.register_scope(
+                approval,
+                secret_registration.origin,
+                generation,
+                now,
+            ).map_err(|_| denied())?;
+            return Ok(tinysecurity_bus::DevicePairingScopeReceipt2 {
+                scope_id: scope.scope_id,
+                active: true,
+            });
+        }
+        if catalog.len() >= 128 {
+            return Err(denied());
+        }
+        // Device registry admission is the last fallible mutation. Both host
+        // registries are locked first, so catalog insertion and epoch creation
+        // cannot fail after it succeeds.
+        self.registry
+            .register_scope(
+                approval,
+                secret_registration.origin,
+                generation,
+                now,
+            )
+            .map_err(|_| denied())?;
+        let scope_id = scope.scope_id.clone();
+        catalog.insert(scope_id.clone(), scope);
+        scopes.epochs.insert(scope_id.clone(), 0);
+        Ok(tinysecurity_bus::DevicePairingScopeReceipt2 {
+            scope_id,
+            active: true,
+        })
     }
     async fn unlock_scope(
         &self,
@@ -1472,7 +1554,7 @@ pub(super) fn configured(
     config
         .map(|config| {
             if generation == 0
-                || config.scopes.is_empty()
+                || (config.scopes.is_empty() && config.runtime_scope.is_none())
                 || config.scopes.len() > 128
                 || !(1..=4096).contains(&config.max_pairings)
                 || !(1..=128).contains(&config.max_pending)
@@ -1482,6 +1564,22 @@ pub(super) fn configured(
                 || !(1..=30_000).contains(&config.callback_timeout_ms)
             {
                 return Err(denied());
+            }
+            if let Some(runtime) = &config.runtime_scope {
+                if !valid_persistence_backend_id(&runtime.persistence_backend_id)
+                    || runtime.allowed_origins.is_empty()
+                    || runtime.allowed_origins.len() > 8
+                    || runtime.legacy_device_backend_id.as_ref().is_some_and(|id| {
+                        id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
+                    || runtime
+                        .allowed_origins
+                        .iter()
+                        .enumerate()
+                        .any(|(index, origin)| runtime.allowed_origins[..index].contains(origin))
+                {
+                    return Err(denied());
+                }
             }
             let peer = peer.ok_or_else(denied)?.parse::<tinybus::BusName>()?;
             if !peer.is_unique() {
@@ -1532,11 +1630,19 @@ pub(super) fn configured(
                 .iter()
                 .map(|scope| (scope.scope_id.clone(), 0))
                 .collect();
+            let scope_catalog = Arc::new(RwLock::new(
+                config
+                    .scopes
+                    .iter()
+                    .map(|scope| (scope.scope_id.clone(), scope.clone()))
+                    .collect(),
+            ));
             Ok(Arc::new(PairingState {
                 callbacks: HostCallbacks {
                     connection: connection.clone(),
                     peer,
                     config: config.clone(),
+                    scope_catalog: Arc::clone(&scope_catalog),
                 },
                 config,
                 secret,
@@ -1547,6 +1653,7 @@ pub(super) fn configured(
                     epochs,
                     loaded: BTreeMap::new(),
                 }),
+                scope_catalog,
             }))
         })
         .transpose()
