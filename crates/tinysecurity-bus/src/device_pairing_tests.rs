@@ -96,10 +96,7 @@ fn runtime_pairing_registration_contains_only_a_live_approval_reference()
         approval_scope_id: "a".repeat(32),
     };
     let encoded = serde_json::to_value(&request)?;
-    assert_eq!(
-        encoded,
-        json!({ "approval_scope_id": "a".repeat(32) })
-    );
+    assert_eq!(encoded, json!({ "approval_scope_id": "a".repeat(32) }));
     for forbidden in [
         "subject",
         "user",
@@ -117,7 +114,9 @@ fn runtime_pairing_registration_contains_only_a_live_approval_reference()
         active: true,
     };
     assert_eq!(
-        serde_json::from_value::<DevicePairingScopeReceipt2>(serde_json::to_value(receipt.clone())?)?,
+        serde_json::from_value::<DevicePairingScopeReceipt2>(serde_json::to_value(
+            receipt.clone()
+        )?)?,
         receipt
     );
     Ok(())

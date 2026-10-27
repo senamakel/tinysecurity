@@ -100,16 +100,19 @@ fn request(call: u32) -> SecretRequest2 {
 #[test]
 fn pairing_master_lookup_requires_one_config_user_registration_for_the_scope() {
     let descriptor = config().registrations.remove(0);
-    let selected = unique_config_master_for_scope(std::iter::once(&descriptor), "a".repeat(32).as_str())
-        .expect("the exact ConfigUserMaster registration should be selected");
+    let selected =
+        unique_config_master_for_scope(std::iter::once(&descriptor), "a".repeat(32).as_str())
+            .expect("the exact ConfigUserMaster registration should be selected");
     assert_eq!(selected.registration_id, "b".repeat(32));
 
     assert!(unique_config_master_for_scope(std::iter::empty(), &"a".repeat(32)).is_err());
-    assert!(unique_config_master_for_scope(
-        std::iter::once(&descriptor).chain(std::iter::once(&descriptor)),
-        &"a".repeat(32),
-    )
-    .is_err());
+    assert!(
+        unique_config_master_for_scope(
+            std::iter::once(&descriptor).chain(std::iter::once(&descriptor)),
+            &"a".repeat(32),
+        )
+        .is_err()
+    );
     let mut app = descriptor.clone();
     app.purpose = MasterPurpose2::AppEncryptionMaster;
     assert!(unique_config_master_for_scope(std::iter::once(&app), &"a".repeat(32)).is_err());
@@ -782,6 +785,24 @@ impl Control {
                 .await?;
             assert!(receipt.active);
             assert_eq!(receipt.registration_id, registration.registration_id);
+            let pairing_request = RegisterDevicePairingScopeRequest2 {
+                approval_scope_id: "f".repeat(32),
+            };
+            let pairing_receipt: DevicePairingScopeReceipt2 = proxy
+                .call(
+                    names::methods::REGISTER_DEVICE_PAIRING_SCOPE2,
+                    (&pairing_request,),
+                )
+                .await?;
+            assert_eq!(pairing_receipt.scope_id, registration.approval_scope_id);
+            assert!(pairing_receipt.active);
+            let duplicate_pairing_receipt: DevicePairingScopeReceipt2 = proxy
+                .call(
+                    names::methods::REGISTER_DEVICE_PAIRING_SCOPE2,
+                    (&pairing_request,),
+                )
+                .await?;
+            assert_eq!(duplicate_pairing_receipt, pairing_receipt);
             let secret = self.service.secret.as_ref().ok_or_else(denied)?;
             let static_registration = config().registrations[0].clone();
             let static_request = RegisterSecretScopeRequest2 {
@@ -954,6 +975,16 @@ impl Control {
             let _: ApprovalScopeReceipt2 = proxy
                 .call(names::methods::REPLACE_APPROVAL_SCOPE2, (&replacement,))
                 .await?;
+            assert!(
+                proxy
+                    .call::<DevicePairingScopeReceipt2>(
+                        names::methods::REGISTER_DEVICE_PAIRING_SCOPE2,
+                        (&pairing_request,),
+                    )
+                    .await
+                    .is_err(),
+                "retired approval scopes cannot regain pairing authority"
+            );
             assert!(
                 secret
                     .registration_id(&registration.registration_id)
@@ -1272,6 +1303,51 @@ mod linked_fixture {
                 .is_err()
         );
         *state.registry.lock().map_err(|_| denied())? = Some(secret.registry.clone());
+        if mode == 22 {
+            let config = DeviceConfig2 {
+                scopes: vec![],
+                max_handles: 16,
+                max_in_flight: 4,
+                operations_per_minute: 4096,
+                frames_per_minute: 12_000,
+                max_ttl_ms: 300_000,
+                max_message_bytes: 1024,
+                max_bootstrap_nonces: 64,
+            };
+            let (device_registry, _) = super::super::super::device::configured(
+                Some(config),
+                Some(peer.as_str()),
+                Some(&approvals),
+                Some(&audit),
+                1,
+                clock.as_ref(),
+            )?;
+            let pair_config = DevicePairingConfig2 {
+                scopes: vec![],
+                runtime_scope: Some(DevicePairingRuntimeScope2 {
+                    persistence_backend_id: "runtime-pairing-state".into(),
+                    legacy_device_backend_id: Some("8".repeat(32)),
+                    allowed_origins: vec![Origin::Operator],
+                }),
+                max_pairings: 32,
+                max_pending: 8,
+                max_pending_ttl_ms: 30_000,
+                max_session_ttl_ms: 3_600_000,
+                max_state_bytes: 65_536,
+                callback_timeout_ms: 1_000,
+            };
+            let pairing_state = super::super::super::device_pairing::configured(
+                Some(pair_config),
+                &connection,
+                Some(peer.as_str()),
+                Some(&secret),
+                device_registry.as_ref(),
+                clock.clone(),
+                1,
+            )?;
+            super::super::super::device::activate(device_registry.as_ref())?;
+            super::super::super::device_pairing::activate(pairing_state)?;
+        }
         let (cipher, audit_client) = cipher_tests::configured_fixture(
             &connection,
             &binding,
@@ -1369,6 +1445,12 @@ async fn actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_
 
 #[tokio::test]
 async fn runtime_secret_registration_is_bound_to_approval_scope_and_retirement() -> TestResult {
+    if isolate_process_owned_fixture(
+        "runtime_secret_registration_is_bound_to_approval_scope_and_retirement",
+        "runtime-pairing",
+    )? {
+        return Ok(());
+    }
     let bus = MemoryBus::new();
     let owner = Broker::new();
     let broker = owner.spawn(bus.clone());

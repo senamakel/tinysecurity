@@ -4,8 +4,8 @@ use super::Arc;
 use std::sync::OnceLock;
 use std::{
     collections::BTreeMap,
-    sync::{Mutex, RwLock},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::{Mutex, RwLock},
 };
 use tinysecurity::crypto::{
     device_handles::{PairedTunnelRegistration, Registry},
@@ -67,9 +67,15 @@ fn derive_runtime_scope(
     approval: &tinysecurity_bus::ApprovalScope2,
     secret: &SecretRegistration2,
     defaults: &DevicePairingRuntimeScope2,
-) -> tinybus::Result<(tinysecurity_bus::DevicePairingScope2, tinysecurity_bus::Origin)> {
+) -> tinybus::Result<(
+    tinysecurity_bus::DevicePairingScope2,
+    tinysecurity_bus::Origin,
+)> {
     if approval.scope_id.len() != 32
-        || !approval.scope_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !approval
+            .scope_id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
         || approval.generation == 0
         || !approval.require_approval
         || approval.auto_approve_all
@@ -83,9 +89,10 @@ fn derive_runtime_scope(
             .all(|byte| byte.is_ascii_hexdigit())
         || !defaults.allowed_origins.contains(&secret.origin)
         || !valid_persistence_backend_id(&defaults.persistence_backend_id)
-        || defaults.legacy_device_backend_id.as_ref().is_some_and(|id| {
-            id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
-        })
+        || defaults
+            .legacy_device_backend_id
+            .as_ref()
+            .is_some_and(|id| id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()))
     {
         return Err(denied());
     }
@@ -120,9 +127,10 @@ fn admit_runtime_scope(
             .all(|byte| byte.is_ascii_hexdigit())
         || !valid_persistence_backend_id(&scope.persistence_backend_id)
         || scope.legacy_device_backend_id.is_some() != scope.legacy_source_registration_id.is_some()
-        || scope.legacy_source_registration_id.as_deref().is_some_and(|id| {
-            id != scope.secret_registration_id
-        })
+        || scope
+            .legacy_source_registration_id
+            .as_deref()
+            .is_some_and(|id| id != scope.secret_registration_id)
     {
         return Err(denied());
     }
@@ -708,13 +716,15 @@ impl PairingState {
             .scope_snapshot(&request.approval_scope_id)
             .map_err(|_| denied())?;
         let generation = self.generation.load(Ordering::Acquire);
-        if approval.generation != generation || !approval.require_approval || approval.auto_approve_all {
+        if approval.generation != generation
+            || !approval.require_approval
+            || approval.auto_approve_all
+        {
             return Err(denied());
         }
         let defaults = self.config.runtime_scope.as_ref().ok_or_else(denied)?;
-        let (secret_registration, secret_scope) = self
-            .secret
-            .config_master_for_scope(&approval.scope_id)?;
+        let (secret_registration, secret_scope) =
+            self.secret.config_master_for_scope(&approval.scope_id)?;
         if secret_scope != approval {
             return Err(denied());
         }

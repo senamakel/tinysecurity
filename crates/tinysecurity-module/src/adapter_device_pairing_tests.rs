@@ -42,8 +42,8 @@ const SECOND_FRAME_HANDLE: &str = "bcdef0123456789abcdef0123456789a";
 #[test]
 fn runtime_pairing_scope_derives_secret_and_backend_bindings_from_init_policy() {
     use tinysecurity_bus::{
-        AccessTier, ApprovalScope2, DevicePairingRuntimeScope2, MasterPurpose2, Origin,
-        SecretRegistration2, SecretBinding2, MasterSlotKind2, SubjectScope,
+        AccessTier, ApprovalScope2, DevicePairingRuntimeScope2, MasterPurpose2, MasterSlotKind2,
+        Origin, SecretBinding2, SecretRegistration2, SubjectScope,
     };
 
     let approval = ApprovalScope2 {
@@ -78,20 +78,29 @@ fn runtime_pairing_scope_derives_secret_and_backend_bindings_from_init_policy() 
     let (scope, origin) = derive_runtime_scope(&approval, &secret, &defaults).unwrap();
     assert_eq!(scope.scope_id, approval.scope_id);
     assert_eq!(scope.secret_registration_id, secret.registration_id);
-    assert_eq!(scope.persistence_backend_id, defaults.persistence_backend_id);
-    assert_eq!(scope.legacy_device_backend_id, defaults.legacy_device_backend_id);
-    assert_eq!(scope.legacy_source_registration_id.as_deref(), Some(secret.registration_id.as_str()));
+    assert_eq!(
+        scope.persistence_backend_id,
+        defaults.persistence_backend_id
+    );
+    assert_eq!(
+        scope.legacy_device_backend_id,
+        defaults.legacy_device_backend_id
+    );
+    assert_eq!(
+        scope.legacy_source_registration_id.as_deref(),
+        Some(secret.registration_id.as_str())
+    );
     assert_eq!(origin, Origin::Operator);
 }
 
 #[test]
 fn runtime_pairing_scope_admission_is_idempotent_and_fails_closed_without_partial_state()
 -> TestResult {
+    use std::collections::BTreeMap;
     use tinysecurity_bus::{
         AccessTier, ApprovalScope2, DeviceConfig2, DevicePairingScope2, DevicePairingScopeReceipt2,
         Origin, SubjectScope,
     };
-    use std::collections::BTreeMap;
 
     let registry = Arc::new(tinysecurity::crypto::device_handles::Registry::new(
         DeviceConfig2 {
@@ -107,11 +116,18 @@ fn runtime_pairing_scope_admission_is_idempotent_and_fails_closed_without_partia
         &[],
         ":1.1",
         1,
-        tinysecurity::crypto::device_handles::Time { wall: 1_000, monotonic: 1_000 },
+        tinysecurity::crypto::device_handles::Time {
+            wall: 1_000,
+            monotonic: 1_000,
+        },
     )?);
     let approval = ApprovalScope2 {
         scope_id: SCOPE_ID.into(),
-        subject: SubjectScope { user: "user".into(), workspace: "workspace".into(), agent: "agent".into() },
+        subject: SubjectScope {
+            user: "user".into(),
+            workspace: "workspace".into(),
+            agent: "agent".into(),
+        },
         policy_ref: "policy".into(),
         generation: 1,
         ceiling: AccessTier::Full,
@@ -127,24 +143,84 @@ fn runtime_pairing_scope_admission_is_idempotent_and_fails_closed_without_partia
     };
     let mut epochs = BTreeMap::new();
     let mut catalog = BTreeMap::new();
-    let now = tinysecurity::crypto::device_handles::Time { wall: 1_001, monotonic: 1_001 };
+    let now = tinysecurity::crypto::device_handles::Time {
+        wall: 1_001,
+        monotonic: 1_001,
+    };
     let receipt = admit_runtime_scope(
-        scope.clone(), approval.clone(), Origin::Operator, &registry, 1, now, &mut epochs, &mut catalog,
+        scope.clone(),
+        approval.clone(),
+        Origin::Operator,
+        &registry,
+        1,
+        now,
+        &mut epochs,
+        &mut catalog,
     )?;
-    assert_eq!(receipt, DevicePairingScopeReceipt2 { scope_id: SCOPE_ID.into(), active: true });
-    assert_eq!(admit_runtime_scope(scope.clone(), approval.clone(), Origin::Operator, &registry, 1, now, &mut epochs, &mut catalog)?, receipt);
+    assert_eq!(
+        receipt,
+        DevicePairingScopeReceipt2 {
+            scope_id: SCOPE_ID.into(),
+            active: true
+        }
+    );
+    assert_eq!(
+        admit_runtime_scope(
+            scope.clone(),
+            approval.clone(),
+            Origin::Operator,
+            &registry,
+            1,
+            now,
+            &mut epochs,
+            &mut catalog
+        )?,
+        receipt
+    );
     assert_eq!(catalog.len(), 1);
     assert_eq!(epochs.len(), 1);
 
     let mut changed = scope;
     changed.persistence_backend_id = "changed-backend".into();
-    assert!(admit_runtime_scope(changed, approval.clone(), Origin::Operator, &registry, 1, now, &mut epochs, &mut catalog).is_err());
+    assert!(
+        admit_runtime_scope(
+            changed,
+            approval.clone(),
+            Origin::Operator,
+            &registry,
+            1,
+            now,
+            &mut epochs,
+            &mut catalog
+        )
+        .is_err()
+    );
     assert_eq!(catalog.len(), 1);
     assert_eq!(epochs.len(), 1);
 
-    let new_approval = ApprovalScope2 { scope_id: "c".repeat(32), generation: 2, ..approval };
-    let unregistered = DevicePairingScope2 { scope_id: new_approval.scope_id.clone(), secret_registration_id: "e".repeat(32), ..catalog[SCOPE_ID].clone() };
-    assert!(admit_runtime_scope(unregistered, new_approval, Origin::Operator, &registry, 2, now, &mut epochs, &mut catalog).is_err());
+    let new_approval = ApprovalScope2 {
+        scope_id: "c".repeat(32),
+        generation: 2,
+        ..approval
+    };
+    let unregistered = DevicePairingScope2 {
+        scope_id: new_approval.scope_id.clone(),
+        secret_registration_id: "e".repeat(32),
+        ..catalog[SCOPE_ID].clone()
+    };
+    assert!(
+        admit_runtime_scope(
+            unregistered,
+            new_approval,
+            Origin::Operator,
+            &registry,
+            2,
+            now,
+            &mut epochs,
+            &mut catalog
+        )
+        .is_err()
+    );
     assert_eq!(catalog.len(), 1);
     assert_eq!(epochs.len(), 1);
     Ok(())

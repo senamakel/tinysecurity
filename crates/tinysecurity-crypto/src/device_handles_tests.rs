@@ -119,12 +119,16 @@ fn runtime_scope_registration_is_idempotent_and_rejects_changed_authority() -> T
 
     let mut changed = canonical;
     changed.subject.user = "different-user".into();
-    assert!(registry
-        .register_scope(changed, Origin::Operator, 1, time(0))
-        .is_err());
-    assert!(registry
-        .register_scope(registration(&scope_id), Origin::Operator, 2, time(0))
-        .is_err());
+    assert!(
+        registry
+            .register_scope(changed, Origin::Operator, 1, time(0))
+            .is_err()
+    );
+    assert!(
+        registry
+            .register_scope(registration(&scope_id), Origin::Operator, 2, time(0))
+            .is_err()
+    );
     Ok(())
 }
 
