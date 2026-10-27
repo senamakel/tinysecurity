@@ -110,6 +110,26 @@ fn one_scope_config(
     config.scopes = vec![lookup_scope(catalog, scope_id)?];
     Ok(config)
 }
+fn validate_runtime_approval_snapshot(
+    approval: &tinysecurity_bus::ApprovalScope2,
+    generation: u64,
+) -> tinybus::Result<()> {
+    if approval.generation != generation || !approval.require_approval || approval.auto_approve_all
+    {
+        return Err(denied());
+    }
+    Ok(())
+}
+fn validate_secret_scope_binding(
+    approval: &tinysecurity_bus::ApprovalScope2,
+    selected: &tinysecurity_bus::ApprovalScope2,
+    verified: &tinysecurity_bus::ApprovalScope2,
+) -> tinybus::Result<()> {
+    if selected != approval || verified != approval {
+        return Err(denied());
+    }
+    Ok(())
+}
 fn derive_runtime_scope(
     approval: &tinysecurity_bus::ApprovalScope2,
     secret: &SecretRegistration2,
@@ -759,24 +779,14 @@ impl PairingState {
             .scope_snapshot(&request.approval_scope_id)
             .map_err(|_| denied())?;
         let generation = self.generation.load(Ordering::Acquire);
-        if approval.generation != generation
-            || !approval.require_approval
-            || approval.auto_approve_all
-        {
-            return Err(denied());
-        }
+        validate_runtime_approval_snapshot(&approval, generation)?;
         let defaults = self.config.runtime_scope.as_ref().ok_or_else(denied)?;
         let (secret_registration, secret_scope) =
             self.secret.config_master_for_scope(&approval.scope_id)?;
-        if secret_scope != approval {
-            return Err(denied());
-        }
         let verified_secret_scope = self
             .secret
             .cipher_scope(&secret_registration.registration_id)?;
-        if verified_secret_scope != approval {
-            return Err(denied());
-        }
+        validate_secret_scope_binding(&approval, &secret_scope, &verified_secret_scope)?;
         let (scope, origin) = derive_runtime_scope(&approval, &secret_registration, defaults)?;
         let now = time(self.clock.as_ref())?;
         let mut scopes = self.scopes.lock().map_err(|_| denied())?;

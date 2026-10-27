@@ -103,6 +103,8 @@ fn pairing_master_lookup_requires_one_config_user_registration_for_the_scope() -
     let scope_id = "a".repeat(32);
     let selected = unique_config_master_for_scope(std::iter::once(&descriptor), &scope_id)?;
     assert_eq!(selected.registration_id, "b".repeat(32));
+    ensure_scope_id_matches(&scope_id, &scope())?;
+    assert!(ensure_scope_id_matches(&"c".repeat(32), &scope()).is_err());
 
     assert!(unique_config_master_for_scope(std::iter::empty(), &"a".repeat(32)).is_err());
     assert!(

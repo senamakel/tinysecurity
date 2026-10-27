@@ -95,6 +95,24 @@ fn runtime_pairing_scope_derives_secret_and_backend_bindings_from_init_policy() 
         require_approval: false,
         ..approval.clone()
     };
+    assert!(validate_runtime_approval_snapshot(&approval, approval.generation).is_ok());
+    assert!(validate_runtime_approval_snapshot(&denied_approval, approval.generation).is_err());
+    assert!(validate_runtime_approval_snapshot(&approval, approval.generation + 1).is_err());
+    let automatic_approval = ApprovalScope2 {
+        auto_approve_all: true,
+        ..approval.clone()
+    };
+    assert!(validate_runtime_approval_snapshot(&automatic_approval, approval.generation).is_err());
+    assert!(validate_secret_scope_binding(&approval, &approval, &approval).is_ok());
+    let changed_secret_scope = ApprovalScope2 {
+        subject: SubjectScope {
+            user: "different-user".into(),
+            ..approval.subject.clone()
+        },
+        ..approval.clone()
+    };
+    assert!(validate_secret_scope_binding(&approval, &changed_secret_scope, &approval).is_err());
+    assert!(validate_secret_scope_binding(&approval, &approval, &changed_secret_scope).is_err());
     assert!(derive_runtime_scope(&denied_approval, &secret, &defaults).is_err());
     let mut wrong_purpose = secret.clone();
     wrong_purpose.purpose = MasterPurpose2::AppEncryptionMaster;
