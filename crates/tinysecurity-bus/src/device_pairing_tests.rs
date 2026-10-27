@@ -141,6 +141,19 @@ fn persistence_response_echoes_fixed_scope_and_backend_binding()
 }
 
 #[test]
+fn runtime_scope_defaults_are_init_only_and_redacted() {
+    let defaults = DevicePairingRuntimeScope2 {
+        persistence_backend_id: "pairing-state".into(),
+        legacy_device_backend_id: Some("a".repeat(32)),
+        allowed_origins: vec![Origin::Operator],
+    };
+    assert_eq!(
+        format!("{defaults:?}"),
+        "DevicePairingRuntimeScope2([REDACTED])"
+    );
+}
+
+#[test]
 fn legacy_import_and_recovery_requests_carry_no_key_or_authority_claims()
 -> Result<(), Box<dyn std::error::Error>> {
     for operation in [

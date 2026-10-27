@@ -17,6 +17,7 @@ fn config() -> DevicePairingConfig2 {
             legacy_source_registration_id: None,
         }],
         runtime_scope: None,
+        runtime_scope: None,
         max_pairings: 8,
         max_pending: 4,
         max_pending_ttl_ms: 60_000,
