@@ -75,6 +75,8 @@ pub mod methods {
     pub const RETIRE_APPROVAL_SCOPE2: &str = "RetireApprovalScope2";
     /// Register a secret resolver for an already-live approval scope (contract 1.29).
     pub const REGISTER_SECRET_SCOPE2: &str = "RegisterSecretScope2";
+    /// Register paired-device support for a canonical live approval scope.
+    pub const REGISTER_DEVICE_PAIRING_SCOPE2: &str = "RegisterDevicePairingScope2";
     /// Evaluate member.
     pub const EVALUATE: &str = "Evaluate";
     /// Check member.
@@ -264,6 +266,7 @@ pub const METHODS: &[&str] = &[
     methods::IMPORT_TRUST_SOURCE2,
     methods::REGISTER_APPROVAL_SCOPE2,
     methods::REGISTER_SECRET_SCOPE2,
+    methods::REGISTER_DEVICE_PAIRING_SCOPE2,
     methods::REPLACE_APPROVAL_SCOPE2,
     methods::RETIRE_APPROVAL_SCOPE2,
     methods::REGISTER_SANDBOX_SCOPE2,
