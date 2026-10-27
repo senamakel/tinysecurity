@@ -794,7 +794,6 @@ fn configuration(
                 legacy_source_registration_id: Some("b".repeat(32)),
             }],
             runtime_scope: None,
-            runtime_scope: None,
             max_pairings: 32,
             max_pending: 8,
             max_pending_ttl_ms: 300_000,
