@@ -1287,6 +1287,30 @@ fn legacy_import_is_atomic_idempotent_and_channel_recovery_is_user_scoped() {
             .recover_channel(
                 "legacy-channel-a",
                 &DevicePairingContextResponse2 {
+                    connection_nonce: "stale-socket-nonce".into(),
+                    ..authorized_channel.clone()
+                },
+                time(1_013),
+            )
+            .is_err()
+    );
+    assert!(
+        owner
+            .recover_channel(
+                "legacy-channel-a",
+                &DevicePairingContextResponse2 {
+                    channel_id: "another-channel".into(),
+                    ..authorized_channel.clone()
+                },
+                time(1_013),
+            )
+            .is_err()
+    );
+    assert!(
+        owner
+            .recover_channel(
+                "legacy-channel-a",
+                &DevicePairingContextResponse2 {
                     pairing_token: Some("reused-qr-token".into()),
                     ..authorized_channel.clone()
                 },
