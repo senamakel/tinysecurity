@@ -64,6 +64,10 @@ struct State {
 /// Service-owned registry; dropping its last owner drops all private key material.
 #[derive(Clone)]
 pub struct Registry(Arc<Mutex<State>>);
+const MAX_DEVICE_SCOPES: usize = 65_536;
+fn has_scope_capacity(scope_count: usize) -> bool {
+    scope_count < MAX_DEVICE_SCOPES
+}
 
 /// Module-owned tunnel capability and its authenticated lifetime binding.
 pub struct PairedTunnelRegistration<'a> {
@@ -235,7 +239,7 @@ impl Registry {
                 Err(Error::DeviceDenied)
             };
         }
-        if state.scopes.len() >= 65_536 {
+        if !has_scope_capacity(state.scopes.len()) {
             return Err(Error::DeviceDenied);
         }
         let key = Arc::new(KeyPair::generate()?);
