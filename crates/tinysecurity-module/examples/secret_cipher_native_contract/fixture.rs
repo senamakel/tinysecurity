@@ -1280,6 +1280,7 @@ async fn device_pairing_roundtrip(
             Some(device.public_key().encode().as_str())
         );
     }
+    eprintln!("pairing progress: legacy renewal completed");
     let _: DevicePairingResponse2 = proxy
         .call_confidential(
             names::methods::DEVICE_PAIRING2,
@@ -1349,6 +1350,7 @@ async fn device_pairing_roundtrip(
         Some(expected_legacy.as_str()),
         "the second channel retains its distinct core identity after module reload"
     );
+    eprintln!("pairing progress: legacy reload completed");
     let begin: DevicePairingResponse2 = proxy
         .call_confidential(
             names::methods::DEVICE_PAIRING2,
@@ -1433,6 +1435,7 @@ async fn device_pairing_roundtrip(
             .is_err(),
         "a confirmed receipt must not be reusable"
     );
+    eprintln!("pairing progress: initial enrollment completed");
     let pairing_id = confirmed.pairing_id.ok_or("confirmed pairing id")?;
     let session_id = confirmed.session_id.ok_or("confirmed session handle")?;
     let sealed: DeviceFrameResponse2 = proxy
@@ -1625,6 +1628,7 @@ async fn device_pairing_roundtrip(
         )
         .await?;
     assert_eq!(&*renewed_tunnel.open(&still_live.bytes)?, b"still-live");
+    eprintln!("pairing progress: renewal and live frame completed");
 
     let mut reinit = configuration.clone();
     for scope in &mut reinit
@@ -1700,6 +1704,7 @@ async fn device_pairing_roundtrip(
         Some(expected_legacy_after_reinit.as_str()),
         "legacy channel identity survives module generation reinitialization"
     );
+    eprintln!("pairing progress: module reinitialization completed");
     let before = *state.prompts.lock().map_err(|_| denied())?;
     assert_eq!(before, 2, "only the explicit Secret2 unlocks prompt");
     let _: DevicePairingResponse2 = proxy
@@ -1837,6 +1842,7 @@ async fn device_pairing_roundtrip(
         racing_confirm.await?.is_err(),
         "logout fences confirmation publication after persistence"
     );
+    eprintln!("pairing progress: logout/confirmation race completed");
     if logout_a_finished {
         second_logout.await??;
     } else {
