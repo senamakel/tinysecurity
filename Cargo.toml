@@ -84,13 +84,13 @@ url = "2"
 # TinyBus defines the message types, interface macro, and frozen module ABI
 # used by the generated integration. Socket and CLI features are unnecessary
 # here.
-tinybus = { path = "vendor/tinybus/crates/tinybus", version = "0.1.0", default-features = false, features = [
+tinybus = { path = "vendor/tinybus/crates/tinybus", version = "0.3.12", default-features = false, features = [
     "macros",
     "modules",
 ] }
 # The module-side SDK owns the isolated runtime and exports the ABI entrypoints
 # required by TinyBus's dynamic loader.
-tinybus-module = { path = "vendor/tinybus/crates/tinybus-module", version = "0.1.0" }
+tinybus-module = { path = "vendor/tinybus/crates/tinybus-module", version = "0.3.12" }
 # Derive macros for the crate-wide error type in `crates/tinysecurity-module/src/error/`.
 # Every dependency entry should carry a comment like this one saying why it is
 # here.
