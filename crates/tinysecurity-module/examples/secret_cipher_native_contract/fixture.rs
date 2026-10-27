@@ -2226,7 +2226,7 @@ pub(super) async fn run(
         task.abort();
         return Ok(());
     }
-    let loaded = loaded?;
+    let loaded = loaded.map_err(|error| format!("native module load failed in mode {mode}: {error}"))?;
     let module = host
         .name_owner(loaded.manifest.bus_name.as_str())
         .await?
@@ -2240,7 +2240,10 @@ pub(super) async fn run(
         .with_timeout(Duration::from_secs(35));
     assert!(proxy.attestation().await?.is_some());
     if mode == 18 {
-        let _: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
+        let _: PolicyInfo = proxy
+            .call(names::methods::POLICY_INFO, ())
+            .await
+            .map_err(|error| format!("device pairing module readiness failed: {error}"))?;
     }
     let mut audit_sequence = 1;
     let resolved = acquire_master(&proxy, &state, 1, "native-master", &mut audit_sequence).await;
@@ -2249,7 +2252,8 @@ pub(super) async fn run(
         task.abort();
         return Ok(());
     }
-    let SecretResponse2::MasterHandle { handle, .. } = resolved?;
+    let SecretResponse2::MasterHandle { handle, .. } = resolved
+        .map_err(|error| format!("native master acquisition failed in mode {mode}: {error}"))?;
     *state.master_alias.lock().map_err(|_| denied())? = Some(handle.clone());
     assert_eq!(*state.prompts.lock().map_err(|_| denied())?, 1);
     if matches!(mode, 14 | 17) {
@@ -2275,7 +2279,8 @@ pub(super) async fn run(
     }
     if mode == 18 {
         device_pairing_roundtrip(&lifecycle, &loaded.name, &config, &proxy, &state, &handle)
-            .await?;
+            .await
+            .map_err(|error| format!("native device pairing roundtrip failed: {error}"))?;
         lifecycle.shutdown(Duration::from_secs(5)).await;
         task.abort();
         println!(
