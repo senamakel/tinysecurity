@@ -98,11 +98,10 @@ fn request(call: u32) -> SecretRequest2 {
 }
 
 #[test]
-fn pairing_master_lookup_requires_one_config_user_registration_for_the_scope() {
+fn pairing_master_lookup_requires_one_config_user_registration_for_the_scope() -> TestResult {
     let descriptor = config().registrations.remove(0);
-    let selected =
-        unique_config_master_for_scope(std::iter::once(&descriptor), "a".repeat(32).as_str())
-            .expect("the exact ConfigUserMaster registration should be selected");
+    let scope_id = "a".repeat(32);
+    let selected = unique_config_master_for_scope(std::iter::once(&descriptor), &scope_id)?;
     assert_eq!(selected.registration_id, "b".repeat(32));
 
     assert!(unique_config_master_for_scope(std::iter::empty(), &"a".repeat(32)).is_err());
@@ -116,6 +115,7 @@ fn pairing_master_lookup_requires_one_config_user_registration_for_the_scope() {
     let mut app = descriptor.clone();
     app.purpose = MasterPurpose2::AppEncryptionMaster;
     assert!(unique_config_master_for_scope(std::iter::once(&app), &"a".repeat(32)).is_err());
+    Ok(())
 }
 struct Backend {
     mode: u32,
@@ -1243,6 +1243,58 @@ mod linked_fixture {
             },
         )
     }
+    fn activate_runtime_pairing(
+        connection: &Connection,
+        peer: &str,
+        approvals: &ApprovalConfig2,
+        audit: &AuditConfig2,
+        secret: &Arc<SecretState>,
+        clock: &Arc<FixedClock>,
+    ) -> tinybus::Result<()> {
+        let config = DeviceConfig2 {
+            scopes: vec![],
+            max_handles: 16,
+            max_in_flight: 4,
+            operations_per_minute: 4096,
+            frames_per_minute: 12_000,
+            max_ttl_ms: 300_000,
+            max_message_bytes: 1024,
+            max_bootstrap_nonces: 64,
+        };
+        let (device_registry, _) = super::super::super::device::configured(
+            Some(config),
+            Some(peer),
+            Some(approvals),
+            Some(audit),
+            1,
+            clock.as_ref(),
+        )?;
+        let pair_config = DevicePairingConfig2 {
+            scopes: vec![],
+            runtime_scope: Some(DevicePairingRuntimeScope2 {
+                persistence_backend_id: "runtime-pairing-state".into(),
+                legacy_device_backend_id: Some("8".repeat(32)),
+                allowed_origins: vec![Origin::Operator],
+            }),
+            max_pairings: 32,
+            max_pending: 8,
+            max_pending_ttl_ms: 30_000,
+            max_session_ttl_ms: 3_600_000,
+            max_state_bytes: 65_536,
+            callback_timeout_ms: 1_000,
+        };
+        let pairing_state = super::super::super::device_pairing::configured(
+            Some(pair_config),
+            connection,
+            Some(peer),
+            Some(secret),
+            device_registry.as_ref(),
+            Arc::clone(clock) as Arc<dyn tinysecurity::approval::Clock>,
+            1,
+        )?;
+        super::super::super::device::activate(device_registry.as_ref())?;
+        super::super::super::device_pairing::activate(pairing_state)
+    }
     async fn setup(
         connection: tinybus::Connection,
         fixture_config: serde_json::Value,
@@ -1304,49 +1356,14 @@ mod linked_fixture {
         );
         *state.registry.lock().map_err(|_| denied())? = Some(secret.registry.clone());
         if mode == 22 {
-            let config = DeviceConfig2 {
-                scopes: vec![],
-                max_handles: 16,
-                max_in_flight: 4,
-                operations_per_minute: 4096,
-                frames_per_minute: 12_000,
-                max_ttl_ms: 300_000,
-                max_message_bytes: 1024,
-                max_bootstrap_nonces: 64,
-            };
-            let (device_registry, _) = super::super::super::device::configured(
-                Some(config),
-                Some(peer.as_str()),
-                Some(&approvals),
-                Some(&audit),
-                1,
-                clock.as_ref(),
-            )?;
-            let pair_config = DevicePairingConfig2 {
-                scopes: vec![],
-                runtime_scope: Some(DevicePairingRuntimeScope2 {
-                    persistence_backend_id: "runtime-pairing-state".into(),
-                    legacy_device_backend_id: Some("8".repeat(32)),
-                    allowed_origins: vec![Origin::Operator],
-                }),
-                max_pairings: 32,
-                max_pending: 8,
-                max_pending_ttl_ms: 30_000,
-                max_session_ttl_ms: 3_600_000,
-                max_state_bytes: 65_536,
-                callback_timeout_ms: 1_000,
-            };
-            let pairing_state = super::super::super::device_pairing::configured(
-                Some(pair_config),
+            activate_runtime_pairing(
                 &connection,
-                Some(peer.as_str()),
-                Some(&secret),
-                device_registry.as_ref(),
-                clock.clone(),
-                1,
+                peer.as_str(),
+                &approvals,
+                &audit,
+                &secret,
+                &clock,
             )?;
-            super::super::super::device::activate(device_registry.as_ref())?;
-            super::super::super::device_pairing::activate(pairing_state)?;
         }
         let (cipher, audit_client) = cipher_tests::configured_fixture(
             &connection,

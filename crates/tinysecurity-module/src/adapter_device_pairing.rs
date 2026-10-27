@@ -1676,9 +1676,8 @@ pub(super) fn configured(
                         .iter()
                         .enumerate()
                         .any(|(index, origin)| runtime.allowed_origins[..index].contains(origin)))
-                {
-                    return Err(denied());
-                }
+            {
+                return Err(denied());
             }
             let peer = peer.ok_or_else(denied)?.parse::<tinybus::BusName>()?;
             if !peer.is_unique() {
