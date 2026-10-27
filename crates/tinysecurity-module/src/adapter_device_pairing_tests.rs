@@ -198,6 +198,33 @@ fn runtime_pairing_scope_admission_is_idempotent_and_fails_closed_without_partia
     assert_eq!(catalog.len(), 1);
     assert_eq!(epochs.len(), 1);
 
+    let rejected_approval = ApprovalScope2 {
+        scope_id: "d".repeat(32),
+        require_approval: false,
+        ..approval.clone()
+    };
+    let rejected_scope = DevicePairingScope2 {
+        scope_id: rejected_approval.scope_id.clone(),
+        secret_registration_id: "d".repeat(32),
+        ..catalog[SCOPE_ID].clone()
+    };
+    assert!(
+        admit_runtime_scope(
+            rejected_scope,
+            rejected_approval,
+            Origin::Operator,
+            &registry,
+            1,
+            now,
+            &mut epochs,
+            &mut catalog
+        )
+        .is_err(),
+        "native device registry refusal must prevent either pairing-map insert"
+    );
+    assert_eq!(catalog.len(), 1);
+    assert_eq!(epochs.len(), 1);
+
     let new_approval = ApprovalScope2 {
         scope_id: "c".repeat(32),
         generation: 2,
