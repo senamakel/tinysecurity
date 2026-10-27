@@ -127,7 +127,7 @@ fn runtime_pairing_scope_admission_is_idempotent_and_fails_closed_without_partia
     };
     let mut epochs = BTreeMap::new();
     let mut catalog = BTreeMap::new();
-    let now = Time { wall: 1_001, monotonic: 1_001 };
+    let now = tinysecurity::crypto::device_handles::Time { wall: 1_001, monotonic: 1_001 };
     let receipt = admit_runtime_scope(
         scope.clone(), approval.clone(), Origin::Operator, &registry, 1, now, &mut epochs, &mut catalog,
     )?;

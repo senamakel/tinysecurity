@@ -18,7 +18,7 @@ use tinysecurity_bus::{
     DevicePairingOperation2, DevicePairingPersistenceOperation2, DevicePairingPersistenceRequest2,
     DevicePairingPersistenceResponse2, DevicePairingPurpose2, DevicePairingRequest2,
     DevicePairingResponse2, DevicePairingRuntimeScope2, MasterPurpose2, MasterSlotKind2,
-    RegisterDevicePairingScopeRequest2, SecretRegistration2, callback_names2,
+    SecretRegistration2, callback_names2,
 };
 use zeroize::{Zeroize, Zeroizing};
 
