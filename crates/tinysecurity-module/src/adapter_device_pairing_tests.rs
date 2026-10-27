@@ -207,17 +207,19 @@ fn runtime_pairing_scope_admission_is_idempotent_and_fails_closed_without_partia
         scope_id: "e".repeat(32),
         ..catalog[SCOPE_ID].clone()
     };
-    assert!(admit_runtime_scope(
-        mismatched_scope,
-        approval.clone(),
-        Origin::Operator,
-        &registry,
-        1,
-        now,
-        &mut epochs,
-        &mut catalog,
-    )
-    .is_err());
+    assert!(
+        admit_runtime_scope(
+            mismatched_scope,
+            approval.clone(),
+            Origin::Operator,
+            &registry,
+            1,
+            now,
+            &mut epochs,
+            &mut catalog,
+        )
+        .is_err()
+    );
     assert_eq!(catalog.len(), 1);
     assert_eq!(epochs.len(), 1);
 
@@ -315,17 +317,19 @@ fn runtime_pairing_scope_admission_is_idempotent_and_fails_closed_without_partia
         scope_id: full_scope.scope_id.clone(),
         ..approval.clone()
     };
-    assert!(admit_runtime_scope(
-        full_scope,
-        full_approval,
-        Origin::Operator,
-        &registry,
-        1,
-        now,
-        &mut full_epochs,
-        &mut full_catalog,
-    )
-    .is_err());
+    assert!(
+        admit_runtime_scope(
+            full_scope,
+            full_approval,
+            Origin::Operator,
+            &registry,
+            1,
+            now,
+            &mut full_epochs,
+            &mut full_catalog,
+        )
+        .is_err()
+    );
     assert_eq!(full_catalog.len(), 128);
     assert_eq!(full_epochs.len(), 128);
     Ok(())
