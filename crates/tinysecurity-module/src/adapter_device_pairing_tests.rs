@@ -103,7 +103,7 @@ fn runtime_pairing_scope_derives_secret_and_backend_bindings_from_init_policy() 
     wrong_slot.target.slot = MasterSlotKind2::App;
     assert!(derive_runtime_scope(&approval, &wrong_slot, &defaults).is_err());
     let denied_defaults = DevicePairingRuntimeScope2 {
-        allowed_origins: vec![Origin::Backend],
+        allowed_origins: vec![Origin::Copilot],
         ..defaults.clone()
     };
     assert!(derive_runtime_scope(&approval, &secret, &denied_defaults).is_err());
@@ -271,7 +271,7 @@ fn runtime_pairing_scope_admission_is_idempotent_and_fails_closed_without_partia
     let new_approval = ApprovalScope2 {
         scope_id: "c".repeat(32),
         generation: 2,
-        ..approval
+        ..approval.clone()
     };
     let unregistered = DevicePairingScope2 {
         scope_id: new_approval.scope_id.clone(),
