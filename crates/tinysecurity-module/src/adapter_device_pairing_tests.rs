@@ -457,7 +457,11 @@ async fn legacy_host_callback_consumes_its_handle_before_dispatch() -> TestResul
             .await
             .is_err()
     );
-    assert_eq!(callbacks.consumed_legacy_imports.lock()?.len(), 1);
+    let consumed = callbacks
+        .consumed_legacy_imports
+        .lock()
+        .map_err(|_| "legacy import lock poisoned")?;
+    assert_eq!(consumed.len(), 1);
     broker.abort();
     Ok(())
 }
