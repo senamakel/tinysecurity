@@ -129,6 +129,30 @@ fn runtime_scope_registration_is_idempotent_and_rejects_changed_authority() -> T
 }
 
 #[test]
+fn empty_device_config_allows_only_later_host_registered_scopes() -> TestResult {
+    use tinysecurity_bus::DeviceConfig2;
+
+    let registry = Registry::new(
+        DeviceConfig2 {
+            scopes: Vec::new(),
+            max_handles: 16,
+            max_in_flight: 2,
+            operations_per_minute: 100,
+            frames_per_minute: 12_000,
+            max_ttl_ms: 100,
+            max_message_bytes: 1000,
+            max_bootstrap_nonces: 2,
+        },
+        &[],
+        ":1.1",
+        1,
+        time(0),
+    )?;
+    assert!(key(&registry, 'a', DeviceKeyPurpose2::Static).is_err());
+    Ok(())
+}
+
+#[test]
 fn static_key_aliases_cannot_bypass_bootstrap_replay() -> TestResult {
     let reg = registry()?;
     let (first, public) = key(&reg, 'a', DeviceKeyPurpose2::Static)?;
