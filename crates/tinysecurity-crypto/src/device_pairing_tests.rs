@@ -1266,6 +1266,11 @@ fn legacy_import_is_atomic_idempotent_and_channel_recovery_is_user_scoped() {
         .unwrap();
     assert_eq!(recovered.pairing_id, imported[0].pairing_id);
     assert_eq!(recovered.device_public_key, device);
+    let durable = owner.snapshot_state().unwrap();
+    let mut reloaded = owner();
+    reloaded
+        .merge_durable_state(&durable, &authorized_channel, time(1_012))
+        .expect("channel-bound tokenless Recover may rehydrate the same user's durable state");
     let foreign = DevicePairingContextResponse2 {
         user_binding: "another-user".into(),
         ..authorized.clone()
