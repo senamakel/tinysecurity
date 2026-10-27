@@ -347,6 +347,51 @@ fn legacy_import_handles_are_single_use_per_pairing_scope() {
     assert!(consume_legacy_import_handle(&mut consumed, SCOPE_ID, "another-handle", 2,).is_err());
 }
 
+#[test]
+fn dynamic_pairing_catalog_supplies_only_the_requested_scope() -> TestResult {
+    use tinysecurity_bus::{
+        DevicePairingConfig2, DevicePairingRuntimeScope2, DevicePairingScope2, Origin,
+    };
+
+    let scope = DevicePairingScope2 {
+        scope_id: SCOPE_ID.into(),
+        secret_registration_id: "b".repeat(32),
+        persistence_backend_id: "pairing-state".into(),
+        legacy_device_backend_id: Some("c".repeat(32)),
+        legacy_source_registration_id: Some("b".repeat(32)),
+    };
+    let catalog = RwLock::new([(SCOPE_ID.into(), scope.clone())].into());
+    assert_eq!(lookup_scope(&catalog, SCOPE_ID)?, scope);
+    assert!(lookup_scope(&catalog, "d".repeat(32).as_str()).is_err());
+
+    let config = DevicePairingConfig2 {
+        scopes: vec![],
+        runtime_scope: Some(DevicePairingRuntimeScope2 {
+            persistence_backend_id: "pairing-state".into(),
+            legacy_device_backend_id: Some("c".repeat(32)),
+            allowed_origins: vec![Origin::Operator],
+        }),
+        max_pairings: 32,
+        max_pending: 8,
+        max_pending_ttl_ms: 30_000,
+        max_session_ttl_ms: 3_600_000,
+        max_state_bytes: 65_536,
+        callback_timeout_ms: 1_000,
+    };
+    let one_scope = one_scope_config(&config, &catalog, SCOPE_ID)?;
+    assert_eq!(one_scope.scopes, vec![scope]);
+    assert_eq!(one_scope.runtime_scope, config.runtime_scope);
+    assert_eq!(one_scope.max_pairings, config.max_pairings);
+    Ok(())
+}
+
+#[test]
+fn legacy_callback_consumption_locks_and_records_the_one_shot_handle() {
+    let consumed = Mutex::new(std::collections::BTreeSet::new());
+    assert!(consume_legacy_import(&consumed, SCOPE_ID, "callback-handle").is_ok());
+    assert!(consume_legacy_import(&consumed, SCOPE_ID, "callback-handle").is_err());
+}
+
 fn registry_with_frame()
 -> Result<Arc<tinysecurity::crypto::device_handles::Registry>, Box<dyn std::error::Error>> {
     use tinysecurity::crypto::{

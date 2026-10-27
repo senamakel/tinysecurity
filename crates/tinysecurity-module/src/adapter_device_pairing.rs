@@ -82,6 +82,34 @@ fn unlock_scope_lookup<T>(
 fn valid_persistence_backend_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
 }
+fn lookup_scope(
+    catalog: &RwLock<BTreeMap<String, tinysecurity_bus::DevicePairingScope2>>,
+    scope_id: &str,
+) -> tinybus::Result<tinysecurity_bus::DevicePairingScope2> {
+    catalog
+        .read()
+        .map_err(|_| denied())?
+        .get(scope_id)
+        .cloned()
+        .ok_or_else(denied)
+}
+fn consume_legacy_import(
+    consumed: &Mutex<BTreeSet<(String, String)>>,
+    scope_id: &str,
+    handle: &str,
+) -> tinybus::Result<()> {
+    let mut consumed = consumed.lock().map_err(|_| denied())?;
+    consume_legacy_import_handle(&mut consumed, scope_id, handle, MAX_LEGACY_IMPORT_HANDLES)
+}
+fn one_scope_config(
+    config: &DevicePairingConfig2,
+    catalog: &RwLock<BTreeMap<String, tinysecurity_bus::DevicePairingScope2>>,
+    scope_id: &str,
+) -> tinybus::Result<DevicePairingConfig2> {
+    let mut config = config.clone();
+    config.scopes = vec![lookup_scope(catalog, scope_id)?];
+    Ok(config)
+}
 fn derive_runtime_scope(
     approval: &tinysecurity_bus::ApprovalScope2,
     secret: &SecretRegistration2,
@@ -319,12 +347,7 @@ struct HostCallbacks {
 }
 impl HostCallbacks {
     fn scope(&self, scope_id: &str) -> tinybus::Result<tinysecurity_bus::DevicePairingScope2> {
-        self.scope_catalog
-            .read()
-            .map_err(|_| denied())?
-            .get(scope_id)
-            .cloned()
-            .ok_or_else(denied)
+        lookup_scope(&self.scope_catalog, scope_id)
     }
     async fn resolve(
         &self,
@@ -411,15 +434,7 @@ impl HostCallbacks {
         if handle.is_empty() || handle.len() > 256 {
             return Err(denied());
         }
-        {
-            let mut consumed = self.consumed_legacy_imports.lock().map_err(|_| denied())?;
-            consume_legacy_import_handle(
-                &mut consumed,
-                scope_id,
-                handle,
-                MAX_LEGACY_IMPORT_HANDLES,
-            )?;
-        }
+        consume_legacy_import(&self.consumed_legacy_imports, scope_id, handle)?;
         let request = DevicePairingLegacyLoadRequest2 {
             handle: handle.into(),
         };
@@ -731,9 +746,7 @@ impl PairingState {
         )
     }
     fn one_scope_config(&self, scope_id: &str) -> tinybus::Result<DevicePairingConfig2> {
-        let mut config = self.config.clone();
-        config.scopes = vec![self.callbacks.scope(scope_id)?];
-        Ok(config)
+        one_scope_config(&self.config, &self.scope_catalog, scope_id)
     }
 
     /// Bind one live approval scope to pairing using init-fixed authority defaults.
