@@ -117,6 +117,12 @@ fn unique_config_master_for_scope<'a>(
     }
     Ok(registration)
 }
+fn ensure_scope_id_matches(scope_id: &str, canonical: &ApprovalScope2) -> tinybus::Result<()> {
+    if canonical.scope_id != scope_id {
+        return Err(denied());
+    }
+    Ok(())
+}
 #[derive(Default)]
 struct Inventory {
     registrations: BTreeSet<String>,
@@ -299,9 +305,7 @@ impl SecretState {
         drop(dynamic);
         let registration = self.registration_id(&descriptor.registration_id)?;
         let canonical = registration.scope.read().map_err(|_| denied())?.clone();
-        if canonical.scope_id != scope_id {
-            return Err(denied());
-        }
+        ensure_scope_id_matches(scope_id, &canonical)?;
         Ok((descriptor, canonical))
     }
     pub(super) fn prepare_cipher(
