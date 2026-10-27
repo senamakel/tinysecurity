@@ -1267,7 +1267,13 @@ fn legacy_import_is_atomic_idempotent_and_channel_recovery_is_user_scoped() {
     assert_eq!(recovered.pairing_id, imported[0].pairing_id);
     assert_eq!(recovered.device_public_key, device);
     let durable = owner.snapshot_state().unwrap();
-    let mut reloaded = owner();
+    let mut reloaded = DevicePairingOwner::new(
+        config(),
+        1,
+        time(1_012),
+        [(SCOPE.into(), Zeroizing::new([0x41; 32]))].into(),
+    )
+    .unwrap();
     reloaded
         .merge_durable_state(&durable, &authorized_channel, time(1_012))
         .expect("channel-bound tokenless Recover may rehydrate the same user's durable state");
