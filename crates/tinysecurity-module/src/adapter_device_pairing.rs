@@ -655,7 +655,10 @@ impl PairingState {
                 approval,
                 secret_registration.origin,
                 generation,
-                now,
+                tinysecurity::crypto::device_handles::Time {
+                    wall: now.wall,
+                    monotonic: now.monotonic,
+                },
             ).map_err(|_| denied())?;
             return Ok(tinysecurity_bus::DevicePairingScopeReceipt2 {
                 scope_id: scope.scope_id,
@@ -673,7 +676,10 @@ impl PairingState {
                 approval,
                 secret_registration.origin,
                 generation,
-                now,
+                tinysecurity::crypto::device_handles::Time {
+                    wall: now.wall,
+                    monotonic: now.monotonic,
+                },
             )
             .map_err(|_| denied())?;
         let scope_id = scope.scope_id.clone();
@@ -728,7 +734,7 @@ impl PairingState {
         }
         let one_scope = self.one_scope_config(&scope.scope_id)?;
         let owner = if let Some(ciphertext) = loaded.ciphertext.as_deref() {
-            let state = decode_state(&cipher, ciphertext, scope)?;
+            let state = decode_state(&cipher, ciphertext, &scope)?;
             DevicePairingOwner::restore(one_scope, generation, time(self.clock.as_ref())?, &state)
                 .map_err(|_| denied())?
         } else {
@@ -743,7 +749,7 @@ impl PairingState {
             .map_err(|_| denied())?;
             let revision = store_state(
                 &self.callbacks,
-                scope,
+                &scope,
                 &owner,
                 &cipher,
                 &loaded.revision,
@@ -1677,6 +1683,18 @@ pub(super) async fn invoke(
 ) -> tinybus::Result<DevicePairingResponse2> {
     let state = PAIRING.get().and_then(Option::as_ref).ok_or_else(denied)?;
     state.execute(request).await
+}
+
+/// Register one dynamically admitted scope against canonical approval state.
+pub(super) fn register_scope(
+    request: tinysecurity_bus::RegisterDevicePairingScopeRequest2,
+    approvals: &tinysecurity::approval::Engine,
+) -> tinybus::Result<tinysecurity_bus::DevicePairingScopeReceipt2> {
+    PAIRING
+        .get()
+        .and_then(Option::as_ref)
+        .ok_or_else(denied)?
+        .register_scope(request, approvals)
 }
 
 #[cfg(test)]

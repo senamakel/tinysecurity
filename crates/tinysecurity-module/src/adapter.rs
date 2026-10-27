@@ -1261,15 +1261,11 @@ impl PolicyService {
             .get_or_init(|| tokio::sync::Mutex::new(()))
             .lock()
             .await;
-        let pairing = self
-            .device_pairing
-            .as_ref()
-            .ok_or_else(|| tinybus::Error::failed("device pairing unavailable"))?;
         let approvals = self
             .approvals
             .as_ref()
             .ok_or_else(|| tinybus::Error::failed("approval unavailable"))?;
-        pairing.register_scope(request, &approvals.1)
+        device_pairing::register_scope(request, approvals)
     }
     async fn replace_approval_scope2(
         &self,
