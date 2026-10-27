@@ -113,17 +113,17 @@ fn runtime_scope_registration_is_idempotent_and_rejects_changed_authority() -> T
         require_approval: true,
         auto_approve_all: false,
     };
-    registry.register_scope(canonical.clone(), Origin::Operator, 1, time(1))?;
-    registry.register_scope(canonical.clone(), Origin::Operator, 1, time(2))?;
+    registry.register_scope(canonical.clone(), Origin::Operator, 1, time(0))?;
+    registry.register_scope(canonical.clone(), Origin::Operator, 1, time(0))?;
     assert!(key(&registry, 'c', DeviceKeyPurpose2::Static).is_ok());
 
     let mut changed = canonical;
     changed.subject.user = "different-user".into();
     assert!(registry
-        .register_scope(changed, Origin::Operator, 1, time(3))
+        .register_scope(changed, Origin::Operator, 1, time(0))
         .is_err());
     assert!(registry
-        .register_scope(registration(&scope_id), Origin::Operator, 2, time(4))
+        .register_scope(registration(&scope_id), Origin::Operator, 2, time(0))
         .is_err());
     Ok(())
 }
