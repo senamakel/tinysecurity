@@ -3,7 +3,7 @@
 use super::Arc;
 use std::sync::OnceLock;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     sync::{Mutex, RwLock},
 };
@@ -24,6 +24,25 @@ use zeroize::{Zeroize, Zeroizing};
 
 fn denied() -> tinybus::Error {
     tinybus::Error::failed("device pairing authority denied")
+}
+const MAX_LEGACY_IMPORT_HANDLES: usize = 4096;
+fn consume_legacy_import_handle(
+    consumed: &mut BTreeSet<(String, String)>,
+    scope_id: &str,
+    handle: &str,
+    limit: usize,
+) -> tinybus::Result<()> {
+    if scope_id.len() != 32
+        || !scope_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || handle.is_empty()
+        || handle.len() > 256
+        || handle.chars().any(char::is_control)
+        || consumed.len() >= limit
+        || !consumed.insert((scope_id.to_owned(), handle.to_owned()))
+    {
+        return Err(denied());
+    }
+    Ok(())
 }
 fn validate_logout_context(
     context: &DevicePairingContextResponse2,
@@ -295,6 +314,7 @@ struct HostCallbacks {
     peer: tinybus::BusName,
     config: DevicePairingConfig2,
     scope_catalog: Arc<RwLock<BTreeMap<String, tinysecurity_bus::DevicePairingScope2>>>,
+    consumed_legacy_imports: Mutex<BTreeSet<(String, String)>>,
 }
 impl HostCallbacks {
     fn scope(&self, scope_id: &str) -> tinybus::Result<tinysecurity_bus::DevicePairingScope2> {
@@ -390,6 +410,12 @@ impl HostCallbacks {
         if handle.is_empty() || handle.len() > 256 {
             return Err(denied());
         }
+        consume_legacy_import_handle(
+            &mut self.consumed_legacy_imports.lock().map_err(|_| denied())?,
+            scope_id,
+            handle,
+            MAX_LEGACY_IMPORT_HANDLES,
+        )?;
         let request = DevicePairingLegacyLoadRequest2 {
             handle: handle.into(),
         };
@@ -1711,6 +1737,7 @@ pub(super) fn configured(
                     peer,
                     config: config.clone(),
                     scope_catalog: Arc::clone(&scope_catalog),
+                    consumed_legacy_imports: Mutex::new(BTreeSet::new()),
                 },
                 config,
                 secret,

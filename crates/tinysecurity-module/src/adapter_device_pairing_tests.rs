@@ -226,6 +226,18 @@ fn runtime_pairing_scope_admission_is_idempotent_and_fails_closed_without_partia
     Ok(())
 }
 
+#[test]
+fn legacy_import_handles_are_single_use_per_pairing_scope() {
+    let mut consumed = std::collections::BTreeSet::new();
+    assert!(consume_legacy_import_handle(&mut consumed, SCOPE_ID, "one-shot-handle", 2,).is_ok());
+    assert!(consume_legacy_import_handle(&mut consumed, SCOPE_ID, "one-shot-handle", 2,).is_err());
+    assert!(
+        consume_legacy_import_handle(&mut consumed, "b".repeat(32).as_str(), "one-shot-handle", 2,)
+            .is_ok()
+    );
+    assert!(consume_legacy_import_handle(&mut consumed, SCOPE_ID, "another-handle", 2,).is_err());
+}
+
 fn registry_with_frame()
 -> Result<Arc<tinysecurity::crypto::device_handles::Registry>, Box<dyn std::error::Error>> {
     use tinysecurity::crypto::{
