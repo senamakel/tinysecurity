@@ -1201,8 +1201,14 @@ fn renewed_pairing_keeps_legacy_channel_claim_until_every_channel_is_revoked() {
         [(SCOPE.into(), Zeroizing::new([0x41; 32]))].into(),
     )
     .unwrap();
+    let recovery_context = DevicePairingContextResponse2 {
+        channel_id: migrated_channel.clone(),
+        pairing_token: None,
+        connection_nonce: String::new(),
+        ..authorized.clone()
+    };
     merged
-        .merge_durable_state(&snapshot, &authorized, time(1_040))
+        .merge_durable_state(&snapshot, &recovery_context, time(1_040))
         .unwrap();
     assert!(merged.records.is_empty());
     assert_eq!(merged.revocations.len(), 2);
