@@ -475,6 +475,15 @@ impl Callback {
         {
             return Err(denied());
         }
+        if tokenless_recovery {
+            eprintln!(
+                "fixture Recover context event={} requested_exact_channel={} token_absent={} nonce_empty={}",
+                request.host_event_id,
+                request.requested_channel_id.as_deref() == Some(channel),
+                tokenless_recovery || channel.is_empty(),
+                nonce.is_empty(),
+            );
+        }
         let expires_at_ms = if matches!(
             request.host_event_id.as_str(),
             "expired-user-event" | "legacy-import-expired"
