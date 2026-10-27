@@ -73,7 +73,7 @@ pub struct RegisterDevicePairingScopeRequest2 {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DevicePairingScopeReceipt2 {
-    /// Canonical approval scope id registered by TinySecurity.
+    /// Canonical approval scope id registered by `TinySecurity`.
     pub scope_id: String,
     /// Whether the exact scope is active.
     pub active: bool,
