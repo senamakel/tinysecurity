@@ -17,7 +17,8 @@ use tinysecurity_bus::{
     DevicePairingLegacyFormat2, DevicePairingLegacyLoadRequest2, DevicePairingLegacyLoadResponse2,
     DevicePairingOperation2, DevicePairingPersistenceOperation2, DevicePairingPersistenceRequest2,
     DevicePairingPersistenceResponse2, DevicePairingPurpose2, DevicePairingRequest2,
-    DevicePairingResponse2, callback_names2,
+    DevicePairingResponse2, DevicePairingRuntimeScope2, MasterPurpose2, MasterSlotKind2,
+    RegisterDevicePairingScopeRequest2, SecretRegistration2, callback_names2,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -61,6 +62,97 @@ fn unlock_scope_lookup<T>(
 }
 fn valid_persistence_backend_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
+}
+fn derive_runtime_scope(
+    approval: &tinysecurity_bus::ApprovalScope2,
+    secret: &SecretRegistration2,
+    defaults: &DevicePairingRuntimeScope2,
+) -> tinybus::Result<(tinysecurity_bus::DevicePairingScope2, tinysecurity_bus::Origin)> {
+    if approval.scope_id.len() != 32
+        || !approval.scope_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || approval.generation == 0
+        || !approval.require_approval
+        || approval.auto_approve_all
+        || secret.approval_scope_id != approval.scope_id
+        || secret.purpose != MasterPurpose2::ConfigUserMaster
+        || secret.target.slot != MasterSlotKind2::User
+        || secret.registration_id.len() != 32
+        || !secret
+            .registration_id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || !defaults.allowed_origins.contains(&secret.origin)
+        || !valid_persistence_backend_id(&defaults.persistence_backend_id)
+        || defaults.legacy_device_backend_id.as_ref().is_some_and(|id| {
+            id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    {
+        return Err(denied());
+    }
+    let scope = tinysecurity_bus::DevicePairingScope2 {
+        scope_id: approval.scope_id.clone(),
+        secret_registration_id: secret.registration_id.clone(),
+        persistence_backend_id: defaults.persistence_backend_id.clone(),
+        legacy_device_backend_id: defaults.legacy_device_backend_id.clone(),
+        legacy_source_registration_id: defaults
+            .legacy_device_backend_id
+            .as_ref()
+            .map(|_| secret.registration_id.clone()),
+    };
+    Ok((scope, secret.origin.clone()))
+}
+fn admit_runtime_scope(
+    scope: tinysecurity_bus::DevicePairingScope2,
+    approval: tinysecurity_bus::ApprovalScope2,
+    origin: tinysecurity_bus::Origin,
+    registry: &Registry,
+    generation: u64,
+    now: tinysecurity::crypto::device_handles::Time,
+    epochs: &mut BTreeMap<String, u64>,
+    catalog: &mut BTreeMap<String, tinysecurity_bus::DevicePairingScope2>,
+) -> tinybus::Result<tinysecurity_bus::DevicePairingScopeReceipt2> {
+    if scope.scope_id != approval.scope_id
+        || approval.generation != generation
+        || scope.secret_registration_id.len() != 32
+        || !scope
+            .secret_registration_id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || !valid_persistence_backend_id(&scope.persistence_backend_id)
+        || scope.legacy_device_backend_id.is_some() != scope.legacy_source_registration_id.is_some()
+        || scope.legacy_source_registration_id.as_deref().is_some_and(|id| {
+            id != scope.secret_registration_id
+        })
+    {
+        return Err(denied());
+    }
+    if let Some(existing) = catalog.get(&scope.scope_id) {
+        if existing != &scope || !epochs.contains_key(&scope.scope_id) {
+            return Err(denied());
+        }
+        registry
+            .register_scope(approval, origin, generation, now)
+            .map_err(|_| denied())?;
+        return Ok(tinysecurity_bus::DevicePairingScopeReceipt2 {
+            scope_id: scope.scope_id,
+            active: true,
+        });
+    }
+    if catalog.len() >= 128 || epochs.contains_key(&scope.scope_id) {
+        return Err(denied());
+    }
+    // Native admission is the only fallible mutation. The two host-owned maps
+    // are already locked by the caller and insertion cannot fail afterward.
+    registry
+        .register_scope(approval, origin, generation, now)
+        .map_err(|_| denied())?;
+    let scope_id = scope.scope_id.clone();
+    catalog.insert(scope_id.clone(), scope);
+    epochs.insert(scope_id.clone(), 0);
+    Ok(tinysecurity_bus::DevicePairingScopeReceipt2 {
+        scope_id,
+        active: true,
+    })
 }
 fn check_persistence_fault(
     owner: &mut DevicePairingOwner,
@@ -623,9 +715,7 @@ impl PairingState {
         let (secret_registration, secret_scope) = self
             .secret
             .config_master_for_scope(&approval.scope_id)?;
-        if secret_scope != approval
-            || !defaults.allowed_origins.contains(&secret_registration.origin)
-        {
+        if secret_scope != approval {
             return Err(denied());
         }
         let verified_secret_scope = self
@@ -634,61 +724,23 @@ impl PairingState {
         if verified_secret_scope != approval {
             return Err(denied());
         }
-        let scope = tinysecurity_bus::DevicePairingScope2 {
-            scope_id: approval.scope_id.clone(),
-            secret_registration_id: secret_registration.registration_id.clone(),
-            persistence_backend_id: defaults.persistence_backend_id.clone(),
-            legacy_device_backend_id: defaults.legacy_device_backend_id.clone(),
-            legacy_source_registration_id: defaults
-                .legacy_device_backend_id
-                .as_ref()
-                .map(|_| secret_registration.registration_id.clone()),
-        };
+        let (scope, origin) = derive_runtime_scope(&approval, &secret_registration, defaults)?;
         let now = time(self.clock.as_ref())?;
         let mut scopes = self.scopes.lock().map_err(|_| denied())?;
         let mut catalog = self.scope_catalog.write().map_err(|_| denied())?;
-        if let Some(existing) = catalog.get(&scope.scope_id) {
-            if existing != &scope {
-                return Err(denied());
-            }
-            self.registry.register_scope(
-                approval,
-                secret_registration.origin,
-                generation,
-                tinysecurity::crypto::device_handles::Time {
-                    wall: now.wall,
-                    monotonic: now.monotonic,
-                },
-            ).map_err(|_| denied())?;
-            return Ok(tinysecurity_bus::DevicePairingScopeReceipt2 {
-                scope_id: scope.scope_id,
-                active: true,
-            });
-        }
-        if catalog.len() >= 128 {
-            return Err(denied());
-        }
-        // Device registry admission is the last fallible mutation. Both host
-        // registries are locked first, so catalog insertion and epoch creation
-        // cannot fail after it succeeds.
-        self.registry
-            .register_scope(
-                approval,
-                secret_registration.origin,
-                generation,
-                tinysecurity::crypto::device_handles::Time {
-                    wall: now.wall,
-                    monotonic: now.monotonic,
-                },
-            )
-            .map_err(|_| denied())?;
-        let scope_id = scope.scope_id.clone();
-        catalog.insert(scope_id.clone(), scope);
-        scopes.epochs.insert(scope_id.clone(), 0);
-        Ok(tinysecurity_bus::DevicePairingScopeReceipt2 {
-            scope_id,
-            active: true,
-        })
+        admit_runtime_scope(
+            scope,
+            approval,
+            origin,
+            &self.registry,
+            generation,
+            tinysecurity::crypto::device_handles::Time {
+                wall: now.wall,
+                monotonic: now.monotonic,
+            },
+            &mut scopes.epochs,
+            &mut catalog,
+        )
     }
     async fn unlock_scope(
         &self,
