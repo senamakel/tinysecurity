@@ -89,6 +89,40 @@ fn pairing_contract_is_versioned_after_the_frame_contract() {
 }
 
 #[test]
+fn runtime_pairing_registration_contains_only_a_live_approval_reference()
+-> Result<(), Box<dyn std::error::Error>> {
+    let request = RegisterDevicePairingScopeRequest2 {
+        approval_scope_id: "a".repeat(32),
+    };
+    let encoded = serde_json::to_value(&request)?;
+    assert_eq!(
+        encoded,
+        json!({ "approval_scope_id": "a".repeat(32) })
+    );
+    for forbidden in [
+        "subject",
+        "user",
+        "secret_registration_id",
+        "master_alias",
+        "persistence_backend_id",
+        "origin",
+    ] {
+        let mut forged = encoded.clone();
+        forged[forbidden] = json!("caller-controlled");
+        assert!(serde_json::from_value::<RegisterDevicePairingScopeRequest2>(forged).is_err());
+    }
+    let receipt = DevicePairingScopeReceipt2 {
+        scope_id: "a".repeat(32),
+        active: true,
+    };
+    assert_eq!(
+        serde_json::from_value::<DevicePairingScopeReceipt2>(serde_json::to_value(receipt.clone())?)?,
+        receipt
+    );
+    Ok(())
+}
+
+#[test]
 fn persistence_response_echoes_fixed_scope_and_backend_binding()
 -> Result<(), Box<dyn std::error::Error>> {
     let response = DevicePairingPersistenceResponse2 {
