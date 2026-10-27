@@ -35,6 +35,15 @@ use tinysecurity_bus::{
     SecretRequest2, SecretResponse2, SubjectScope, callback_names2, names,
 };
 use zeroize::Zeroizing;
+
+fn legacy_import_handle(host_event_id: &str) -> String {
+    match host_event_id {
+        "legacy-import-foreign-source" => "fixture-legacy-foreign-source".into(),
+        "legacy-import-corrupt" => "fixture-legacy-corrupt".into(),
+        event_id => format!("fixture-legacy-import-handle-{event_id}"),
+    }
+}
+
 fn denied() -> tinybus::Error {
     tinybus::Error::failed("native fixture denied")
 }
@@ -446,14 +455,7 @@ impl Callback {
                 _ => return Err(denied()),
             };
         let legacy_import_handle = if request.purpose == DevicePairingPurpose2::LegacyImport {
-            Some(
-                match request.host_event_id.as_str() {
-                    "legacy-import-foreign-source" => "fixture-legacy-foreign-source",
-                    "legacy-import-corrupt" => "fixture-legacy-corrupt",
-                    _ => "fixture-legacy-import-handle",
-                }
-                .to_string(),
-            )
+            Some(legacy_import_handle(&request.host_event_id))
         } else {
             None
         };
@@ -494,12 +496,10 @@ impl Callback {
 
     fn load_legacy_pairings(&self, args: serde_json::Value) -> tinybus::Result<serde_json::Value> {
         let (request,): (DevicePairingLegacyLoadRequest2,) = serde_json::from_value(args)?;
-        if !matches!(
-            request.handle.as_str(),
-            "fixture-legacy-import-handle"
-                | "fixture-legacy-foreign-source"
-                | "fixture-legacy-corrupt"
-        ) {
+        if request.handle != "fixture-legacy-foreign-source"
+            && request.handle != "fixture-legacy-corrupt"
+            && !request.handle.starts_with("fixture-legacy-import-handle-")
+        {
             return Err(denied());
         }
         let mut records = self
@@ -1059,7 +1059,6 @@ async fn device_pairing_roundtrip(
         .await
         .map_err(|error| format!("unlock after logout race failed: {error}"))?;
     let initial_public = unlock.core_public_key.ok_or("pairing public identity")?;
-    eprintln!("pairing progress: post-race unlock completed");
     let legacy_secrets = [[0x31; 32], [0x32; 32]];
     let legacy_devices = [KeyPair::generate()?, KeyPair::generate()?];
     let mut cipher_sequence = 4;
@@ -1090,7 +1089,6 @@ async fn device_pairing_roundtrip(
         });
     }
     *state.legacy_device_records.lock().map_err(|_| denied())? = legacy_records;
-    eprintln!("pairing progress: legacy records prepared");
     state
         .legacy_device_records
         .lock()
@@ -1156,7 +1154,6 @@ async fn device_pairing_roundtrip(
             ),),
         )
         .await?;
-    eprintln!("pairing progress: legacy import completed");
     assert!(
         proxy
             .call_confidential::<DevicePairingResponse2>(
@@ -1203,7 +1200,6 @@ async fn device_pairing_roundtrip(
         );
         legacy_pairing_ids.push(recovered.pairing_id.ok_or("legacy pairing id")?);
     }
-    eprintln!("pairing progress: legacy recovery completed");
     for (index, pairing_id) in legacy_pairing_ids.iter().enumerate() {
         let suffix = if index == 0 { "a" } else { "b" };
         let expected_core = KeyPair::from_secret(Zeroizing::new(legacy_secrets[index]))?
@@ -1284,7 +1280,6 @@ async fn device_pairing_roundtrip(
             Some(device.public_key().encode().as_str())
         );
     }
-    eprintln!("pairing progress: legacy renewal completed");
     let _: DevicePairingResponse2 = proxy
         .call_confidential(
             names::methods::DEVICE_PAIRING2,
@@ -1354,7 +1349,6 @@ async fn device_pairing_roundtrip(
         Some(expected_legacy.as_str()),
         "the second channel retains its distinct core identity after module reload"
     );
-    eprintln!("pairing progress: legacy reload completed");
     let begin: DevicePairingResponse2 = proxy
         .call_confidential(
             names::methods::DEVICE_PAIRING2,
@@ -1439,7 +1433,6 @@ async fn device_pairing_roundtrip(
             .is_err(),
         "a confirmed receipt must not be reusable"
     );
-    eprintln!("pairing progress: initial enrollment completed");
     let pairing_id = confirmed.pairing_id.ok_or("confirmed pairing id")?;
     let session_id = confirmed.session_id.ok_or("confirmed session handle")?;
     let sealed: DeviceFrameResponse2 = proxy
@@ -1632,7 +1625,6 @@ async fn device_pairing_roundtrip(
         )
         .await?;
     assert_eq!(&*renewed_tunnel.open(&still_live.bytes)?, b"still-live");
-    eprintln!("pairing progress: renewal and live frame completed");
 
     let mut reinit = configuration.clone();
     for scope in &mut reinit
@@ -1708,7 +1700,6 @@ async fn device_pairing_roundtrip(
         Some(expected_legacy_after_reinit.as_str()),
         "legacy channel identity survives module generation reinitialization"
     );
-    eprintln!("pairing progress: module reinitialization completed");
     let before = *state.prompts.lock().map_err(|_| denied())?;
     assert_eq!(before, 2, "only the explicit Secret2 unlocks prompt");
     let _: DevicePairingResponse2 = proxy
@@ -1846,7 +1837,6 @@ async fn device_pairing_roundtrip(
         racing_confirm.await?.is_err(),
         "logout fences confirmation publication after persistence"
     );
-    eprintln!("pairing progress: logout/confirmation race completed");
     if logout_a_finished {
         second_logout.await??;
     } else {
@@ -2071,6 +2061,10 @@ async fn exercise_migration(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "fixture_tests.rs"]
+mod tests;
 async fn reject_wrong_peer(bus: &MemoryBus, module: &BusName, handle: &str) -> tinybus::Result<()> {
     let attacker = Connection::connect(bus.connect().await?).await?;
     assert!(
@@ -2236,7 +2230,8 @@ pub(super) async fn run(
         task.abort();
         return Ok(());
     }
-    let loaded = loaded.map_err(|error| format!("native module load failed in mode {mode}: {error}"))?;
+    let loaded =
+        loaded.map_err(|error| format!("native module load failed in mode {mode}: {error}"))?;
     let module = host
         .name_owner(loaded.manifest.bus_name.as_str())
         .await?
