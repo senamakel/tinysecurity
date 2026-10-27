@@ -75,6 +75,7 @@ fn runtime_pairing_scope_derives_secret_and_backend_bindings_from_init_policy() 
         legacy_device_backend_id: Some("d".repeat(32)),
         allowed_origins: vec![Origin::Operator],
     };
+    assert!(validate_runtime_defaults(&defaults).is_ok());
     let (scope, origin) = derive_runtime_scope(&approval, &secret, &defaults)?;
     assert_eq!(scope.scope_id, approval.scope_id);
     assert_eq!(scope.secret_registration_id, secret.registration_id);
@@ -125,10 +126,26 @@ fn runtime_pairing_scope_derives_secret_and_backend_bindings_from_init_policy() 
         ..defaults.clone()
     };
     assert!(derive_runtime_scope(&approval, &secret, &denied_defaults).is_err());
+    let duplicate_defaults = DevicePairingRuntimeScope2 {
+        allowed_origins: vec![Origin::Operator, Origin::Operator],
+        ..defaults.clone()
+    };
+    assert!(validate_runtime_defaults(&duplicate_defaults).is_err());
+    let empty_origins = DevicePairingRuntimeScope2 {
+        allowed_origins: vec![],
+        ..defaults.clone()
+    };
+    assert!(validate_runtime_defaults(&empty_origins).is_err());
+    let invalid_legacy_backend = DevicePairingRuntimeScope2 {
+        legacy_device_backend_id: Some("bad".into()),
+        ..defaults.clone()
+    };
+    assert!(validate_runtime_defaults(&invalid_legacy_backend).is_err());
     let denied_defaults = DevicePairingRuntimeScope2 {
         persistence_backend_id: "invalid\nbackend".into(),
         ..defaults
     };
+    assert!(validate_runtime_defaults(&denied_defaults).is_err());
     assert!(derive_runtime_scope(&approval, &secret, &denied_defaults).is_err());
     Ok(())
 }

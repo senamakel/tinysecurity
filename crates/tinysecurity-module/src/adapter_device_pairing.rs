@@ -130,6 +130,24 @@ fn validate_secret_scope_binding(
     }
     Ok(())
 }
+fn validate_runtime_defaults(defaults: &DevicePairingRuntimeScope2) -> tinybus::Result<()> {
+    if !valid_persistence_backend_id(&defaults.persistence_backend_id)
+        || defaults.allowed_origins.is_empty()
+        || defaults.allowed_origins.len() > 8
+        || defaults
+            .legacy_device_backend_id
+            .as_ref()
+            .is_some_and(|id| id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        || defaults
+            .allowed_origins
+            .iter()
+            .enumerate()
+            .any(|(index, origin)| defaults.allowed_origins[..index].contains(origin))
+    {
+        return Err(denied());
+    }
+    Ok(())
+}
 fn derive_runtime_scope(
     approval: &tinysecurity_bus::ApprovalScope2,
     secret: &SecretRegistration2,
@@ -765,10 +783,6 @@ impl PairingState {
             context,
         )
     }
-    fn one_scope_config(&self, scope_id: &str) -> tinybus::Result<DevicePairingConfig2> {
-        one_scope_config(&self.config, &self.scope_catalog, scope_id)
-    }
-
     /// Bind one live approval scope to pairing using init-fixed authority defaults.
     pub(super) fn register_scope(
         &self,
@@ -847,7 +861,7 @@ impl PairingState {
         }) {
             return Err(denied());
         }
-        let one_scope = self.one_scope_config(&scope.scope_id)?;
+        let one_scope = one_scope_config(&self.config, &self.scope_catalog, &scope.scope_id)?;
         let owner = if let Some(ciphertext) = loaded.ciphertext.as_deref() {
             let state = decode_state(&cipher, ciphertext, &scope)?;
             DevicePairingOwner::restore(one_scope, generation, time(self.clock.as_ref())?, &state)
@@ -1687,20 +1701,8 @@ pub(super) fn configured(
             {
                 return Err(denied());
             }
-            if let Some(runtime) = &config.runtime_scope
-                && (!valid_persistence_backend_id(&runtime.persistence_backend_id)
-                    || runtime.allowed_origins.is_empty()
-                    || runtime.allowed_origins.len() > 8
-                    || runtime.legacy_device_backend_id.as_ref().is_some_and(|id| {
-                        id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    })
-                    || runtime
-                        .allowed_origins
-                        .iter()
-                        .enumerate()
-                        .any(|(index, origin)| runtime.allowed_origins[..index].contains(origin)))
-            {
-                return Err(denied());
+            if let Some(runtime) = &config.runtime_scope {
+                validate_runtime_defaults(runtime)?;
             }
             let peer = peer.ok_or_else(denied)?.parse::<tinybus::BusName>()?;
             if !peer.is_unique() {

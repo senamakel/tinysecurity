@@ -65,8 +65,11 @@ struct State {
 #[derive(Clone)]
 pub struct Registry(Arc<Mutex<State>>);
 const MAX_DEVICE_SCOPES: usize = 65_536;
-fn has_scope_capacity(scope_count: usize) -> bool {
-    scope_count < MAX_DEVICE_SCOPES
+fn ensure_scope_capacity(scope_count: usize) -> Result<()> {
+    if scope_count >= MAX_DEVICE_SCOPES {
+        return Err(Error::DeviceDenied);
+    }
+    Ok(())
 }
 
 /// Module-owned tunnel capability and its authenticated lifetime binding.
@@ -239,9 +242,7 @@ impl Registry {
                 Err(Error::DeviceDenied)
             };
         }
-        if !has_scope_capacity(state.scopes.len()) {
-            return Err(Error::DeviceDenied);
-        }
+        ensure_scope_capacity(state.scopes.len())?;
         let key = Arc::new(KeyPair::generate()?);
         state.scopes.insert(
             id.clone(),

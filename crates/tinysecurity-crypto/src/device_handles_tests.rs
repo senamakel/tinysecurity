@@ -158,9 +158,9 @@ fn empty_device_config_allows_only_later_host_registered_scopes() -> TestResult 
 
 #[test]
 fn runtime_scope_catalog_has_a_hard_bounded_capacity() {
-    assert!(has_scope_capacity(0));
-    assert!(has_scope_capacity(MAX_DEVICE_SCOPES - 1));
-    assert!(!has_scope_capacity(MAX_DEVICE_SCOPES));
+    assert!(ensure_scope_capacity(0).is_ok());
+    assert!(ensure_scope_capacity(MAX_DEVICE_SCOPES - 1).is_ok());
+    assert!(ensure_scope_capacity(MAX_DEVICE_SCOPES).is_err());
 }
 
 #[test]
