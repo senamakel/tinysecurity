@@ -269,6 +269,32 @@ impl SecretState {
         }
         Ok(reg.scope.read().map_err(|_| denied())?.clone())
     }
+    /// Find the unique live ConfigUserMaster binding for one canonical approval scope.
+    /// The caller supplies no registration alias; ambiguity fails closed.
+    pub(super) fn config_master_for_scope(
+        &self,
+        scope_id: &str,
+    ) -> tinybus::Result<(SecretRegistration2, ApprovalScope2)> {
+        let dynamic = self.dynamic.lock().map_err(|_| denied())?;
+        let mut matches = self
+            .registered
+            .values()
+            .chain(dynamic.values())
+            .filter(|registration| {
+                registration.descriptor.approval_scope_id == scope_id
+                    && registration.descriptor.purpose == MasterPurpose2::ConfigUserMaster
+            });
+        let registration = matches.next().ok_or_else(denied)?;
+        if matches.next().is_some() {
+            return Err(denied());
+        }
+        let descriptor = registration.descriptor.clone();
+        let canonical = registration.scope.read().map_err(|_| denied())?.clone();
+        if canonical.scope_id != scope_id {
+            return Err(denied());
+        }
+        Ok((descriptor, canonical))
+    }
     pub(super) fn prepare_cipher(
         &self,
         owner: &handles::cipher::CipherOwner,
