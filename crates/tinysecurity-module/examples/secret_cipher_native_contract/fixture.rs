@@ -475,8 +475,8 @@ impl Callback {
         {
             return Err(denied());
         }
-        let pairing_token = (!channel.is_empty() && !tokenless_recovery)
-            .then(|| "fixture-pairing-token".into());
+        let pairing_token =
+            (!channel.is_empty() && !tokenless_recovery).then(|| "fixture-pairing-token".into());
         if tokenless_recovery && pairing_token.is_some() {
             return Err(denied());
         }
