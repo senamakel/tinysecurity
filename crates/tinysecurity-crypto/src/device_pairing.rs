@@ -572,7 +572,7 @@ impl DevicePairingOwner {
         now: Time,
     ) -> Result<Vec<ImportedDevicePairing>> {
         self.check_time(now)?;
-        let binding = self.recovery_user_controller_context(context, &context.channel_id, now)?;
+        let binding = self.user_controller_context(context, now)?;
         if rows.len() > self.config.max_pairings as usize {
             return Err(Error::DeviceDenied);
         }
@@ -640,7 +640,7 @@ impl DevicePairingOwner {
         now: Time,
     ) -> Result<()> {
         self.check_time(now)?;
-        let binding = self.user_controller_context(context, now)?;
+        let binding = self.recovery_user_controller_context(context, &context.channel_id, now)?;
         let durable = Self::restore(self.config.clone(), self.generation, now, plaintext)?;
         if durable.scope_identities != self.scope_identities {
             return Err(Error::DeviceDenied);
