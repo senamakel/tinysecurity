@@ -741,6 +741,7 @@ impl Control {
                     (&approval_request,),
                 )
                 .await?;
+            eprintln!("approval registered");
             let registration = SecretRegistration2 {
                 registration_id: "1".repeat(32),
                 approval_scope_id: "f".repeat(32),
@@ -783,6 +784,7 @@ impl Control {
             let receipt: SecretScopeReceipt2 = proxy
                 .call_confidential(names::methods::REGISTER_SECRET_SCOPE2, (&register_request,))
                 .await?;
+            eprintln!("secret registered");
             assert!(receipt.active);
             assert_eq!(receipt.registration_id, registration.registration_id);
             let pairing_request = RegisterDevicePairingScopeRequest2 {
@@ -794,6 +796,7 @@ impl Control {
                     (&pairing_request,),
                 )
                 .await?;
+            eprintln!("pairing registered");
             assert_eq!(pairing_receipt.scope_id, registration.approval_scope_id);
             assert!(pairing_receipt.active);
             let duplicate_pairing_receipt: DevicePairingScopeReceipt2 = proxy
