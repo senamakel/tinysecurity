@@ -121,7 +121,10 @@ impl ApprovalStoreClient {
         let response = proxy
             .call_confidential(callback_names2::LOAD, (request.clone(),))
             .await
-            .map_err(|_| Error::Unavailable)?;
+            .map_err(|error| {
+                eprintln!("approval store Load transport failed: {error:?}");
+                Error::Unavailable
+            })?;
         request
             .verify_response(&response)
             .map_err(|_| Error::Invalid)?;
@@ -143,7 +146,10 @@ impl ApprovalStoreClient {
         let response = proxy
             .call_confidential(callback_names2::CAS, (request.clone(),))
             .await
-            .map_err(|_| Error::Unavailable)?;
+            .map_err(|error| {
+                eprintln!("approval store Cas transport failed: {error:?}");
+                Error::Unavailable
+            })?;
         request
             .verify_receipt(&response)
             .map_err(|_| Error::Invalid)?;

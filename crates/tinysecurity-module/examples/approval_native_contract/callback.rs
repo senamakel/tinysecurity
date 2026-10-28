@@ -2,11 +2,12 @@
 use super::{audit, store::DiskStore};
 use async_trait::async_trait;
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 use tinybus::{
-    CallContext, Connection, Interface, InterfaceName, MemberName, module::HostCallbackGuard,
+    CallContext, Interface, InterfaceName, MemberName,
+    module::{HostCallbackGuard, HostCallbackProxy},
 };
 use tinysecurity_bus::{
     ApprovalCasRequest2, ApprovalChoice2, ApprovalDeliveryRequest2, ApprovalDeliveryResponse2,
@@ -17,7 +18,7 @@ use tinysecurity_bus::{
 #[derive(Clone)]
 pub(crate) struct Callback {
     pub(crate) guard: HostCallbackGuard,
-    pub(crate) host: Connection,
+    pub(crate) module_proxy: Arc<OnceLock<HostCallbackProxy>>,
     pub(crate) interface: InterfaceName,
     pub(crate) scope: SubjectScope,
     pub(crate) store: Arc<Mutex<DiskStore>>,
@@ -133,13 +134,11 @@ impl Interface for Callback {
                             .human_action(request.row.clone(), ApprovalChoice2::Once)?
                     };
                     // The store lock has dropped before reentering the single-worker module.
-                    let module = self
-                        .guard
-                        .module_peer()
-                        .ok_or_else(|| tinybus::Error::failed("fixture module unavailable"))?;
                     let decided: ApprovalRow2 = self
-                        .host
-                        .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
+                        .module_proxy
+                        .get()
+                        .ok_or_else(|| tinybus::Error::failed("fixture module unavailable"))?
+                        .clone()
                         .with_timeout(std::time::Duration::from_secs(3))
                         .call(
                             names::methods::DECIDE2,

@@ -8,7 +8,7 @@ mod store;
 use std::{
     path::Path,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -16,7 +16,7 @@ use std::{
 use tinybus::{
     Connection,
     broker::Broker,
-    module::{HostCallbackEndpoint, ModuleHost},
+    module::{HostCallbackEndpoint, HostCallbackProxy, ModuleHost},
     transport::memory::MemoryBus,
 };
 use tinysecurity_bus::{
@@ -155,7 +155,7 @@ async fn verify(
     let client = Connection::connect(bus.connect().await?).await?;
     let reg = registration();
     let scope = tinysecurity::approval::scope_handle(&reg.subject)?;
-    let configuration = ModuleConfig {
+    let mut configuration = ModuleConfig {
         trusted_host: client.unique_name().map(|n| n.as_str().to_owned()),
         approvals: Some(ApprovalConfig2 {
             timeout_ms: 30_000,
@@ -202,7 +202,9 @@ async fn verify(
             )?,
         ])
         .await?;
+    configuration.trusted_host = Some(binding.unique_name().to_string());
     let guard = binding.guard();
+    let module_proxy = Arc::new(OnceLock::new());
     let store = Arc::new(Mutex::new(store::DiskStore::open(
         &root.join("approvals.journal"),
     )?));
@@ -217,7 +219,7 @@ async fn verify(
                 callback_names2::OBJECT_PATH.parse()?,
                 callback::Callback {
                     guard: guard.clone(),
-                    host: client.clone(),
+                    module_proxy: module_proxy.clone(),
                     interface: interface.parse()?,
                     scope: scope.clone(),
                     store: store.clone(),
@@ -231,7 +233,10 @@ async fn verify(
         .load_file_with_host_callbacks(library, serde_json::to_value(configuration)?, &binding)
         .await?;
     let module = module_peer(&client).await?;
-    let proxy = client
+    module_proxy
+        .set(binding.proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?)
+        .map_err(|_| "fixture module proxy already initialized")?;
+    let proxy = binding
         .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
         .with_timeout(Duration::from_secs(10));
     assert!(proxy.attestation().await?.is_some());
@@ -266,7 +271,7 @@ async fn verify(
 }
 
 async fn first_roundtrip(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     store: &Arc<Mutex<store::DiskStore>>,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let evaluated: EvaluateApprovalResponse2 = proxy
@@ -337,7 +342,7 @@ async fn first_roundtrip(
     Ok(())
 }
 async fn restart_roundtrip(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     store: &Arc<Mutex<store::DiskStore>>,
     prompt_failure: &AtomicBool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -445,7 +450,7 @@ fn reviewed(instance: u64, sequence: u64) -> EvaluateApprovalRequest2 {
     request
 }
 async fn approve_reusable(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     store: &Arc<Mutex<store::DiskStore>>,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let pending: EvaluateApprovalResponse2 = proxy
@@ -474,7 +479,7 @@ async fn approve_reusable(
     Ok(())
 }
 async fn restart_reusable(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     store: &Arc<Mutex<store::DiskStore>>,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     // The reopened disk ledger returns the original first receipt after later row versions.
@@ -526,7 +531,7 @@ async fn restart_reusable(
     Ok(())
 }
 async fn native_expiry(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     prompt_failure: &AtomicBool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     prompt_failure.store(false, Ordering::SeqCst);
