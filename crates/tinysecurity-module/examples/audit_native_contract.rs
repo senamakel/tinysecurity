@@ -35,7 +35,7 @@ struct Callback {
     calls: Arc<AtomicUsize>,
     rows: Arc<Mutex<BTreeMap<u64, AuditSinkRequest2>>>,
     lifecycle: Arc<ModuleHost>,
-    module_name: String,
+    module_name: Arc<OnceLock<String>>,
     config: ModuleConfig,
 }
 #[async_trait]
@@ -104,7 +104,9 @@ impl Interface for Callback {
             let reinitialized = self
                 .lifecycle
                 .reinitialize(
-                    &self.module_name,
+                    self.module_name
+                        .get()
+                        .ok_or_else(|| tinybus::Error::failed("fixture module unavailable"))?,
                     serde_json::to_value(self.config.clone())?,
                 )
                 .await;
@@ -231,22 +233,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }])
         .await?;
     config.trusted_host = Some(binding.unique_name().to_string());
-    let info = host
-        .load_file_with_host_callbacks(&path, serde_json::to_value(&config)?, &binding)
-        .await?;
-    let module = module_peer(&client).await?;
-    let proxy = binding
-        .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
-        .with_timeout(Duration::from_secs(3));
-    assert!(
-        proxy.attestation().await?.is_some(),
-        "hashed module must carry recipient attestation"
-    );
-    manifest::verify(&info.manifest, &proxy).await?;
     let module_proxy = Arc::new(OnceLock::new());
-    module_proxy
-        .set(proxy.clone())
-        .map_err(|_| "fixture module proxy already initialized")?;
+    let module_name = Arc::new(OnceLock::new());
     let mode = Arc::new(AtomicU8::new(0));
     let calls = Arc::new(AtomicUsize::new(0));
     let rows = Arc::new(Mutex::new(BTreeMap::new()));
@@ -259,10 +247,28 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         calls: calls.clone(),
         rows: rows.clone(),
         lifecycle: host.clone(),
-        module_name: info.name.clone(),
+        module_name: module_name.clone(),
         config: config.clone(),
     };
     binding.serve_at(callback_path, callback.clone()).await?;
+    let info = host
+        .load_file_with_host_callbacks(&path, serde_json::to_value(&config)?, &binding)
+        .await?;
+    let module = module_peer(&client).await?;
+    let proxy = binding
+        .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
+        .with_timeout(Duration::from_secs(3));
+    assert!(
+        proxy.attestation().await?.is_some(),
+        "hashed module must carry recipient attestation"
+    );
+    manifest::verify(&info.manifest, &proxy).await?;
+    module_proxy
+        .set(proxy.clone())
+        .map_err(|_| "fixture module proxy already initialized")?;
+    module_name
+        .set(info.name.clone())
+        .map_err(|_| "fixture module name already initialized")?;
     verify_peer_denial(&attacker, &client, &module, &proxy, &calls).await?;
     verify_unbound_authorizations(&proxy).await?;
     verify_permission_phases(&proxy, &mode, &rows).await?;
