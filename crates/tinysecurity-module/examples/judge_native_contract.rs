@@ -178,72 +178,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         &root.join("approvals.journal"),
     )?));
     let prompt_failure = Arc::new(AtomicBool::new(false));
-    let path: tinybus::ObjectPath = callback_names2::OBJECT_PATH.parse()?;
-    let endpoint = |interface: &str, members: &[&str]| -> tinybus::Result<HostCallbackEndpoint> {
-        Ok(HostCallbackEndpoint {
-            path: path.clone(),
-            interface: interface.parse()?,
-            members: members
-                .iter()
-                .map(|member| (*member).parse())
-                .collect::<tinybus::Result<_>>()?,
-        })
-    };
-    let binding = lifecycle
-        .prepare_host_callbacks(vec![
-            endpoint(
-                callback_names2::APPROVAL_STORE,
-                &[callback_names2::LOAD, callback_names2::CAS],
-            )?,
-            endpoint(
-                callback_names2::APPROVAL_PROMPT,
-                &[callback_names2::PROMPT, callback_names2::VERIFY_HUMAN],
-            )?,
-            endpoint(callback_names2::AUDIT_SINK, &[callback_names2::APPEND])?,
-        ])
-        .await?;
-    configuration.trusted_host = Some(binding.unique_name().to_string());
-    let guard = binding.guard();
-    let module_proxy = Arc::new(OnceLock::new());
-    let scope = tinysecurity::approval::scope_handle(
-        &configuration
-            .approvals
-            .as_ref()
-            .ok_or("approval config")?
-            .scopes[0]
-            .subject,
-    )?;
-    for interface in [
-        callback_names2::APPROVAL_STORE,
-        callback_names2::APPROVAL_PROMPT,
-    ] {
-        binding
-            .serve_at(
-                path.clone(),
-                bound_callback::Callback {
-                    guard: guard.clone(),
-                    module_proxy: module_proxy.clone(),
-                    interface: interface.parse()?,
-                    scope: scope.clone(),
-                    store: store.clone(),
-                    reentrant: Arc::new(AtomicBool::new(false)),
-                    prompt_failure: prompt_failure.clone(),
-                },
-            )
-            .await?;
-    }
-    binding.serve_at(path, Sink).await?;
-    let loaded = lifecycle
-        .load_file_with_host_callbacks(&library, serde_json::to_value(&configuration)?, &binding)
-        .await?;
-    let module = module_peer(&host).await?;
-    let proxy = binding
-        .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
-        .with_timeout(Duration::from_secs(10));
-    module_proxy
-        .set(proxy.clone())
-        .map_err(|_| "fixture module proxy already initialized")?;
-    assert!(proxy.attestation().await?.is_some());
+    let (_binding, proxy, loaded_name) = load_bound_module(
+        &lifecycle,
+        &library,
+        &host,
+        configuration.clone(),
+        store.clone(),
+        prompt_failure.clone(),
+    )
+    .await?;
     let mut non_opted = begin(1, 1);
     non_opted.request.caller.origin = Origin::Copilot;
     let off: EvaluateApprovalResponse2 = proxy
@@ -262,7 +205,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     invalid.judge.as_mut().ok_or("judge")?.credential = Secret("invalid-candidate-key".into());
     assert!(
         lifecycle
-            .reinitialize(&loaded.name, serde_json::to_value(invalid)?)
+            .reinitialize(&loaded_name, serde_json::to_value(invalid)?)
             .await
             .is_err()
     );
