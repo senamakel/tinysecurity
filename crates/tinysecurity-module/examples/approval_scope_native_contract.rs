@@ -5,20 +5,25 @@
 //! went through the runtime scope rather than the init scope.
 #[path = "approval_native_contract/store.rs"]
 mod store;
+#[path = "approval_native_contract/bound_callback.rs"]
+mod bound_callback;
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock, atomic::AtomicBool},
     time::Duration,
 };
-use tinybus::{Connection, broker::Broker, module::ModuleHost, transport::memory::MemoryBus};
+use tinybus::{
+    Connection,
+    broker::Broker,
+    module::{HostCallbackEndpoint, HostCallbackProxy, ModuleHost},
+    transport::memory::MemoryBus,
+};
 use tinysecurity_bus::{
-    AccessTier, ApprovalCasRequest2, ApprovalCasResponse2, ApprovalChoice2, ApprovalConfig2,
-    ApprovalDeliveryRequest2, ApprovalDeliveryResponse2, ApprovalGrants2, ApprovalLifecycle2,
-    ApprovalLoadRequest2, ApprovalLoadResponse2, ApprovalRow2, ApprovalScope2,
-    ApprovalScopeOutcome2, ApprovalScopeReceipt2, AuditConfig2, AuditCorrelation2,
-    AuditEventReceipt2, AuditSinkRequest2, AuditSinkResponse2, CallerContext, Check,
-    DecideRequest2, EvaluateApprovalRequest2, EvaluateApprovalResponse2, EvaluateRequest,
-    HumanDecisionReceipt2, ModuleConfig, Origin, RegisterApprovalScopeRequest2,
-    RetireApprovalScopeRequest2, SubjectScope, ToolCall, Verdict, VerifyHumanRequest2, names,
+    AccessTier, ApprovalChoice2, ApprovalConfig2, ApprovalGrants2, ApprovalLifecycle2,
+    ApprovalRow2, ApprovalScope2, ApprovalScopeOutcome2, ApprovalScopeReceipt2, AuditConfig2,
+    AuditCorrelation2, AuditEventReceipt2, AuditSinkRequest2, AuditSinkResponse2, CallerContext,
+    Check, DecideRequest2, EvaluateApprovalRequest2, EvaluateApprovalResponse2, EvaluateRequest,
+    ModuleConfig, Origin, RegisterApprovalScopeRequest2, RetireApprovalScopeRequest2,
+    SubjectScope, ToolCall, Verdict, callback_names2, names,
 };
 
 type Failure = Box<dyn std::error::Error>;
@@ -79,64 +84,6 @@ fn begin(instance: u64, sequence: u64, tool: &str) -> EvaluateApprovalRequest2 {
     }
 }
 
-/// Tenant-only store and prompt callbacks backed by the persistent fixture ledger.
-#[derive(Clone)]
-struct Host {
-    scope: SubjectScope,
-    store: Arc<Mutex<store::DiskStore>>,
-}
-fn locked<T>(
-    store: &Arc<Mutex<store::DiskStore>>,
-    work: impl FnOnce(&mut store::DiskStore) -> tinybus::Result<T>,
-) -> tinybus::Result<T> {
-    let mut guard = store
-        .lock()
-        .map_err(|_| tinybus::Error::failed("fixture state unavailable"))?;
-    work(&mut guard)
-}
-#[tinybus::interface(name = "ai.tinyhumans.tinysecurity.ApprovalStore2")]
-impl Host {
-    async fn load(&self, request: ApprovalLoadRequest2) -> tinybus::Result<ApprovalLoadResponse2> {
-        if request.scope != self.scope {
-            return Err(tinybus::Error::failed("fixture wrong scope"));
-        }
-        std::future::ready(locked(&self.store, |s| s.load(&request))).await
-    }
-    async fn cas(&self, request: ApprovalCasRequest2) -> tinybus::Result<ApprovalCasResponse2> {
-        if request.scope != self.scope {
-            return Err(tinybus::Error::failed("fixture wrong scope"));
-        }
-        std::future::ready(locked(&self.store, |s| s.cas(request))).await
-    }
-}
-#[derive(Clone)]
-struct Prompt(Host);
-#[tinybus::interface(name = "ai.tinyhumans.tinysecurity.ApprovalPrompt2")]
-impl Prompt {
-    async fn prompt(
-        &self,
-        request: ApprovalDeliveryRequest2,
-    ) -> tinybus::Result<ApprovalDeliveryResponse2> {
-        if request.row.binding.scope != self.0.scope {
-            return Err(tinybus::Error::failed("fixture wrong scope"));
-        }
-        std::future::ready(Ok(ApprovalDeliveryResponse2 {
-            request_id: request.row.request_id,
-            nonce: request.row.nonce,
-            delivered: true,
-        }))
-        .await
-    }
-    async fn verify_human(
-        &self,
-        request: VerifyHumanRequest2,
-    ) -> tinybus::Result<HumanDecisionReceipt2> {
-        if request.row.binding.scope != self.0.scope {
-            return Err(tinybus::Error::failed("fixture wrong scope"));
-        }
-        std::future::ready(locked(&self.0.store, |s| s.human(&request))).await
-    }
-}
 #[derive(Clone)]
 struct Sink;
 #[tinybus::interface(name = "ai.tinyhumans.tinysecurity.AuditSink2")]
