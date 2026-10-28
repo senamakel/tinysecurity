@@ -164,27 +164,41 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         workspace: "workspace".into(),
         agent: "agent".into(),
     };
-    let scope = tinysecurity::approval::scope_handle(&subject)?;
     let mut configuration = configuration(&host, &root, subject)?;
-    let loaded =
-        lifecycle.load_file_with_config(&library, serde_json::to_value(&configuration)?)?;
-    let module = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Some(peer) = host.name_owner(names::INTERFACE).await? {
-                return tinybus::Result::Ok(peer);
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await??;
     let store = Arc::new(Mutex::new(store::DiskStore::open(
         &root.join("approvals.journal"),
     )?));
     let prompt_failure = Arc::new(AtomicBool::new(false));
-    serve_callbacks(&host, &module, &scope, &store, &prompt_failure).await?;
-    let proxy = host
-        .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
-        .with_timeout(Duration::from_secs(10));
+    let path: tinybus::ObjectPath = callback_names2::OBJECT_PATH.parse()?;
+    let endpoint = |interface: &str, members: &[&str]| -> tinybus::Result<HostCallbackEndpoint> {
+        Ok(HostCallbackEndpoint {
+            path: path.clone(),
+            interface: interface.parse()?,
+            members: members.iter().map(|member| (*member).parse()).collect::<tinybus::Result<_>>()?,
+        })
+    };
+    let binding = lifecycle.prepare_host_callbacks(vec![
+        endpoint(callback_names2::APPROVAL_STORE, &[callback_names2::LOAD, callback_names2::CAS])?,
+        endpoint(callback_names2::APPROVAL_PROMPT, &[callback_names2::PROMPT, callback_names2::VERIFY_HUMAN])?,
+        endpoint(callback_names2::AUDIT_SINK, &[callback_names2::APPEND])?,
+    ]).await?;
+    configuration.trusted_host = Some(binding.unique_name().to_string());
+    let guard = binding.guard();
+    let module_proxy = Arc::new(OnceLock::new());
+    let scope = tinysecurity::approval::scope_handle(&configuration.approvals.as_ref().ok_or("approval config")?.scopes[0].subject)?;
+    for interface in [callback_names2::APPROVAL_STORE, callback_names2::APPROVAL_PROMPT] {
+        binding.serve_at(path.clone(), bound_callback::Callback {
+            guard: guard.clone(), module_proxy: module_proxy.clone(), interface: interface.parse()?,
+            scope: scope.clone(), store: store.clone(), reentrant: Arc::new(AtomicBool::new(true)),
+            prompt_failure: prompt_failure.clone(),
+        }).await?;
+    }
+    binding.serve_at(path, Sink).await?;
+    let loaded = lifecycle.load_file_with_host_callbacks(&library, serde_json::to_value(&configuration)?, &binding).await?;
+    let module = module_peer(&host).await?;
+    let proxy = binding.proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?.with_timeout(Duration::from_secs(10));
+    module_proxy.set(proxy.clone()).map_err(|_| "fixture module proxy already initialized")?;
+    assert!(proxy.attestation().await?.is_some());
     let off: EvaluateApprovalResponse2 = proxy
         .call(names::methods::EVALUATE_APPROVAL2, (begin(1, 1),))
         .await?;
