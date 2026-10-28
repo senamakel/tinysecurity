@@ -240,7 +240,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let rows = Arc::new(Mutex::new(BTreeMap::new()));
     let callback = Callback {
         guard: binding.guard(),
-        module_proxy,
+        module_proxy: module_proxy.clone(),
         interface: callback_names2::AUDIT_SINK.parse()?,
         member: callback_names2::APPEND.parse()?,
         mode: mode.clone(),
