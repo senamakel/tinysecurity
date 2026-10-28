@@ -1823,13 +1823,21 @@ fn configured_audit(
     } else {
         audit_config
             .map(|config| {
-                crate::callbacks::AuditClient::new(
+                #[cfg(test)]
+                let client = crate::callbacks::AuditClient::new_for_test(
                     connection.clone(),
                     binding.clone(),
                     config,
                     candidate.redactor(),
-                )
-                .map(Arc::new)
+                );
+                #[cfg(not(test))]
+                let client = crate::callbacks::AuditClient::new(
+                    connection.clone(),
+                    binding.clone(),
+                    config,
+                    candidate.redactor(),
+                );
+                client.map(Arc::new)
             })
             .transpose()?
     })
