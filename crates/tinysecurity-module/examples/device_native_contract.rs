@@ -1,6 +1,12 @@
 //! Actual hashed native device dispatch, confidential routing and verified callbacks.
-#[path = "approval_native_contract/bound_callback.rs"]
-mod bound_callback;
+mod bound_callbacks {
+    pub(crate) use super::fixture::store;
+    pub(crate) fn audit(sequence: u64) -> tinysecurity_bus::AuditCorrelation2 {
+        super::fixture::audit(sequence)
+    }
+    #[path = "../approval_native_contract/bound_callback.rs"]
+    pub(crate) mod callback;
+}
 #[path = "device_native_contract/fixture.rs"]
 mod fixture;
 #[path = "approval_native_contract/namespace.rs"]
@@ -54,6 +60,7 @@ async fn load_bound_module(
         tinybus::module::HostCallbackBinding,
         HostCallbackProxy,
         String,
+        tinybus::BusName,
         ModuleConfig,
     ),
     Box<dyn std::error::Error>,
@@ -102,7 +109,7 @@ async fn load_bound_module(
         binding
             .serve_at(
                 path.clone(),
-                bound_callback::Callback {
+                bound_callbacks::callback::Callback {
                     guard: guard.clone(),
                     module_proxy: module_proxy.clone(),
                     interface: interface.parse()?,
@@ -126,7 +133,7 @@ async fn load_bound_module(
         .set(proxy.clone())
         .map_err(|_| "fixture module proxy already initialized")?;
     assert!(proxy.attestation().await?.is_some());
-    Ok((binding, proxy, loaded.name, configuration))
+    Ok((binding, proxy, loaded.name, module, configuration))
 }
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -169,7 +176,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(Mutex::new(fixture::store::DiskStore::open(
         &root.join("approvals.journal"),
     )?));
-    let (_binding, proxy, loaded_name, configuration) =
+    let (_binding, proxy, loaded_name, module, configuration) =
         load_bound_module(&lifecycle, &library, &host, configuration, store.clone()).await?;
     credential_root_checks(&proxy).await?;
     routing_checks(&proxy, &bus, &module).await?;
