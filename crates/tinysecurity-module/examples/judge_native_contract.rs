@@ -8,7 +8,6 @@ mod store;
 #[path = "judge_native_contract/stub.rs"]
 mod stub;
 use std::{
-    future::Future,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -33,10 +32,7 @@ use tinysecurity_bus::{
 struct Sink;
 #[tinybus::interface(name = "ai.tinyhumans.tinysecurity.AuditSink2")]
 impl Sink {
-    fn append(
-        &self,
-        request: AuditSinkRequest2,
-    ) -> impl Future<Output = tinybus::Result<AuditSinkResponse2>> {
+    async fn append(&self, request: AuditSinkRequest2) -> tinybus::Result<AuditSinkResponse2> {
         std::future::ready(Ok(AuditSinkResponse2 {
             scope: request.scope,
             stream_id: request.stream_id,
@@ -50,6 +46,7 @@ impl Sink {
                 })
                 .collect(),
         }))
+        .await
     }
 }
 
