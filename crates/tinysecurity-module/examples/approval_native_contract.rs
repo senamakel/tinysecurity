@@ -1,6 +1,6 @@
 //! Actual loaded cdylib approvals, disk mutation ledger and independent process restart.
-#[path = "approval_native_contract/callback.rs"]
-mod callback;
+#[path = "approval_native_contract/bound_callback.rs"]
+mod bound_callback;
 #[path = "approval_native_contract/namespace.rs"]
 mod namespace;
 #[path = "approval_native_contract/store.rs"]
@@ -217,7 +217,7 @@ async fn verify(
         binding
             .serve_at(
                 callback_names2::OBJECT_PATH.parse()?,
-                callback::Callback {
+                bound_callback::Callback {
                     guard: guard.clone(),
                     module_proxy: module_proxy.clone(),
                     interface: interface.parse()?,
