@@ -217,7 +217,7 @@ async fn main() -> std::result::Result<(), Failure> {
     configuration.trusted_host = Some(binding.unique_name().to_string());
     let guard = binding.guard();
     let module_proxy = Arc::new(OnceLock::new());
-    let scope = subject("tenant-agent");
+    let scope = tinysecurity::approval::scope_handle(&subject("tenant-agent"))?;
     for interface in [
         callback_names2::APPROVAL_STORE,
         callback_names2::APPROVAL_PROMPT,
