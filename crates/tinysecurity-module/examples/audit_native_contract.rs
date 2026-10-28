@@ -8,14 +8,16 @@ use serde_json::Value;
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU8, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 use tinybus::{
-    BusName, CallContext, Connection, Interface, InterfaceName, MemberName, broker::Broker,
-    module::ModuleHost, transport::memory::MemoryBus,
+    BusName, CallContext, Connection, Interface, InterfaceName, MemberName,
+    broker::Broker,
+    module::{HostCallbackEndpoint, HostCallbackGuard, HostCallbackProxy, ModuleHost},
+    transport::memory::MemoryBus,
 };
 use tinysecurity_bus::{
     AccessTier, AuditConfig2, AuditCorrelation2, AuditEvent2, AuditEventReceipt2, AuditKind2,
@@ -25,11 +27,10 @@ use tinysecurity_bus::{
 };
 #[derive(Clone)]
 struct Callback {
-    sender: BusName,
+    guard: HostCallbackGuard,
+    module_proxy: Arc<OnceLock<HostCallbackProxy>>,
     interface: InterfaceName,
     member: MemberName,
-    host: Connection,
-    module: BusName,
     mode: Arc<AtomicU8>,
     calls: Arc<AtomicUsize>,
     rows: Arc<Mutex<BTreeMap<u64, AuditSinkRequest2>>>,
@@ -55,9 +56,7 @@ impl Interface for Callback {
         args: Value,
         context: &CallContext,
     ) -> tinybus::Result<Value> {
-        if context.authenticated_sender() != Some(&self.sender)
-            || member.as_str() != callback_names2::APPEND
-        {
+        if !self.guard.authorizes(context) || member.as_str() != callback_names2::APPEND {
             return Err(tinybus::Error::failed("invalid callback authority"));
         }
         let callback_started = Instant::now();
@@ -66,8 +65,10 @@ impl Interface for Callback {
         assert!(!serde_json::to_string(&batch)?.contains("private-secret"));
         // Reentrant policy read while Audit2 awaits this callback must not deadlock.
         let _: PolicyInfo = self
-            .host
-            .proxy(self.module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
+            .module_proxy
+            .get()
+            .ok_or_else(|| tinybus::Error::failed("fixture module unavailable"))?
+            .clone()
             .with_timeout(Duration::from_secs(2))
             .call(names::methods::POLICY_INFO, ())
             .await?;
@@ -210,7 +211,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let host = Arc::new(ModuleHost::new(broker));
     let client = Connection::connect(bus.connect().await?).await?;
     let attacker = Connection::connect(bus.connect().await?).await?;
-    let config = ModuleConfig {
+    let mut config = ModuleConfig {
         trusted_host: client.unique_name().map(|n| n.as_str().to_owned()),
         audit: Some(audit_config(true)),
         ..ModuleConfig::default()
@@ -221,9 +222,20 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .is_err()
     );
     std::fs::write(&allowlist, format!("\"{name}\" = \"{digest}\"\n"))?;
-    let info = host.load_file_with_config(&path, serde_json::to_value(&config)?)?;
+    let callback_path: tinybus::ObjectPath = callback_names2::OBJECT_PATH.parse()?;
+    let binding = host
+        .prepare_host_callbacks(vec![HostCallbackEndpoint {
+            path: callback_path.clone(),
+            interface: callback_names2::AUDIT_SINK.parse()?,
+            members: [callback_names2::APPEND.parse()?].into(),
+        }])
+        .await?;
+    config.trusted_host = Some(binding.unique_name().to_string());
+    let info = host
+        .load_file_with_host_callbacks(&path, serde_json::to_value(&config)?, &binding)
+        .await?;
     let module = module_peer(&client).await?;
-    let proxy = client
+    let proxy = binding
         .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
         .with_timeout(Duration::from_secs(3));
     assert!(
@@ -231,15 +243,18 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         "hashed module must carry recipient attestation"
     );
     manifest::verify(&info.manifest, &proxy).await?;
+    let module_proxy = Arc::new(OnceLock::new());
+    module_proxy
+        .set(proxy.clone())
+        .map_err(|_| "fixture module proxy already initialized")?;
     let mode = Arc::new(AtomicU8::new(0));
     let calls = Arc::new(AtomicUsize::new(0));
     let rows = Arc::new(Mutex::new(BTreeMap::new()));
     let callback = Callback {
-        sender: module.clone(),
+        guard: binding.guard(),
+        module_proxy,
         interface: callback_names2::AUDIT_SINK.parse()?,
         member: callback_names2::APPEND.parse()?,
-        module: module.clone(),
-        host: client.clone(),
         mode: mode.clone(),
         calls: calls.clone(),
         rows: rows.clone(),
@@ -247,9 +262,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         module_name: info.name.clone(),
         config: config.clone(),
     };
-    client
-        .serve_at(callback_names2::OBJECT_PATH.parse()?, callback.clone())
-        .await?;
+    binding.serve_at(callback_path, callback.clone()).await?;
     verify_peer_denial(&attacker, &client, &module, &proxy, &calls).await?;
     verify_unbound_authorizations(&proxy).await?;
     verify_permission_phases(&proxy, &mode, &rows).await?;
@@ -265,7 +278,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .await
             .is_err()
     );
-    client.close().await?;
+    binding.close().await?;
     verify_replacement_peer(&bus, &module, callback).await?;
     host.shutdown(Duration::from_secs(1)).await;
     task.abort();
@@ -677,7 +690,6 @@ async fn verify_replacement_peer(
         .serve_at(
             callback_names2::OBJECT_PATH.parse()?,
             Callback {
-                host: replacement.clone(),
                 calls: replacement_calls.clone(),
                 ..callback
             },
