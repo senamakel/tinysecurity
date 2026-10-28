@@ -121,7 +121,7 @@ pub(crate) async fn serve_callbacks(
     Ok(())
 }
 pub(crate) async fn run_at(
-    proxy: &tinybus::Proxy,
+    proxy: &tinybus::module::HostCallbackProxy,
     store: &Arc<Mutex<store::DiskStore>>,
     sequence: &mut u64,
     operation: DeviceOperation2,
@@ -184,7 +184,7 @@ pub(crate) async fn run_at(
 }
 
 pub(crate) async fn run(
-    proxy: &tinybus::Proxy,
+    proxy: &tinybus::module::HostCallbackProxy,
     store: &Arc<Mutex<store::DiskStore>>,
     sequence: &mut u64,
     operation: DeviceOperation2,
