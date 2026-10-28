@@ -8,7 +8,10 @@ mod store;
 #[path = "approval_native_contract/bound_callback.rs"]
 mod bound_callback;
 use std::{
-    sync::{Arc, Mutex, OnceLock, atomic::AtomicBool},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tinybus::{
@@ -159,8 +162,8 @@ async fn main() -> std::result::Result<(), Failure> {
         require_approval: true,
         auto_approve_all: false,
     };
-    let configuration = ModuleConfig {
-        trusted_host: client.unique_name().map(|n| n.as_str().to_owned()),
+    let mut configuration = ModuleConfig {
+        trusted_host: None,
         approvals: Some(ApprovalConfig2 {
             timeout_ms: 30_000,
             scopes: vec![operator.clone()],
@@ -178,34 +181,65 @@ async fn main() -> std::result::Result<(), Failure> {
         }),
         ..Default::default()
     };
-    lifecycle.load_file_with_config(&library, serde_json::to_value(configuration)?)?;
-    let module = module_peer(&client).await?;
     let store = Arc::new(Mutex::new(store::DiskStore::open(&journal)?));
-    let host = Host {
-        scope: tinysecurity::approval::scope_handle(&subject("tenant-agent"))?,
-        store: store.clone(),
+    let callback_path = callback_names2::OBJECT_PATH.parse()?;
+    let endpoint = |interface: &str, members: &[&str]| -> tinybus::Result<HostCallbackEndpoint> {
+        Ok(HostCallbackEndpoint {
+            path: callback_path.clone(),
+            interface: interface.parse()?,
+            members: members
+                .iter()
+                .map(|member| (*member).parse())
+                .collect::<tinybus::Result<_>>()?,
+        })
     };
-    client
-        .serve_at(
-            tinysecurity_bus::callback_names2::OBJECT_PATH.parse()?,
-            host.clone(),
-        )
+    let binding = lifecycle
+        .prepare_host_callbacks(vec![
+            endpoint(
+                callback_names2::APPROVAL_STORE,
+                &[callback_names2::LOAD, callback_names2::CAS],
+            )?,
+            endpoint(
+                callback_names2::APPROVAL_PROMPT,
+                &[callback_names2::PROMPT, callback_names2::VERIFY_HUMAN],
+            )?,
+            endpoint(callback_names2::AUDIT_SINK, &[callback_names2::APPEND])?,
+        ])
         .await?;
-    client
-        .serve_at(
-            tinysecurity_bus::callback_names2::OBJECT_PATH.parse()?,
-            Prompt(host),
-        )
+    configuration.trusted_host = Some(binding.unique_name().to_string());
+    let guard = binding.guard();
+    let module_proxy = Arc::new(OnceLock::new());
+    let scope = subject("tenant-agent");
+    for interface in [
+        callback_names2::APPROVAL_STORE,
+        callback_names2::APPROVAL_PROMPT,
+    ] {
+        binding
+            .serve_at(
+                callback_path.clone(),
+                bound_callback::Callback {
+                    guard: guard.clone(),
+                    module_proxy: module_proxy.clone(),
+                    interface: interface.parse()?,
+                    scope: scope.clone(),
+                    store: store.clone(),
+                    reentrant: Arc::new(AtomicBool::new(false)),
+                    prompt_failure: Arc::new(AtomicBool::new(false)),
+                },
+            )
+            .await?;
+    }
+    binding.serve_at(callback_path, Sink).await?;
+    lifecycle
+        .load_file_with_host_callbacks(&library, serde_json::to_value(configuration)?, &binding)
         .await?;
-    client
-        .serve_at(
-            tinysecurity_bus::callback_names2::OBJECT_PATH.parse()?,
-            Sink,
-        )
-        .await?;
-    let proxy = client
+    let module = module_peer(&client).await?;
+    let proxy = binding
         .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
         .with_timeout(Duration::from_secs(10));
+    module_proxy
+        .set(proxy.clone())
+        .map_err(|_| "fixture module proxy already initialized")?;
     assert!(proxy.attestation().await?.is_some());
 
     scenario(&bus, &module, &proxy, &store).await?;
@@ -221,7 +255,7 @@ async fn main() -> std::result::Result<(), Failure> {
 async fn scenario(
     bus: &MemoryBus,
     module: &tinybus::BusName,
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     store: &Arc<Mutex<store::DiskStore>>,
 ) -> std::result::Result<(), Failure> {
     let grants = || ApprovalGrants2 {
@@ -301,7 +335,7 @@ async fn scenario(
     replace_then_retire(proxy).await
 }
 
-async fn replace_then_retire(proxy: &tinybus::Proxy) -> std::result::Result<(), Failure> {
+async fn replace_then_retire(proxy: &HostCallbackProxy) -> std::result::Result<(), Failure> {
     let replaced: ApprovalScopeReceipt2 = proxy
         .call(
             names::methods::REPLACE_APPROVAL_SCOPE2,
