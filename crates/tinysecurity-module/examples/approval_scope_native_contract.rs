@@ -3,15 +3,12 @@
 //! A tenant is registered after init with its own audit stream. The host serves the
 //! store, prompt and audit callbacks for that tenant only, so every success below
 //! went through the runtime scope rather than the init scope.
-#[path = "approval_native_contract/store.rs"]
-mod store;
 #[path = "approval_native_contract/bound_callback.rs"]
 mod bound_callback;
+#[path = "approval_native_contract/store.rs"]
+mod store;
 use std::{
-    sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex, OnceLock, atomic::AtomicBool},
     time::Duration,
 };
 use tinybus::{
@@ -25,11 +22,20 @@ use tinysecurity_bus::{
     ApprovalRow2, ApprovalScope2, ApprovalScopeOutcome2, ApprovalScopeReceipt2, AuditConfig2,
     AuditCorrelation2, AuditEventReceipt2, AuditSinkRequest2, AuditSinkResponse2, CallerContext,
     Check, DecideRequest2, EvaluateApprovalRequest2, EvaluateApprovalResponse2, EvaluateRequest,
-    ModuleConfig, Origin, RegisterApprovalScopeRequest2, RetireApprovalScopeRequest2,
-    SubjectScope, ToolCall, Verdict, callback_names2, names,
+    ModuleConfig, Origin, RegisterApprovalScopeRequest2, RetireApprovalScopeRequest2, SubjectScope,
+    ToolCall, Verdict, callback_names2, names,
 };
 
 type Failure = Box<dyn std::error::Error>;
+
+fn locked<T>(
+    store: &Arc<Mutex<store::DiskStore>>,
+    f: impl FnOnce(&mut store::DiskStore) -> tinybus::Result<T>,
+) -> tinybus::Result<T> {
+    f(&mut store
+        .lock()
+        .map_err(|_| tinybus::Error::failed("native approval store unavailable"))?)
+}
 
 const TENANT: &str = "7777777777777777777777777777777b";
 const STREAM: &str = "8888888888888888888888888888888c";
