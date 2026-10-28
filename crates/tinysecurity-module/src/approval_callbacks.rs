@@ -16,6 +16,8 @@ pub(crate) struct ApprovalStoreClient {
     peer: tinybus::BusName,
     timeout_ms: u32,
     scopes: RwLock<Vec<SubjectScope>>,
+    #[cfg(test)]
+    test_ordinary_calls: bool,
 }
 impl std::fmt::Debug for ApprovalStoreClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -48,7 +50,21 @@ impl ApprovalStoreClient {
             peer,
             timeout_ms: config.timeout_ms,
             scopes: RwLock::new(scopes),
+            #[cfg(test)]
+            test_ordinary_calls: false,
         })
+    }
+    /// Build a client for unit tests that exercise callback semantics on an
+    /// unauthenticated `MemoryBus` mock. Production always uses confidential calls.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        connection: tinybus::Connection,
+        peer: Option<&str>,
+        config: &ApprovalConfig2,
+    ) -> tinybus::Result<Self> {
+        let mut client = Self::new(connection, peer, config)?;
+        client.test_ordinary_calls = true;
+        Ok(client)
     }
     fn scope(&self, scope: &SubjectScope) -> Result<()> {
         if self
@@ -91,9 +107,19 @@ impl ApprovalStoreClient {
         request: ApprovalLoadRequest2,
     ) -> Result<ApprovalLoadResponse2> {
         self.scope(&request.scope)?;
-        let response = self
-            .proxy(callback_names2::APPROVAL_STORE)?
-            .call(callback_names2::LOAD, (request.clone(),))
+        let proxy = self.proxy(callback_names2::APPROVAL_STORE)?;
+        #[cfg(test)]
+        let response = if self.test_ordinary_calls {
+            proxy.call(callback_names2::LOAD, (request.clone(),)).await
+        } else {
+            proxy
+                .call_confidential(callback_names2::LOAD, (request.clone(),))
+                .await
+        }
+        .map_err(|_| Error::Unavailable)?;
+        #[cfg(not(test))]
+        let response = proxy
+            .call_confidential(callback_names2::LOAD, (request.clone(),))
             .await
             .map_err(|_| Error::Unavailable)?;
         request
@@ -103,9 +129,19 @@ impl ApprovalStoreClient {
     }
     pub(crate) async fn cas(&self, request: ApprovalCasRequest2) -> Result<ApprovalCasResponse2> {
         self.scope(&request.scope)?;
-        let response = self
-            .proxy(callback_names2::APPROVAL_STORE)?
-            .call(callback_names2::CAS, (request.clone(),))
+        let proxy = self.proxy(callback_names2::APPROVAL_STORE)?;
+        #[cfg(test)]
+        let response = if self.test_ordinary_calls {
+            proxy.call(callback_names2::CAS, (request.clone(),)).await
+        } else {
+            proxy
+                .call_confidential(callback_names2::CAS, (request.clone(),))
+                .await
+        }
+        .map_err(|_| Error::Unavailable)?;
+        #[cfg(not(test))]
+        let response = proxy
+            .call_confidential(callback_names2::CAS, (request.clone(),))
             .await
             .map_err(|_| Error::Unavailable)?;
         request
@@ -137,6 +173,8 @@ pub(crate) struct ApprovalClients {
     runtime: RuntimeAudit,
     /// The audit stream of each runtime subject; see [`StreamPins`].
     pins: StreamPins,
+    #[cfg(test)]
+    test_ordinary_calls: bool,
 }
 struct RuntimeAudit {
     connection: tinybus::Connection,
@@ -186,7 +224,33 @@ impl ApprovalClients {
             audit: RwLock::new(clients),
             runtime,
             pins: StreamPins::default(),
+            #[cfg(test)]
+            test_ordinary_calls: false,
         })
+    }
+    /// Build a client for unit tests that use unauthenticated `MemoryBus` mocks.
+    /// Production and binding-backed tests always use confidential callback calls.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        connection: &tinybus::Connection,
+        peer: Option<&str>,
+        config: &ApprovalConfig2,
+        audit: &AuditConfig2,
+        redactor: &tinysecurity::Redactor,
+    ) -> tinybus::Result<Self> {
+        let mut clients = Self::new(connection, peer, config, audit, redactor)?;
+        clients.store.test_ordinary_calls = true;
+        clients.test_ordinary_calls = true;
+        for (_, client) in clients
+            .audit
+            .get_mut()
+            .map_err(|_| tinybus::Error::failed("approval audit unavailable"))?
+        {
+            std::sync::Arc::get_mut(client)
+                .ok_or_else(|| tinybus::Error::failed("approval audit already shared"))?
+                .test_ordinary_calls = true;
+        }
+        Ok(clients)
     }
     /// Build the audit client of a runtime subject: its own persisted stream, always
     /// forwarded to the host sink so no extra native journal is opened.
@@ -195,13 +259,22 @@ impl ApprovalClients {
         config.scope = scope.subject.clone();
         config.stream_id = stream_id.into();
         config.native_path = None;
-        AuditClient::new(
+        let client = AuditClient::new(
             self.runtime.connection.clone(),
             self.runtime.binding.clone(),
             config,
             self.runtime.redactor.clone(),
         )
-        .map_err(|_| Error::Invalid)
+        .map_err(|_| Error::Invalid)?;
+        #[cfg(test)]
+        let client = {
+            let mut client = client;
+            if self.test_ordinary_calls {
+                client.test_ordinary_calls = true;
+            }
+            client
+        };
+        Ok(client)
     }
 }
 #[async_trait::async_trait]
@@ -221,17 +294,22 @@ impl Ports for ApprovalClients {
     async fn prompt(&self, request: ApprovalDeliveryRequest2) -> Result<ApprovalDeliveryResponse2> {
         self.store.scope(&request.row.binding.scope)?;
         let proxy = self.store.proxy(callback_names2::APPROVAL_PROMPT)?;
-        let response: ApprovalDeliveryResponse2 = if request.row.tool_name == "native_secret_grant"
-        {
-            proxy
-                .call_confidential(callback_names2::PROMPT, (request.clone(),))
-                .await
-        } else {
+        #[cfg(test)]
+        let response: ApprovalDeliveryResponse2 = if self.store.test_ordinary_calls {
             proxy
                 .call(callback_names2::PROMPT, (request.clone(),))
                 .await
+        } else {
+            proxy
+                .call_confidential(callback_names2::PROMPT, (request.clone(),))
+                .await
         }
         .map_err(|_| Error::Unavailable)?;
+        #[cfg(not(test))]
+        let response: ApprovalDeliveryResponse2 = proxy
+            .call_confidential(callback_names2::PROMPT, (request.clone(),))
+            .await
+            .map_err(|_| Error::Unavailable)?;
         if response.request_id != request.row.request_id
             || response.nonce != request.row.nonce
             || !response.delivered
@@ -243,16 +321,22 @@ impl Ports for ApprovalClients {
     async fn human(&self, request: VerifyHumanRequest2) -> Result<HumanDecisionReceipt2> {
         self.store.scope(&request.row.binding.scope)?;
         let proxy = self.store.proxy(callback_names2::APPROVAL_PROMPT)?;
-        let response: HumanDecisionReceipt2 = if request.row.tool_name == "native_secret_grant" {
-            proxy
-                .call_confidential(callback_names2::VERIFY_HUMAN, (request.clone(),))
-                .await
-        } else {
+        #[cfg(test)]
+        let response: HumanDecisionReceipt2 = if self.store.test_ordinary_calls {
             proxy
                 .call(callback_names2::VERIFY_HUMAN, (request.clone(),))
                 .await
+        } else {
+            proxy
+                .call_confidential(callback_names2::VERIFY_HUMAN, (request.clone(),))
+                .await
         }
         .map_err(|_| Error::Unavailable)?;
+        #[cfg(not(test))]
+        let response: HumanDecisionReceipt2 = proxy
+            .call_confidential(callback_names2::VERIFY_HUMAN, (request.clone(),))
+            .await
+            .map_err(|_| Error::Unavailable)?;
         if response.row != request.row {
             return Err(Error::Denied);
         }

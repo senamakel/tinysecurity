@@ -167,7 +167,7 @@ async fn required_audit_gates_scoped_permission_on_a_committed_receipt()
     let dir = tempfile::tempdir()?;
     let required = service_for(
         policy.clone(),
-        Some(Arc::new(crate::callbacks::AuditClient::new(
+        Some(Arc::new(crate::callbacks::AuditClient::new_for_test(
             module,
             binding,
             permission_audit_config(true),

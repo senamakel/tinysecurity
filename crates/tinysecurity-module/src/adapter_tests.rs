@@ -151,7 +151,7 @@ async fn audit_dispatch_requires_configured_sink_and_preserves_exact_terminal_re
     let binding = crate::callbacks::PeerBinding::new(
         host.unique_name().as_ref().map(tinybus::BusName::as_str),
     )?;
-    let audit = Arc::new(crate::callbacks::AuditClient::new(
+    let audit = Arc::new(crate::callbacks::AuditClient::new_for_test(
         module.clone(),
         binding.clone(),
         permission_audit_config(true),
@@ -249,7 +249,7 @@ async fn bound_permissions_require_exact_original_payload_receipts_and_preserve_
         },
         ..Default::default()
     })?));
-    let required = Arc::new(crate::callbacks::AuditClient::new(
+    let required = Arc::new(crate::callbacks::AuditClient::new_for_test(
         module.clone(),
         binding.clone(),
         permission_audit_config(true),
@@ -273,7 +273,7 @@ async fn bound_permissions_require_exact_original_payload_receipts_and_preserve_
     ));
     let optional = service_for(
         policy.clone(),
-        Some(Arc::new(crate::callbacks::AuditClient::new(
+        Some(Arc::new(crate::callbacks::AuditClient::new_for_test(
             module,
             binding,
             permission_audit_config(false),
@@ -371,7 +371,7 @@ async fn required_audit_cannot_be_bypassed_by_an_unbound_permission_check()
     let task = Broker::new().spawn(bus.clone());
     let host = Connection::connect(bus.connect().await?).await?;
     let module = Connection::connect(bus.connect().await?).await?;
-    let audit = crate::callbacks::AuditClient::new(
+    let audit = crate::callbacks::AuditClient::new_for_test(
         module,
         crate::callbacks::PeerBinding::new(
             host.unique_name().as_ref().map(tinybus::BusName::as_str),
@@ -1410,7 +1410,6 @@ async fn verify_direct_credential_transfers(
                 },),
             )
             .await?;
-        eprintln!("native {text}: {prompt:?}; {tool:?}; {decision:?}");
         outcomes.push((prompt, tool, decision));
     }
     for (prompt, tool, decision) in outcomes {

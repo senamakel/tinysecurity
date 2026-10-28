@@ -256,7 +256,7 @@ async fn harness_with(
     let binding = crate::callbacks::PeerBinding::new(
         host.unique_name().as_ref().map(tinybus::BusName::as_str),
     )?;
-    let audit = Arc::new(crate::callbacks::AuditClient::new(
+    let audit = Arc::new(crate::callbacks::AuditClient::new_for_test(
         module.clone(),
         binding,
         AuditConfig2 {
@@ -475,7 +475,7 @@ async fn human_engine(
         journal_max_bytes: 1_000_000,
         journal_max_events: 10_000,
     };
-    let clients = crate::approval_callbacks::ApprovalClients::new(
+    let clients = crate::approval_callbacks::ApprovalClients::new_for_test(
         &h.module,
         h.host.unique_name().as_ref().map(tinybus::BusName::as_str),
         &config,

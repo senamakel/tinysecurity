@@ -59,7 +59,7 @@ async fn serve(
     let host_peer = host.unique_name().ok_or("host peer")?;
     let module_peer = module.unique_name().ok_or("module peer")?;
     let redactor = tinysecurity::Redactor::new(&RedactorConfig { secrets: vec![] })?;
-    let clients = crate::approval_callbacks::ApprovalClients::new(
+    let clients = crate::approval_callbacks::ApprovalClients::new_for_test(
         module,
         Some(host_peer.as_str()),
         &config,
