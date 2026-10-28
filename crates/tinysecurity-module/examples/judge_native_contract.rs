@@ -28,8 +28,6 @@ use tinysecurity_bus::{
     JudgeOutcome2, JudgeProvider, ModuleConfig, Origin, PolicyInfo, RedactorConfig, Secret,
     SubjectScope, ToolCall, Verdict, callback_names2, names,
 };
-type Failure = Box<dyn std::error::Error>;
-
 #[derive(Clone)]
 struct Sink;
 #[tinybus::interface(name = "ai.tinyhumans.tinysecurity.AuditSink2")]
