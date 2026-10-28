@@ -217,7 +217,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     task.abort();
     assert_eq!(hash, tinybus::module::sha256_file(&library)?);
     println!(
-        "native device: SHA256={hash}; verified CredentialRoots2 native resolution + home-none isolation + peer + confidential DeviceFrame2 Seal/Open + no frame approval rows + cross-scope/replay/revoke/stale-generation denial + existing approved v2/v3/v4 flows + shutdown passed"
+        "native device: SHA256={hash}; verified CredentialRoots2 native resolution + home-none isolation + peer + confidential DeviceFrame2 Seal/Open + no frame approval rows + cross-scope/replay/revoke + callback-bound config mutation refusal + existing approved v2/v3/v4 flows + shutdown passed"
     );
     Ok(())
 }
@@ -723,12 +723,14 @@ async fn callback_configuration_fence(
         scope.static_secret = None;
     }
     changed.device.as_mut().ok_or("fixture config")?.max_handles = 16;
+    let reinit_error = lifecycle
+        .reinitialize(name, serde_json::to_value(changed)?)
+        .await
+        .expect_err("callback-bound configuration changes are refused");
     assert!(
-        lifecycle
-            .reinitialize(name, serde_json::to_value(changed)?)
-            .await
-            .is_err(),
-        "callback-bound configuration changes are refused"
+        reinit_error
+            .to_string()
+            .contains("scoped callback configuration is immutable")
     );
     let info: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
     assert_eq!(info.generation, 1);
