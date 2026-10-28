@@ -274,7 +274,7 @@ fn verify_info(
 }
 
 async fn verify_retained_scoring(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     stub: &stub::Stub,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     *stub.response.lock().map_err(|_| "stub")? = (200, stub::response([1.0, 1.0, 0.0]));
@@ -333,7 +333,7 @@ async fn verify_retained_scoring(
 
 /// Low confidence, malformed and timed-out (SDK reports both as unavailable) replies, and `SaaS` all reach a human, never Allow.
 async fn verify_matrix(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     stub: &stub::Stub,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let cases = [
@@ -435,7 +435,7 @@ fn configuration(
 }
 
 async fn verify_scoring(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     stub: &stub::Stub,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let qualified: EvaluateApprovalResponse2 = proxy
@@ -490,7 +490,7 @@ async fn verify_scoring(
 }
 
 async fn verify_fallback(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     stub: &stub::Stub,
     store: &Mutex<store::DiskStore>,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
