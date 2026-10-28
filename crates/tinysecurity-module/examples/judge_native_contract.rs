@@ -32,8 +32,11 @@ use tinysecurity_bus::{
 struct Sink;
 #[tinybus::interface(name = "ai.tinyhumans.tinysecurity.AuditSink2")]
 impl Sink {
-    async fn append(&self, request: AuditSinkRequest2) -> tinybus::Result<AuditSinkResponse2> {
-        Ok(AuditSinkResponse2 {
+    fn append(
+        &self,
+        request: AuditSinkRequest2,
+    ) -> impl Future<Output = tinybus::Result<AuditSinkResponse2>> {
+        std::future::ready(Ok(AuditSinkResponse2 {
             scope: request.scope,
             stream_id: request.stream_id,
             new_tail: request.events[0].sequence,
@@ -45,8 +48,55 @@ impl Sink {
                     sequence: event.sequence,
                 })
                 .collect(),
-        })
+        }))
     }
+}
+
+async fn load_bound_module(
+    lifecycle: &ModuleHost,
+    library: &std::path::Path,
+    host: &Connection,
+    mut configuration: ModuleConfig,
+    store: Arc<Mutex<store::DiskStore>>,
+    prompt_failure: Arc<AtomicBool>,
+) -> Result<(tinybus::module::HostCallbackBinding, HostCallbackProxy, String), Box<dyn std::error::Error>> {
+    let path: tinybus::ObjectPath = callback_names2::OBJECT_PATH.parse()?;
+    let endpoint = |interface: &str, members: &[&str]| -> tinybus::Result<HostCallbackEndpoint> {
+        Ok(HostCallbackEndpoint {
+            path: path.clone(),
+            interface: interface.parse()?,
+            members: members.iter().map(|member| (*member).parse()).collect::<tinybus::Result<_>>()?,
+        })
+    };
+    let binding = lifecycle.prepare_host_callbacks(vec![
+        endpoint(callback_names2::APPROVAL_STORE, &[callback_names2::LOAD, callback_names2::CAS])?,
+        endpoint(callback_names2::APPROVAL_PROMPT, &[callback_names2::PROMPT, callback_names2::VERIFY_HUMAN])?,
+        endpoint(callback_names2::AUDIT_SINK, &[callback_names2::APPEND])?,
+    ]).await?;
+    configuration.trusted_host = Some(binding.unique_name().to_string());
+    let guard = binding.guard();
+    let module_proxy = Arc::new(OnceLock::new());
+    let scope = tinysecurity::approval::scope_handle(
+        &configuration.approvals.as_ref().ok_or("approval config")?.scopes[0].subject,
+    )?;
+    for interface in [callback_names2::APPROVAL_STORE, callback_names2::APPROVAL_PROMPT] {
+        binding.serve_at(path.clone(), bound_callback::Callback {
+            guard: guard.clone(),
+            module_proxy: module_proxy.clone(),
+            interface: interface.parse()?,
+            scope: scope.clone(),
+            store: store.clone(),
+            reentrant: Arc::new(AtomicBool::new(false)),
+            prompt_failure: prompt_failure.clone(),
+        }).await?;
+    }
+    binding.serve_at(path, Sink).await?;
+    let loaded = lifecycle.load_file_with_host_callbacks(library, serde_json::to_value(configuration)?, &binding).await?;
+    let module = module_peer(host).await?;
+    let proxy = binding.proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?.with_timeout(Duration::from_secs(10));
+    module_proxy.set(proxy.clone()).map_err(|_| "fixture module proxy already initialized")?;
+    assert!(proxy.attestation().await?.is_some());
+    Ok((binding, proxy, loaded.name))
 }
 
 async fn module_peer(client: &Connection) -> tinybus::Result<tinybus::BusName> {
