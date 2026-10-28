@@ -464,7 +464,7 @@ async fn verify_unbound_authorizations(
 /// confidential: the attested native module answers it, the literal is gone,
 /// and the next call does not remember it.
 async fn verify_redact_with(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let with: tinysecurity_bus::RedactResponse = proxy
         .call_confidential(
