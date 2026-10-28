@@ -13,7 +13,12 @@ use std::{
     },
     time::Duration,
 };
-use tinybus::{Connection, broker::Broker, module::ModuleHost, transport::memory::MemoryBus};
+use tinybus::{
+    Connection,
+    broker::Broker,
+    module::{HostCallbackEndpoint, ModuleHost},
+    transport::memory::MemoryBus,
+};
 use tinysecurity_bus::{
     AccessTier, ApprovalActionRequest2, ApprovalChoice2, ApprovalConfig2, ApprovalLifecycle2,
     ApprovalRecordRequest2, ApprovalRow2, ApprovalScope2, AuditConfig2, AuditCorrelation2,
@@ -174,8 +179,30 @@ async fn verify(
         }),
         ..Default::default()
     };
-    lifecycle.load_file_with_config(library, serde_json::to_value(configuration)?)?;
-    let module = module_peer(&client).await?;
+    let callback_path: tinybus::ObjectPath = callback_names2::OBJECT_PATH.parse()?;
+    let endpoint = |interface: &str, members: &[&str]| -> tinybus::Result<HostCallbackEndpoint> {
+        Ok(HostCallbackEndpoint {
+            path: callback_path.clone(),
+            interface: interface.parse()?,
+            members: members
+                .iter()
+                .map(|member| (*member).parse())
+                .collect::<tinybus::Result<_>>()?,
+        })
+    };
+    let binding = lifecycle
+        .prepare_host_callbacks(vec![
+            endpoint(
+                callback_names2::APPROVAL_STORE,
+                &[callback_names2::LOAD, callback_names2::CAS],
+            )?,
+            endpoint(
+                callback_names2::APPROVAL_PROMPT,
+                &[callback_names2::PROMPT, callback_names2::VERIFY_HUMAN],
+            )?,
+        ])
+        .await?;
+    let guard = binding.guard();
     let store = Arc::new(Mutex::new(store::DiskStore::open(
         &root.join("approvals.journal"),
     )?));
@@ -185,11 +212,11 @@ async fn verify(
         callback_names2::APPROVAL_STORE,
         callback_names2::APPROVAL_PROMPT,
     ] {
-        client
+        binding
             .serve_at(
                 callback_names2::OBJECT_PATH.parse()?,
                 callback::Callback {
-                    module: module.clone(),
+                    guard: guard.clone(),
                     host: client.clone(),
                     interface: interface.parse()?,
                     scope: scope.clone(),
@@ -200,6 +227,10 @@ async fn verify(
             )
             .await?;
     }
+    lifecycle
+        .load_file_with_host_callbacks(library, serde_json::to_value(configuration)?, &binding)
+        .await?;
+    let module = module_peer(&client).await?;
     let proxy = client
         .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
         .with_timeout(Duration::from_secs(10));

@@ -5,7 +5,9 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
-use tinybus::{BusName, CallContext, Connection, Interface, InterfaceName, MemberName};
+use tinybus::{
+    CallContext, Connection, Interface, InterfaceName, MemberName, module::HostCallbackGuard,
+};
 use tinysecurity_bus::{
     ApprovalCasRequest2, ApprovalChoice2, ApprovalDeliveryRequest2, ApprovalDeliveryResponse2,
     ApprovalLifecycle2, ApprovalLoadRequest2, ApprovalPurgeSessionRequest2,
@@ -14,7 +16,7 @@ use tinysecurity_bus::{
 };
 #[derive(Clone)]
 pub(crate) struct Callback {
-    pub(crate) module: BusName,
+    pub(crate) guard: HostCallbackGuard,
     pub(crate) host: Connection,
     pub(crate) interface: InterfaceName,
     pub(crate) scope: SubjectScope,
@@ -56,7 +58,7 @@ impl Interface for Callback {
         args: serde_json::Value,
         context: &CallContext,
     ) -> tinybus::Result<serde_json::Value> {
-        if context.authenticated_sender() != Some(&self.module) {
+        if !self.guard.authorizes(context) {
             return Err(tinybus::Error::failed("fixture wrong peer"));
         }
         match member.as_str() {
@@ -131,9 +133,13 @@ impl Interface for Callback {
                             .human_action(request.row.clone(), ApprovalChoice2::Once)?
                     };
                     // The store lock has dropped before reentering the single-worker module.
+                    let module = self
+                        .guard
+                        .module_peer()
+                        .ok_or_else(|| tinybus::Error::failed("fixture module unavailable"))?;
                     let decided: ApprovalRow2 = self
                         .host
-                        .proxy(self.module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
+                        .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
                         .with_timeout(std::time::Duration::from_secs(3))
                         .call(
                             names::methods::DECIDE2,
