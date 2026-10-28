@@ -78,13 +78,12 @@ impl Interface for Callback {
                 eprintln!("scope fixture: store cas callback");
                 let (request,): (ApprovalCasRequest2,) = serde_json::from_value(args)?;
                 self.scope(&request.scope)?;
-                serde_json::to_value(
-                    self.store
+                let response = self.store
                         .lock()
                         .map_err(|_| tinybus::Error::failed("fixture state unavailable"))?
-                        .cas(request)?,
-                )
-                .map_err(Into::into)
+                        .cas(request);
+                eprintln!("scope fixture: store cas result {}", response.is_ok());
+                serde_json::to_value(response?).map_err(Into::into)
             }
             callback_names2::VERIFY_HUMAN => {
                 let (request,): (VerifyHumanRequest2,) = serde_json::from_value(args)?;
