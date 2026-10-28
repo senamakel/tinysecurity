@@ -227,12 +227,21 @@ impl AuditClient {
         config.stream_id = request.stream_id.clone();
         // Subjects other than the init one always forward to the host sink.
         config.native_path = None;
-        let Ok(client) = Self::new(
+        #[cfg(test)]
+        let client = Self::new_for_test(
             self.connection.clone(),
             self.binding.clone(),
             config,
             redactor.clone(),
-        ) else {
+        );
+        #[cfg(not(test))]
+        let client = Self::new(
+            self.connection.clone(),
+            self.binding.clone(),
+            config,
+            redactor.clone(),
+        );
+        let Ok(client) = client else {
             return denied();
         };
         let Some(sequence) = request.audit.expected_tail.checked_add(1) else {
