@@ -62,7 +62,7 @@ async fn module_peer(client: &Connection) -> tinybus::Result<tinybus::BusName> {
     .map_err(|_| tinybus::Error::failed("native approval initialization unavailable"))?
 }
 
-static GENERATION: AtomicU64 = AtomicU64::new(2);
+static GENERATION: AtomicU64 = AtomicU64::new(1);
 fn audit(sequence: u64) -> AuditCorrelation2 {
     AuditCorrelation2 {
         event_id: format!("{sequence:032x}"),
@@ -396,7 +396,7 @@ fn configuration(
                 scope_id: "a".repeat(32),
                 subject: subject.clone(),
                 policy_ref: "native-judge".into(),
-                generation: 2,
+                generation: 1,
                 ceiling: AccessTier::Full,
                 require_approval: true,
                 auto_approve_all: false,
