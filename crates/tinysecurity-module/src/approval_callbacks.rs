@@ -121,10 +121,7 @@ impl ApprovalStoreClient {
         let response = proxy
             .call_confidential(callback_names2::LOAD, (request.clone(),))
             .await
-            .map_err(|error| {
-                eprintln!("approval store Load transport failed: {error:?}");
-                Error::Unavailable
-            })?;
+            .map_err(|_| Error::Unavailable)?;
         request
             .verify_response(&response)
             .map_err(|_| Error::Invalid)?;
@@ -146,10 +143,7 @@ impl ApprovalStoreClient {
         let response = proxy
             .call_confidential(callback_names2::CAS, (request.clone(),))
             .await
-            .map_err(|error| {
-                eprintln!("approval store Cas transport failed: {error:?}");
-                Error::Unavailable
-            })?;
+            .map_err(|_| Error::Unavailable)?;
         request
             .verify_receipt(&response)
             .map_err(|_| Error::Invalid)?;
@@ -266,17 +260,22 @@ impl Ports for ApprovalClients {
     async fn prompt(&self, request: ApprovalDeliveryRequest2) -> Result<ApprovalDeliveryResponse2> {
         self.store.scope(&request.row.binding.scope)?;
         let proxy = self.store.proxy(callback_names2::APPROVAL_PROMPT)?;
-        let response: ApprovalDeliveryResponse2 = if request.row.tool_name == "native_secret_grant"
-        {
-            proxy
-                .call_confidential(callback_names2::PROMPT, (request.clone(),))
-                .await
-        } else {
+        #[cfg(test)]
+        let response: ApprovalDeliveryResponse2 = if self.store.test_ordinary_calls {
             proxy
                 .call(callback_names2::PROMPT, (request.clone(),))
                 .await
+        } else {
+            proxy
+                .call_confidential(callback_names2::PROMPT, (request.clone(),))
+                .await
         }
         .map_err(|_| Error::Unavailable)?;
+        #[cfg(not(test))]
+        let response: ApprovalDeliveryResponse2 = proxy
+            .call_confidential(callback_names2::PROMPT, (request.clone(),))
+            .await
+            .map_err(|_| Error::Unavailable)?;
         if response.request_id != request.row.request_id
             || response.nonce != request.row.nonce
             || !response.delivered
@@ -288,16 +287,22 @@ impl Ports for ApprovalClients {
     async fn human(&self, request: VerifyHumanRequest2) -> Result<HumanDecisionReceipt2> {
         self.store.scope(&request.row.binding.scope)?;
         let proxy = self.store.proxy(callback_names2::APPROVAL_PROMPT)?;
-        let response: HumanDecisionReceipt2 = if request.row.tool_name == "native_secret_grant" {
-            proxy
-                .call_confidential(callback_names2::VERIFY_HUMAN, (request.clone(),))
-                .await
-        } else {
+        #[cfg(test)]
+        let response: HumanDecisionReceipt2 = if self.store.test_ordinary_calls {
             proxy
                 .call(callback_names2::VERIFY_HUMAN, (request.clone(),))
                 .await
+        } else {
+            proxy
+                .call_confidential(callback_names2::VERIFY_HUMAN, (request.clone(),))
+                .await
         }
         .map_err(|_| Error::Unavailable)?;
+        #[cfg(not(test))]
+        let response: HumanDecisionReceipt2 = proxy
+            .call_confidential(callback_names2::VERIFY_HUMAN, (request.clone(),))
+            .await
+            .map_err(|_| Error::Unavailable)?;
         if response.row != request.row {
             return Err(Error::Denied);
         }
