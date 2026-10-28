@@ -142,47 +142,17 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         },
         ..Default::default()
     };
-    let loaded =
-        lifecycle.load_file_with_config(&library, serde_json::to_value(&configuration)?)?;
-    let module = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Some(peer) = host.name_owner(names::INTERFACE).await? {
-                break tinybus::Result::Ok(peer);
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await??;
     let store = Arc::new(Mutex::new(store::DiskStore::open(
         &root.join("approvals.journal"),
     )?));
-    for interface in [
-        callback_names2::APPROVAL_STORE,
-        callback_names2::APPROVAL_PROMPT,
-    ] {
-        host.serve_at(
-            callback_names2::OBJECT_PATH.try_into()?,
-            callback::Callback {
-                module: module.clone(),
-                host: host.clone(),
-                interface: interface.try_into()?,
-                scope: tinysecurity::approval::scope_handle(&facts.subject)?,
-                store: store.clone(),
-                reentrant: Arc::new(AtomicBool::new(false)),
-                prompt_failure: Arc::new(AtomicBool::new(false)),
-            },
-        )
-        .await?;
-    }
-    let proxy = host
-        .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
-        .with_timeout(Duration::from_secs(10));
+    let (_binding, proxy, loaded_name) =
+        load_bound_module(&lifecycle, &library, &host, configuration.clone(), store.clone()).await?;
     opaque_admission(&proxy, &facts).await?;
     let (host_artifact, host_request) = human_admission(&proxy, &facts, &store).await?;
     generation_fence(
         &proxy,
         &lifecycle,
-        &loaded.name,
+        &loaded_name,
         configuration,
         host_artifact,
         host_request,
@@ -201,7 +171,7 @@ fn finish(task: &tokio::task::JoinHandle<tinybus::Result<()>>) {
 
 type ExampleResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 async fn opaque_admission(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     facts: &tinysecurity_bus::SandboxScope2,
 ) -> ExampleResult<()> {
     let info: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
@@ -272,7 +242,7 @@ async fn opaque_admission(
     Ok(())
 }
 async fn human_admission(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     facts: &tinysecurity_bus::SandboxScope2,
     store: &Arc<Mutex<store::DiskStore>>,
 ) -> ExampleResult<(
@@ -338,7 +308,7 @@ async fn human_admission(
     Ok((host_artifact, original))
 }
 async fn generation_fence(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     lifecycle: &ModuleHost,
     module_name: &str,
     configuration: ModuleConfig,
