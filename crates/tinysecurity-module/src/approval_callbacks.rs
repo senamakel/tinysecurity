@@ -173,6 +173,8 @@ pub(crate) struct ApprovalClients {
     runtime: RuntimeAudit,
     /// The audit stream of each runtime subject; see [`StreamPins`].
     pins: StreamPins,
+    #[cfg(test)]
+    test_ordinary_calls: bool,
 }
 struct RuntimeAudit {
     connection: tinybus::Connection,
@@ -222,6 +224,8 @@ impl ApprovalClients {
             audit: RwLock::new(clients),
             runtime,
             pins: StreamPins::default(),
+            #[cfg(test)]
+            test_ordinary_calls: false,
         })
     }
     /// Build a client for unit tests that use unauthenticated `MemoryBus` mocks.
@@ -236,6 +240,16 @@ impl ApprovalClients {
     ) -> tinybus::Result<Self> {
         let mut clients = Self::new(connection, peer, config, audit, redactor)?;
         clients.store.test_ordinary_calls = true;
+        clients.test_ordinary_calls = true;
+        for (_, client) in clients
+            .audit
+            .get_mut()
+            .map_err(|_| tinybus::Error::failed("approval audit unavailable"))?
+        {
+            std::sync::Arc::get_mut(client)
+                .ok_or_else(|| tinybus::Error::failed("approval audit already shared"))?
+                .test_ordinary_calls = true;
+        }
         Ok(clients)
     }
     /// Build the audit client of a runtime subject: its own persisted stream, always
@@ -245,13 +259,18 @@ impl ApprovalClients {
         config.scope = scope.subject.clone();
         config.stream_id = stream_id.into();
         config.native_path = None;
-        AuditClient::new(
+        let mut client = AuditClient::new(
             self.runtime.connection.clone(),
             self.runtime.binding.clone(),
             config,
             self.runtime.redactor.clone(),
         )
-        .map_err(|_| Error::Invalid)
+        .map_err(|_| Error::Invalid)?;
+        #[cfg(test)]
+        if self.test_ordinary_calls {
+            client.test_ordinary_calls = true;
+        }
+        Ok(client)
     }
 }
 #[async_trait::async_trait]

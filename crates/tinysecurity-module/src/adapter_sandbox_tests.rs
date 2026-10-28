@@ -256,7 +256,7 @@ async fn harness_with(
     let binding = crate::callbacks::PeerBinding::new(
         host.unique_name().as_ref().map(tinybus::BusName::as_str),
     )?;
-    let audit = Arc::new(crate::callbacks::AuditClient::new(
+    let audit = Arc::new(crate::callbacks::AuditClient::new_for_test(
         module.clone(),
         binding,
         AuditConfig2 {
