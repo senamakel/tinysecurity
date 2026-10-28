@@ -466,6 +466,20 @@ impl Callback {
         {
             return Err(denied());
         }
+        let tokenless_recovery = matches!(
+            request.host_event_id.as_str(),
+            "recover-legacy-a" | "recover-legacy-b" | "recover-lost-confirm"
+        );
+        if tokenless_recovery
+            && (request.requested_channel_id.as_deref() != Some(channel) || !nonce.is_empty())
+        {
+            return Err(denied());
+        }
+        let pairing_token =
+            (!channel.is_empty() && !tokenless_recovery).then(|| "fixture-pairing-token".into());
+        if tokenless_recovery && pairing_token.is_some() {
+            return Err(denied());
+        }
         let expires_at_ms = if matches!(
             request.host_event_id.as_str(),
             "expired-user-event" | "legacy-import-expired"
@@ -485,7 +499,7 @@ impl Callback {
             secret_master_handle: alias,
             legacy_import_handle,
             channel_id: channel.into(),
-            pairing_token: (!channel.is_empty()).then(|| "fixture-pairing-token".into()),
+            pairing_token,
             connection_nonce: nonce.into(),
             generation: self.state.generation.load(Ordering::Acquire),
             source,
@@ -1185,7 +1199,8 @@ async fn device_pairing_roundtrip(
                     },
                 ),),
             )
-            .await?;
+            .await
+            .map_err(|error| format!("legacy channel Recover {index} failed: {error}"))?;
         let expected = KeyPair::from_secret(Zeroizing::new(*secret))?
             .public_key()
             .encode();
@@ -1340,7 +1355,8 @@ async fn device_pairing_roundtrip(
                 },
             ),),
         )
-        .await?;
+        .await
+        .map_err(|error| format!("reloaded legacy Recover failed: {error}"))?;
     let expected_legacy = KeyPair::from_secret(Zeroizing::new(legacy_secrets[1]))?
         .public_key()
         .encode();
@@ -1883,7 +1899,8 @@ async fn device_pairing_roundtrip(
                 },
             ),),
         )
-        .await?;
+        .await
+        .map_err(|error| format!("lost-confirm Recover failed: {error}"))?;
     assert!(orphan.pairing_id.is_some());
     assert!(orphan.device_public_key.is_some());
     let _: DevicePairingResponse2 = proxy

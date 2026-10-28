@@ -1344,7 +1344,7 @@ impl PairingState {
         )?;
         loaded
             .owner
-            .merge_durable_state(&plaintext, &context, time(self.clock.as_ref())?)
+            .merge_recovered_durable_state(&plaintext, &context, time(self.clock.as_ref())?)
             .map_err(|_| denied())?;
         // The merge is now committed to the in-memory owner. Keep the CAS token
         // in sync even when channel recovery or final context validation fails.

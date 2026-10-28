@@ -629,18 +629,18 @@ impl DevicePairingOwner {
         Ok(batch.imported)
     }
 
-    /// Merge the latest authenticated persistence snapshot without discarding live tunnels.
+    /// Merge the latest authenticated persistence snapshot during Recover without discarding live tunnels.
     /// This repairs the in-memory owner after a CAS committed but its response was lost.
     /// # Errors
     /// Rejects corrupt, foreign, conflicting or incompatible durable state.
-    pub fn merge_durable_state(
+    pub fn merge_recovered_durable_state(
         &mut self,
         plaintext: &[u8],
         context: &DevicePairingContextResponse2,
         now: Time,
     ) -> Result<()> {
         self.check_time(now)?;
-        let binding = self.user_controller_context(context, now)?;
+        let binding = self.recovery_user_controller_context(context, &context.channel_id, now)?;
         let durable = Self::restore(self.config.clone(), self.generation, now, plaintext)?;
         if durable.scope_identities != self.scope_identities {
             return Err(Error::DeviceDenied);
@@ -730,10 +730,7 @@ impl DevicePairingOwner {
         now: Time,
     ) -> Result<RecoveredDevicePairing> {
         self.check_time(now)?;
-        let binding = self.user_controller_context(context, now)?;
-        if !valid_channel(channel_id) || context.channel_id != channel_id {
-            return Err(Error::DeviceDenied);
-        }
+        let binding = self.recovery_user_controller_context(context, channel_id, now)?;
         let mut matches = self.records.values().filter(|record| {
             record.scope == binding.scope
                 && record.user == binding.user
@@ -1341,6 +1338,27 @@ impl DevicePairingOwner {
                 .pairing_token
                 .as_deref()
                 .is_some_and(|token| !valid_pairing_token(token))
+            || context.expires_at_ms <= now.wall
+            || !self.scope_identities.contains_key(&context.scope_id)
+        {
+            return Err(Error::DeviceDenied);
+        }
+        Ok(Binding::from(context))
+    }
+    fn recovery_user_controller_context(
+        &self,
+        context: &DevicePairingContextResponse2,
+        channel_id: &str,
+        now: Time,
+    ) -> Result<Binding> {
+        if context.source != DevicePairingSource2::AuthenticatedUserController
+            || context.generation != self.generation
+            || context.scope_id.is_empty()
+            || context.user_binding.is_empty()
+            || !valid_channel(channel_id)
+            || context.channel_id != channel_id
+            || context.pairing_token.is_some()
+            || !context.connection_nonce.is_empty()
             || context.expires_at_ms <= now.wall
             || !self.scope_identities.contains_key(&context.scope_id)
         {
