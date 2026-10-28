@@ -201,6 +201,22 @@ fn verify_digest_rejection(
     std::fs::write(allowlist, format!("\"{name}\" = \"{digest}\"\n"))?;
     Ok(())
 }
+async fn prepare_audit_binding(
+    host: &ModuleHost,
+) -> std::result::Result<
+    (tinybus::module::HostCallbackBinding, tinybus::ObjectPath),
+    Box<dyn std::error::Error>,
+> {
+    let callback_path: tinybus::ObjectPath = callback_names2::OBJECT_PATH.parse()?;
+    let binding = host
+        .prepare_host_callbacks(vec![HostCallbackEndpoint {
+            path: callback_path.clone(),
+            interface: callback_names2::AUDIT_SINK.parse()?,
+            members: [callback_names2::APPEND.parse()?].into(),
+        }])
+        .await?;
+    Ok((binding, callback_path))
+}
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let path = std::path::PathBuf::from(
@@ -235,14 +251,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         ..ModuleConfig::default()
     };
     verify_digest_rejection(&host, &path, &allowlist, name, &digest, &config)?;
-    let callback_path: tinybus::ObjectPath = callback_names2::OBJECT_PATH.parse()?;
-    let binding = host
-        .prepare_host_callbacks(vec![HostCallbackEndpoint {
-            path: callback_path.clone(),
-            interface: callback_names2::AUDIT_SINK.parse()?,
-            members: [callback_names2::APPEND.parse()?].into(),
-        }])
-        .await?;
+    let (binding, callback_path) = prepare_audit_binding(&host).await?;
     config.trusted_host = Some(binding.unique_name().to_string());
     let module_proxy = Arc::new(OnceLock::new());
     let module_name = Arc::new(OnceLock::new());
