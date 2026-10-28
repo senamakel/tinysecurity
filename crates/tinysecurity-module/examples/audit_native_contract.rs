@@ -291,7 +291,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn verify_policy_generation_race(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     mode: &AtomicU8,
     rows: &Mutex<BTreeMap<u64, AuditSinkRequest2>>,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -374,7 +374,7 @@ fn verify_process(
 }
 
 async fn verify_unbound_authorizations(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     use tinysecurity_bus::{
         CommandAutonomy, CommandDecision, CommandExecutionMode, CommandGate, CommandPolicy,
@@ -491,7 +491,7 @@ async fn verify_redact_with(
     Ok(())
 }
 async fn verify_permission_phases(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     mode: &AtomicU8,
     rows: &Mutex<BTreeMap<u64, AuditSinkRequest2>>,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -636,7 +636,7 @@ async fn verify_peer_denial(
     attacker: &Connection,
     client: &Connection,
     module: &BusName,
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     calls: &AtomicUsize,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     assert!(
