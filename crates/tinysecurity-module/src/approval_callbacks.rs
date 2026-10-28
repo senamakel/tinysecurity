@@ -259,7 +259,7 @@ impl ApprovalClients {
         config.scope = scope.subject.clone();
         config.stream_id = stream_id.into();
         config.native_path = None;
-        let mut client = AuditClient::new(
+        let client = AuditClient::new(
             self.runtime.connection.clone(),
             self.runtime.binding.clone(),
             config,
@@ -267,9 +267,13 @@ impl ApprovalClients {
         )
         .map_err(|_| Error::Invalid)?;
         #[cfg(test)]
-        if self.test_ordinary_calls {
-            client.test_ordinary_calls = true;
-        }
+        let client = {
+            let mut client = client;
+            if self.test_ordinary_calls {
+                client.test_ordinary_calls = true;
+            }
+            client
+        };
         Ok(client)
     }
 }

@@ -122,7 +122,7 @@ pub(crate) struct AuditClient {
     /// The stream each host-recorded subject is bound to (`RecordAudit2`).
     pins: crate::stream_pins::StreamPins,
     #[cfg(test)]
-    test_ordinary_calls: bool,
+    pub(crate) test_ordinary_calls: bool,
 }
 impl std::fmt::Debug for AuditClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
