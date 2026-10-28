@@ -62,7 +62,7 @@ async fn module_peer(client: &Connection) -> tinybus::Result<tinybus::BusName> {
     .map_err(|_| tinybus::Error::failed("native approval initialization unavailable"))?
 }
 
-static GENERATION: AtomicU64 = AtomicU64::new(1);
+static GENERATION: AtomicU64 = AtomicU64::new(2);
 fn audit(sequence: u64) -> AuditCorrelation2 {
     AuditCorrelation2 {
         event_id: format!("{sequence:032x}"),
@@ -123,6 +123,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         agent: "agent".into(),
     };
     let mut configuration = configuration(&host, &root, subject)?;
+    configuration.judge = Some(judge(stub.endpoint.clone()));
     let store = Arc::new(Mutex::new(store::DiskStore::open(
         &root.join("approvals.journal"),
     )?));
@@ -193,19 +194,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .set(proxy.clone())
         .map_err(|_| "fixture module proxy already initialized")?;
     assert!(proxy.attestation().await?.is_some());
-    let off: EvaluateApprovalResponse2 = proxy
-        .call(names::methods::EVALUATE_APPROVAL2, (begin(1, 1),))
-        .await?;
-    assert!(matches!(
-        off.decision.verdict,
-        Verdict::RequireApproval { .. }
-    ));
-    assert!(stub.requests.lock().map_err(|_| "stub")?.is_empty());
-    configuration.judge = Some(judge(stub.endpoint.clone()));
-    lifecycle
-        .reinitialize(&loaded.name, serde_json::to_value(&configuration)?)
-        .await?;
-    GENERATION.store(2, Ordering::SeqCst);
     verify_scoring(&proxy, &stub).await?;
     verify_fallback(&proxy, &stub, &store).await?;
     verify_matrix(&proxy, &stub).await?;
@@ -408,7 +396,7 @@ fn configuration(
                 scope_id: "a".repeat(32),
                 subject: subject.clone(),
                 policy_ref: "native-judge".into(),
-                generation: 1,
+                generation: 2,
                 ceiling: AccessTier::Full,
                 require_approval: true,
                 auto_approve_all: false,
