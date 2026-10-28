@@ -1684,6 +1684,7 @@ fn permission_payload(mut original: serde_json::Value) -> BusResult<String> {
     }))?)
 }
 fn approval_failure(error: tinysecurity::approval::Error) -> tinybus::Error {
+    eprintln!("native approval error: {error:?}");
     tinybus::Error::failed(error.to_string())
 }
 /// Whether host-tool checks are admission-only, with an optional supplemental scan.
