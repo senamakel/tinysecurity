@@ -1,13 +1,6 @@
 //! Actual hashed native device dispatch, confidential routing and verified callbacks.
-mod bound_callbacks {
-    pub(crate) use super::fixture::store;
-    pub(crate) fn audit(sequence: u64) -> tinysecurity_bus::AuditCorrelation2 {
-        super::fixture::audit(sequence)
-    }
-    pub(crate) mod callback {
-        include!("approval_native_contract/bound_callback.rs");
-    }
-}
+#[path = "device_native_contract/bound_callbacks.rs"]
+mod bound_callbacks;
 #[path = "device_native_contract/fixture.rs"]
 mod fixture;
 #[path = "approval_native_contract/namespace.rs"]
