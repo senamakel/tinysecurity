@@ -129,66 +129,20 @@ async fn module_peer(client: &Connection) -> tinybus::Result<tinybus::BusName> {
     .map_err(|_| tinybus::Error::failed("native approval initialization unavailable"))?
 }
 
-#[tokio::main]
-async fn main() -> std::result::Result<(), Failure> {
-    let library = std::path::PathBuf::from(
-        std::env::args()
-            .nth(1)
-            .ok_or("usage: approval_scope_native_contract <library>")?,
-    )
-    .canonicalize()?;
-    let name = library
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or("native library encoding")?;
-    std::fs::write(
-        library
-            .parent()
-            .ok_or("native library parent")?
-            .join("modules.toml"),
-        format!(
-            "\"{name}\" = \"{}\"\n",
-            tinybus::module::sha256_file(&library)?
-        ),
-    )?;
-    let directory = tempfile::tempdir()?;
-    let journal = directory.path().join("approvals.journal");
-    std::fs::write(&journal, [])?;
-
-    let bus = MemoryBus::new();
-    let broker = Broker::new();
-    let broker_task = broker.spawn(bus.clone());
-    let lifecycle = ModuleHost::new(broker);
-    let client = Connection::connect(bus.connect().await?).await?;
-    let operator = ApprovalScope2 {
-        scope_id: "a".repeat(32),
-        subject: subject("operator-agent"),
-        policy_ref: "operator-policy".into(),
-        generation: 1,
-        ceiling: AccessTier::Full,
-        require_approval: true,
-        auto_approve_all: false,
-    };
-    let mut configuration = ModuleConfig {
-        trusted_host: None,
-        approvals: Some(ApprovalConfig2 {
-            timeout_ms: 30_000,
-            scopes: vec![operator.clone()],
-        }),
-        audit: Some(AuditConfig2 {
-            scope: operator.subject,
-            stream_id: "c".repeat(32),
-            timeout_ms: 30_000,
-            required: true,
-            native_path: None,
-            max_bytes: 100_000,
-            max_archives: 3,
-            journal_max_bytes: 1_000_000,
-            journal_max_events: 10_000,
-        }),
-        ..Default::default()
-    };
-    let store = Arc::new(Mutex::new(store::DiskStore::open(&journal)?));
+async fn bind_and_load(
+    lifecycle: &ModuleHost,
+    library: &std::path::Path,
+    client: &Connection,
+    mut configuration: ModuleConfig,
+    store: Arc<Mutex<store::DiskStore>>,
+) -> std::result::Result<
+    (
+        tinybus::module::HostCallbackBinding,
+        tinybus::BusName,
+        HostCallbackProxy,
+    ),
+    Failure,
+> {
     let callback_path: tinybus::ObjectPath = callback_names2::OBJECT_PATH.parse()?;
     let endpoint = |interface: &str, members: &[&str]| -> tinybus::Result<HostCallbackEndpoint> {
         Ok(HostCallbackEndpoint {
@@ -238,9 +192,9 @@ async fn main() -> std::result::Result<(), Failure> {
     }
     binding.serve_at(callback_path, Sink).await?;
     lifecycle
-        .load_file_with_host_callbacks(&library, serde_json::to_value(configuration)?, &binding)
+        .load_file_with_host_callbacks(library, serde_json::to_value(configuration)?, &binding)
         .await?;
-    let module = module_peer(&client).await?;
+    let module = module_peer(client).await?;
     let proxy = binding
         .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
         .with_timeout(Duration::from_secs(10));
@@ -248,6 +202,71 @@ async fn main() -> std::result::Result<(), Failure> {
         .set(proxy.clone())
         .map_err(|_| "fixture module proxy already initialized")?;
     assert!(proxy.attestation().await?.is_some());
+    Ok((binding, module, proxy))
+}
+
+#[tokio::main]
+async fn main() -> std::result::Result<(), Failure> {
+    let library = std::path::PathBuf::from(
+        std::env::args()
+            .nth(1)
+            .ok_or("usage: approval_scope_native_contract <library>")?,
+    )
+    .canonicalize()?;
+    let name = library
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("native library encoding")?;
+    std::fs::write(
+        library
+            .parent()
+            .ok_or("native library parent")?
+            .join("modules.toml"),
+        format!(
+            "\"{name}\" = \"{}\"\n",
+            tinybus::module::sha256_file(&library)?
+        ),
+    )?;
+    let directory = tempfile::tempdir()?;
+    let journal = directory.path().join("approvals.journal");
+    std::fs::write(&journal, [])?;
+
+    let bus = MemoryBus::new();
+    let broker = Broker::new();
+    let broker_task = broker.spawn(bus.clone());
+    let lifecycle = ModuleHost::new(broker);
+    let client = Connection::connect(bus.connect().await?).await?;
+    let operator = ApprovalScope2 {
+        scope_id: "a".repeat(32),
+        subject: subject("operator-agent"),
+        policy_ref: "operator-policy".into(),
+        generation: 1,
+        ceiling: AccessTier::Full,
+        require_approval: true,
+        auto_approve_all: false,
+    };
+    let configuration = ModuleConfig {
+        trusted_host: None,
+        approvals: Some(ApprovalConfig2 {
+            timeout_ms: 30_000,
+            scopes: vec![operator.clone()],
+        }),
+        audit: Some(AuditConfig2 {
+            scope: operator.subject,
+            stream_id: "c".repeat(32),
+            timeout_ms: 30_000,
+            required: true,
+            native_path: None,
+            max_bytes: 100_000,
+            max_archives: 3,
+            journal_max_bytes: 1_000_000,
+            journal_max_events: 10_000,
+        }),
+        ..Default::default()
+    };
+    let store = Arc::new(Mutex::new(store::DiskStore::open(&journal)?));
+    let (_binding, module, proxy) =
+        bind_and_load(&lifecycle, &library, &client, configuration, store.clone()).await?;
 
     scenario(&bus, &module, &proxy, &store).await?;
     assert!(!String::from_utf8_lossy(&std::fs::read(&journal)?).contains("private-secret"));
