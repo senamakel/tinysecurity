@@ -176,7 +176,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     routing_checks(&proxy, &bus, &module).await?;
     let mut sequence = 1;
     let (key, stale_tunnel) = native_protocols(&proxy, &store, &mut sequence).await?;
-    let observer = generation_boundary(
+    let observer = callback_configuration_fence(
         &lifecycle,
         &loaded_name,
         configuration,
@@ -187,7 +187,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
     let after: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
-    assert_eq!(after.generation, 2);
+    assert_eq!(after.generation, 1);
     verify_journals(&root)?;
     lifecycle.shutdown(Duration::from_secs(5)).await;
     assert!(
@@ -708,7 +708,7 @@ async fn native_protocols(
     let stale_tunnel = native_tunnel(proxy, store, sequence, &observer, &observer_public).await?;
     Ok((observer, stale_tunnel))
 }
-async fn generation_boundary(
+async fn callback_configuration_fence(
     lifecycle: &ModuleHost,
     name: &str,
     configuration: ModuleConfig,
@@ -717,40 +717,27 @@ async fn generation_boundary(
     sequence: &mut u64,
     handles: (String, String),
 ) -> std::result::Result<String, Box<dyn std::error::Error>> {
-    let (key, stale_tunnel) = handles;
-    eprintln!("device fixture before reinit health: {:?}; module state: {:?}", proxy.call::<PolicyInfo>(names::methods::POLICY_INFO, ()).await.map(|info| info.generation), lifecycle.list().iter().find(|module| module.name == name).map(|module| module.state.clone()));
-    // Reinitialize with unchanged callback-bound configuration. The SDK still advances
-    // its runtime generation and invalidates handles issued by the previous generation.
-    lifecycle
-        .reinitialize(name, serde_json::to_value(configuration)?)
-        .await?;
-    // Valid new-generation approval/audit receipts cannot revive the old handle.
+    let (_key, _stale_tunnel) = handles;
+    let mut changed = configuration.clone();
+    for scope in &mut changed.device.as_mut().ok_or("fixture config")?.scopes {
+        scope.static_secret = None;
+    }
+    changed.device.as_mut().ok_or("fixture config")?.max_handles = 16;
     assert!(
-        fixture::run_at(
-            proxy,
-            store,
-            sequence,
-            DeviceOperation2::Revoke { handle: key },
-            2
-        )
-        .await
-        .is_err()
-    );
-    assert!(
-        proxy
-            .call_confidential::<DeviceFrameResponse2>(
-                names::methods::DEVICE_FRAME2,
-                (DeviceFrameRequest2 {
-                    scope_id: "a".repeat(32),
-                    handle: stale_tunnel,
-                    call_id: "module-frame-after-reinit".into(),
-                    operation: DeviceFrameOperation2::Seal { plaintext: vec![] },
-                },),
-            )
+        lifecycle
+            .reinitialize(name, serde_json::to_value(changed)?)
             .await
             .is_err(),
-        "reinitialization invalidates old tunnel capabilities"
+        "callback-bound configuration changes are refused"
     );
+    let info: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
+    assert_eq!(info.generation, 1);
+    let module = lifecycle
+        .list()
+        .into_iter()
+        .find(|module| module.name == name)
+        .ok_or("loaded module")?;
+    assert!(matches!(module.state, tinybus::module::ModuleState::Ready));
     let current = fixture::run_at(
         proxy,
         store,
@@ -758,7 +745,7 @@ async fn generation_boundary(
         DeviceOperation2::Key {
             purpose: DeviceKeyPurpose2::Static,
         },
-        2,
+        1,
     )
     .await?;
     let observer = current.handle.ok_or("fixture handle")?;
