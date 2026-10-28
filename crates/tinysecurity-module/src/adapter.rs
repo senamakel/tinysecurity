@@ -932,7 +932,6 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::EvaluateApprovalRequest2,
     ) -> BusResult<tinysecurity_bus::EvaluateApprovalResponse2> {
-        eprintln!("approval native verifier: configured={}", self.approvals.is_some());
         let engine = self
             .approvals
             .as_ref()
@@ -955,10 +954,7 @@ impl PolicyService {
             return Err(tinybus::Error::failed("approval denied"));
         }
         let request_for_recheck = request.request.clone();
-        let row = engine.begin(request).await.map_err(|error| {
-            eprintln!("approval native verifier begin error: {error:?}");
-            approval_failure(error)
-        })?;
+        let row = engine.begin(request).await.map_err(approval_failure)?;
         let fresh = self
             .read()?
             .evaluate_hosted(scope.as_deref(), &request_for_recheck)
