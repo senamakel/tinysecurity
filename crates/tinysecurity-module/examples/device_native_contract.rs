@@ -7,12 +7,74 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tinybus::{Connection, broker::Broker, module::ModuleHost, transport::memory::MemoryBus};
+use tinybus::{
+    Connection,
+    broker::Broker,
+    module::{HostCallbackEndpoint, HostCallbackProxy, ModuleHost},
+    transport::memory::MemoryBus,
+};
 use tinysecurity_bus::{
-    ApprovalConfig2, ApprovalRow2, DeviceFrameOperation2, DeviceFrameRequest2,
+    ApprovalConfig2, ApprovalRow2, AuditEventReceipt2, AuditSinkRequest2, AuditSinkResponse2,
+    DeviceFrameOperation2, DeviceFrameRequest2,
     DeviceFrameResponse2, DeviceKeyPurpose2, DeviceOperation2, DeviceResponse2, DeviceRole2,
     EvaluateDeviceRequest2, ExecuteDeviceRequest2, ModuleConfig, PolicyInfo, names,
 };
+#[derive(Clone)]
+struct Sink;
+#[tinybus::interface(name = "ai.tinyhumans.tinysecurity.AuditSink2")]
+impl Sink {
+    async fn append(&self, request: AuditSinkRequest2) -> tinybus::Result<AuditSinkResponse2> {
+        std::future::ready(Ok(AuditSinkResponse2 {
+            scope: request.scope,
+            stream_id: request.stream_id,
+            new_tail: request.events[0].sequence,
+            events: request.events.into_iter().map(|event| AuditEventReceipt2 {
+                event_id: event.event_id,
+                sequence: event.sequence,
+            }).collect(),
+        })).await
+    }
+}
+
+async fn load_bound_module(
+    lifecycle: &ModuleHost,
+    library: &std::path::Path,
+    host: &Connection,
+    mut configuration: ModuleConfig,
+    store: Arc<Mutex<fixture::store::DiskStore>>,
+) -> std::result::Result<(tinybus::module::HostCallbackBinding, HostCallbackProxy, String, ModuleConfig), Box<dyn std::error::Error>> {
+    let path: tinybus::ObjectPath = tinysecurity_bus::callback_names2::OBJECT_PATH.parse()?;
+    let endpoint = |interface: &str, members: &[&str]| -> tinybus::Result<HostCallbackEndpoint> {
+        Ok(HostCallbackEndpoint {
+            path: path.clone(),
+            interface: interface.parse()?,
+            members: members.iter().map(|member| (*member).parse()).collect::<tinybus::Result<_>>()?,
+        })
+    };
+    let binding = lifecycle.prepare_host_callbacks(vec![
+        endpoint(tinysecurity_bus::callback_names2::APPROVAL_STORE, &[tinysecurity_bus::callback_names2::LOAD, tinysecurity_bus::callback_names2::CAS])?,
+        endpoint(tinysecurity_bus::callback_names2::APPROVAL_PROMPT, &[tinysecurity_bus::callback_names2::PROMPT, tinysecurity_bus::callback_names2::VERIFY_HUMAN])?,
+        endpoint(tinysecurity_bus::callback_names2::AUDIT_SINK, &[tinysecurity_bus::callback_names2::APPEND])?,
+    ]).await?;
+    configuration.trusted_host = Some(binding.unique_name().to_string());
+    let guard = binding.guard();
+    let module_proxy = Arc::new(std::sync::OnceLock::new());
+    let scope = tinysecurity::approval::scope_handle(&fixture::registration().subject)?;
+    for interface in [tinysecurity_bus::callback_names2::APPROVAL_STORE, tinysecurity_bus::callback_names2::APPROVAL_PROMPT] {
+        binding.serve_at(path.clone(), super::fixture::bound_callback::Callback {
+            guard: guard.clone(), module_proxy: module_proxy.clone(), interface: interface.parse()?,
+            scope: scope.clone(), store: store.clone(), reentrant: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            prompt_failure: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }).await?;
+    }
+    binding.serve_at(path, Sink).await?;
+    let loaded = lifecycle.load_file_with_host_callbacks(library, serde_json::to_value(&configuration)?, &binding).await?;
+    let module = wait_owner(host).await?;
+    let proxy = binding.proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?.with_timeout(Duration::from_secs(10));
+    module_proxy.set(proxy.clone()).map_err(|_| "fixture module proxy already initialized")?;
+    assert!(proxy.attestation().await?.is_some());
+    Ok((binding, proxy, loaded.name, configuration))
+}
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let library = std::path::PathBuf::from(
