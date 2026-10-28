@@ -1,6 +1,8 @@
 //! Actual hashed native device dispatch, confidential routing and verified callbacks.
 #[path = "device_native_contract/fixture.rs"]
 mod fixture;
+#[path = "approval_native_contract/bound_callback.rs"]
+mod bound_callback;
 #[path = "approval_native_contract/namespace.rs"]
 mod namespace;
 use std::{
@@ -61,7 +63,7 @@ async fn load_bound_module(
     let module_proxy = Arc::new(std::sync::OnceLock::new());
     let scope = tinysecurity::approval::scope_handle(&fixture::registration().subject)?;
     for interface in [tinysecurity_bus::callback_names2::APPROVAL_STORE, tinysecurity_bus::callback_names2::APPROVAL_PROMPT] {
-        binding.serve_at(path.clone(), super::fixture::bound_callback::Callback {
+        binding.serve_at(path.clone(), bound_callback::Callback {
             guard: guard.clone(), module_proxy: module_proxy.clone(), interface: interface.parse()?,
             scope: scope.clone(), store: store.clone(), reentrant: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             prompt_failure: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -113,23 +115,18 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         ))),
         ..Default::default()
     };
-    let loaded =
-        lifecycle.load_file_with_config(&library, serde_json::to_value(&configuration)?)?;
-    let module = wait_owner(&host).await?;
     let store = Arc::new(Mutex::new(fixture::store::DiskStore::open(
         &root.join("approvals.journal"),
     )?));
-    fixture::serve_callbacks(&host, &module, &store, true).await?;
-    let proxy = host
-        .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
-        .with_timeout(Duration::from_secs(10));
+    let (_binding, proxy, loaded_name, configuration) =
+        load_bound_module(&lifecycle, &library, &host, configuration, store.clone()).await?;
     credential_root_checks(&proxy).await?;
     routing_checks(&proxy, &bus, &module).await?;
     let mut sequence = 1;
     let (key, stale_tunnel) = native_protocols(&proxy, &store, &mut sequence).await?;
     let observer = generation_boundary(
         &lifecycle,
-        &loaded.name,
+        &loaded_name,
         configuration,
         &proxy,
         &store,
@@ -174,7 +171,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn credential_root_checks(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     use tinysecurity_bus::{CredentialRootsRequest2, CredentialRootsResponse2};
 
@@ -210,7 +207,7 @@ async fn credential_root_checks(
     Ok(())
 }
 async fn native_tunnel(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     store: &Arc<Mutex<fixture::store::DiskStore>>,
     sequence: &mut u64,
     own: &str,
@@ -298,7 +295,7 @@ async fn native_tunnel(
 }
 
 async fn verify_frame_dispatch(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     store: &Arc<Mutex<fixture::store::DiskStore>>,
     tunnel: &str,
     peer_tunnel: &mut tinysecurity::crypto::device::Tunnel,
@@ -383,7 +380,7 @@ async fn verify_frame_dispatch(
 }
 
 async fn verify_revoked_tunnel(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     store: &Arc<Mutex<fixture::store::DiskStore>>,
     sequence: &mut u64,
     own: &str,
@@ -441,7 +438,7 @@ async fn verify_revoked_tunnel(
     Ok(())
 }
 async fn routing_checks(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     bus: &MemoryBus,
     module: &tinybus::BusName,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -511,7 +508,7 @@ async fn routing_checks(
     Ok(())
 }
 async fn handshake_roundtrip(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     store: &Arc<Mutex<fixture::store::DiskStore>>,
     sequence: &mut u64,
     client: &str,
@@ -559,7 +556,7 @@ async fn handshake_roundtrip(
     Ok(())
 }
 async fn native_protocols(
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     store: &Arc<Mutex<fixture::store::DiskStore>>,
     sequence: &mut u64,
 ) -> std::result::Result<(String, String), Box<dyn std::error::Error>> {
@@ -663,7 +660,7 @@ async fn generation_boundary(
     lifecycle: &ModuleHost,
     name: &str,
     mut configuration: ModuleConfig,
-    proxy: &tinybus::Proxy,
+    proxy: &HostCallbackProxy,
     store: &Arc<Mutex<fixture::store::DiskStore>>,
     sequence: &mut u64,
     handles: (String, String),
