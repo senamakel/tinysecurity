@@ -305,6 +305,7 @@ async fn scenario(
             (registration(grants()),),
         )
         .await?;
+    eprintln!("scope fixture: idempotent registration returned");
     assert_eq!(again.outcome, ApprovalScopeOutcome2::Unchanged);
 
     let granted: EvaluateApprovalResponse2 = proxy
