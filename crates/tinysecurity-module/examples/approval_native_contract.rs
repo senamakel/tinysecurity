@@ -26,6 +26,14 @@ use tinysecurity_bus::{
     EvaluateRequest, ExecutionOutcome, ModuleConfig, Origin, RecordExecutionRequest2, SubjectScope,
     ToolCall, Verdict, callback_names2, names,
 };
+
+struct CallbackState {
+    scope: SubjectScope,
+    store: Arc<Mutex<store::DiskStore>>,
+    reentrant: Arc<AtomicBool>,
+    prompt_failure: Arc<AtomicBool>,
+}
+
 fn audit(sequence: u64) -> AuditCorrelation2 {
     AuditCorrelation2 {
         event_id: format!("{sequence:032x}"),
@@ -155,7 +163,7 @@ async fn verify(
     let client = Connection::connect(bus.connect().await?).await?;
     let reg = registration();
     let scope = tinysecurity::approval::scope_handle(&reg.subject)?;
-    let mut configuration = ModuleConfig {
+    let configuration = ModuleConfig {
         trusted_host: client.unique_name().map(|n| n.as_str().to_owned()),
         approvals: Some(ApprovalConfig2 {
             timeout_ms: 30_000,
@@ -179,66 +187,24 @@ async fn verify(
         }),
         ..Default::default()
     };
-    let callback_path: tinybus::ObjectPath = callback_names2::OBJECT_PATH.parse()?;
-    let endpoint = |interface: &str, members: &[&str]| -> tinybus::Result<HostCallbackEndpoint> {
-        Ok(HostCallbackEndpoint {
-            path: callback_path.clone(),
-            interface: interface.parse()?,
-            members: members
-                .iter()
-                .map(|member| (*member).parse())
-                .collect::<tinybus::Result<_>>()?,
-        })
-    };
-    let binding = lifecycle
-        .prepare_host_callbacks(vec![
-            endpoint(
-                callback_names2::APPROVAL_STORE,
-                &[callback_names2::LOAD, callback_names2::CAS],
-            )?,
-            endpoint(
-                callback_names2::APPROVAL_PROMPT,
-                &[callback_names2::PROMPT, callback_names2::VERIFY_HUMAN],
-            )?,
-        ])
-        .await?;
-    configuration.trusted_host = Some(binding.unique_name().to_string());
-    let guard = binding.guard();
-    let module_proxy = Arc::new(OnceLock::new());
     let store = Arc::new(Mutex::new(store::DiskStore::open(
         &root.join("approvals.journal"),
     )?));
     let reentrant = Arc::new(AtomicBool::new(first));
     let prompt_failure = Arc::new(AtomicBool::new(false));
-    for interface in [
-        callback_names2::APPROVAL_STORE,
-        callback_names2::APPROVAL_PROMPT,
-    ] {
-        binding
-            .serve_at(
-                callback_names2::OBJECT_PATH.parse()?,
-                bound_callback::Callback {
-                    guard: guard.clone(),
-                    module_proxy: module_proxy.clone(),
-                    interface: interface.parse()?,
-                    scope: scope.clone(),
-                    store: store.clone(),
-                    reentrant: reentrant.clone(),
-                    prompt_failure: prompt_failure.clone(),
-                },
-            )
-            .await?;
-    }
-    lifecycle
-        .load_file_with_host_callbacks(library, serde_json::to_value(configuration)?, &binding)
-        .await?;
-    let module = module_peer(&client).await?;
-    module_proxy
-        .set(binding.proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?)
-        .map_err(|_| "fixture module proxy already initialized")?;
-    let proxy = binding
-        .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
-        .with_timeout(Duration::from_secs(10));
+    let (_binding, module, proxy) = load_with_host_callbacks(
+        &lifecycle,
+        library,
+        configuration,
+        &client,
+        CallbackState {
+            scope: scope.clone(),
+            store: store.clone(),
+            reentrant,
+            prompt_failure: prompt_failure.clone(),
+        },
+    )
+    .await?;
     assert!(proxy.attestation().await?.is_some());
     let attacker = Connection::connect(bus.connect().await?).await?;
     assert!(
@@ -268,6 +234,78 @@ async fn verify(
     lifecycle.shutdown(Duration::from_secs(2)).await;
     broker_task.abort();
     Ok(())
+}
+
+async fn load_with_host_callbacks(
+    lifecycle: &ModuleHost,
+    library: &Path,
+    mut configuration: ModuleConfig,
+    client: &Connection,
+    callback: CallbackState,
+) -> std::result::Result<
+    (
+        tinybus::module::HostCallbackBinding,
+        tinybus::BusName,
+        HostCallbackProxy,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let callback_path: tinybus::ObjectPath = callback_names2::OBJECT_PATH.parse()?;
+    let endpoint = |interface: &str, members: &[&str]| -> tinybus::Result<HostCallbackEndpoint> {
+        Ok(HostCallbackEndpoint {
+            path: callback_path.clone(),
+            interface: interface.parse()?,
+            members: members
+                .iter()
+                .map(|member| (*member).parse())
+                .collect::<tinybus::Result<_>>()?,
+        })
+    };
+    let binding = lifecycle
+        .prepare_host_callbacks(vec![
+            endpoint(
+                callback_names2::APPROVAL_STORE,
+                &[callback_names2::LOAD, callback_names2::CAS],
+            )?,
+            endpoint(
+                callback_names2::APPROVAL_PROMPT,
+                &[callback_names2::PROMPT, callback_names2::VERIFY_HUMAN],
+            )?,
+        ])
+        .await?;
+    configuration.trusted_host = Some(binding.unique_name().to_string());
+    let guard = binding.guard();
+    let module_proxy = Arc::new(OnceLock::new());
+    for interface in [
+        callback_names2::APPROVAL_STORE,
+        callback_names2::APPROVAL_PROMPT,
+    ] {
+        binding
+            .serve_at(
+                callback_path.clone(),
+                bound_callback::Callback {
+                    guard: guard.clone(),
+                    module_proxy: module_proxy.clone(),
+                    interface: interface.parse()?,
+                    scope: callback.scope.clone(),
+                    store: callback.store.clone(),
+                    reentrant: callback.reentrant.clone(),
+                    prompt_failure: callback.prompt_failure.clone(),
+                },
+            )
+            .await?;
+    }
+    lifecycle
+        .load_file_with_host_callbacks(library, serde_json::to_value(configuration)?, &binding)
+        .await?;
+    let module = module_peer(client).await?;
+    let proxy = binding.proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?;
+    module_proxy
+        .set(proxy.clone())
+        .map_err(|_| "fixture module proxy already initialized")?;
+    let proxy = proxy.with_timeout(Duration::from_secs(10));
+    assert!(proxy.attestation().await?.is_some());
+    Ok((binding, module, proxy))
 }
 
 async fn first_roundtrip(
