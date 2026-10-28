@@ -265,6 +265,7 @@ async fn scenario(
     proxy: &HostCallbackProxy,
     store: &Arc<Mutex<store::DiskStore>>,
 ) -> std::result::Result<(), Failure> {
+    eprintln!("scope fixture: scenario start");
     let grants = || ApprovalGrants2 {
         tools: vec!["shell".into()],
         flows: vec![],
@@ -296,6 +297,7 @@ async fn scenario(
             (registration(grants()),),
         )
         .await?;
+    eprintln!("scope fixture: runtime registration returned");
     assert_eq!(created.outcome, ApprovalScopeOutcome2::Created);
     let again: ApprovalScopeReceipt2 = proxy
         .call(
@@ -308,6 +310,7 @@ async fn scenario(
     let granted: EvaluateApprovalResponse2 = proxy
         .call(names::methods::EVALUATE_APPROVAL2, (begin(2, 3, "shell"),))
         .await?;
+    eprintln!("scope fixture: granted evaluation returned");
     assert_eq!(granted.decision.verdict, Verdict::Allow);
     assert_eq!(
         granted.record.attribution.as_deref(),
@@ -319,6 +322,7 @@ async fn scenario(
             (begin(3, 5, "gmail_send"),),
         )
         .await?;
+    eprintln!("scope fixture: pending evaluation returned");
     assert!(matches!(
         pending.decision.verdict,
         Verdict::RequireApproval { .. }
