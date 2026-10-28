@@ -11,19 +11,99 @@ mod store;
 mod stub;
 use std::{
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
-use tinybus::{Connection, broker::Broker, module::ModuleHost, transport::memory::MemoryBus};
+use tinybus::{
+    Connection,
+    broker::Broker,
+    module::{HostCallbackEndpoint, HostCallbackProxy, ModuleHost},
+    transport::memory::MemoryBus,
+};
 use tinysecurity_bus::{
     AccessTier, ApprovalActionRequest2, ApprovalChoice2, ApprovalConfig2, ApprovalLifecycle2,
     ApprovalRow2, ApprovalScope2, AuditConfig2, AuditCorrelation2, CallerContext, Check,
     DecideRequest2, EvaluateApprovalRequest2, EvaluateApprovalResponse2, EvaluateRequest,
     JudgeConfig, JudgeOutcome2, JudgeProvider, ModuleConfig, Origin, PolicyInfo, RedactorConfig,
-    Secret, SubjectScope, ToolCall, Verdict, callback_names2, names,
+    AuditEventReceipt2, AuditSinkRequest2, AuditSinkResponse2, Secret, SubjectScope, ToolCall,
+    Verdict, callback_names2, names,
 };
+type Failure = Box<dyn std::error::Error>;
+
+#[derive(Clone)]
+struct Sink;
+#[tinybus::interface(name = "ai.tinyhumans.tinysecurity.AuditSink2")]
+impl Sink {
+    async fn append(&self, request: AuditSinkRequest2) -> tinybus::Result<AuditSinkResponse2> {
+        Ok(AuditSinkResponse2 {
+            scope: request.scope,
+            stream_id: request.stream_id,
+            new_tail: request.events[0].sequence,
+            events: request.events.into_iter().map(|event| AuditEventReceipt2 {
+                event_id: event.event_id,
+                sequence: event.sequence,
+            }).collect(),
+        })
+    }
+}
+
+async fn module_peer(client: &Connection) -> tinybus::Result<tinybus::BusName> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(peer) = client.name_owner(names::INTERFACE).await? {
+                return Ok(peer);
+            }
+            tokio::task::yield_now().await;
+        }
+    }).await.map_err(|_| tinybus::Error::failed("native approval initialization unavailable"))?
+}
+
+async fn bind_and_load(
+    lifecycle: &ModuleHost,
+    library: &std::path::Path,
+    client: &Connection,
+    mut configuration: ModuleConfig,
+    store: Arc<Mutex<store::DiskStore>>,
+    prompt_failure: Arc<AtomicBool>,
+) -> std::result::Result<(tinybus::module::HostCallbackBinding, HostCallbackProxy), Failure> {
+    let path: tinybus::ObjectPath = callback_names2::OBJECT_PATH.parse()?;
+    let endpoint = |interface: &str, members: &[&str]| -> tinybus::Result<HostCallbackEndpoint> {
+        Ok(HostCallbackEndpoint {
+            path: path.clone(),
+            interface: interface.parse()?,
+            members: members.iter().map(|member| (*member).parse()).collect::<tinybus::Result<_>>()?,
+        })
+    };
+    let binding = lifecycle.prepare_host_callbacks(vec![
+        endpoint(callback_names2::APPROVAL_STORE, &[callback_names2::LOAD, callback_names2::CAS])?,
+        endpoint(callback_names2::APPROVAL_PROMPT, &[callback_names2::PROMPT, callback_names2::VERIFY_HUMAN])?,
+        endpoint(callback_names2::AUDIT_SINK, &[callback_names2::APPEND])?,
+    ]).await?;
+    configuration.trusted_host = Some(binding.unique_name().to_string());
+    let scope = tinysecurity::approval::scope_handle(&configuration.approvals.as_ref().ok_or("approval config")?.scopes[0].subject)?;
+    let guard = binding.guard();
+    let module_proxy = Arc::new(OnceLock::new());
+    for interface in [callback_names2::APPROVAL_STORE, callback_names2::APPROVAL_PROMPT] {
+        binding.serve_at(path.clone(), bound_callback::Callback {
+            guard: guard.clone(),
+            module_proxy: module_proxy.clone(),
+            interface: interface.parse()?,
+            scope: scope.clone(),
+            store: store.clone(),
+            reentrant: Arc::new(AtomicBool::new(true)),
+            prompt_failure: prompt_failure.clone(),
+        }).await?;
+    }
+    binding.serve_at(path, Sink).await?;
+    lifecycle.load_file_with_host_callbacks(library, serde_json::to_value(configuration)?, &binding).await?;
+    let module = module_peer(client).await?;
+    let proxy = binding.proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?.with_timeout(Duration::from_secs(10));
+    module_proxy.set(proxy.clone()).map_err(|_| "fixture module proxy already initialized")?;
+    assert!(proxy.attestation().await?.is_some());
+    Ok((binding, proxy))
+}
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 fn audit(sequence: u64) -> AuditCorrelation2 {
     AuditCorrelation2 {
