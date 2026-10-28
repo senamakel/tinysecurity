@@ -718,7 +718,7 @@ async fn generation_boundary(
     handles: (String, String),
 ) -> std::result::Result<String, Box<dyn std::error::Error>> {
     let (key, stale_tunnel) = handles;
-    eprintln!("device fixture before reinit health: {:?}; module state: {:?}", proxy.call::<PolicyInfo>(names::methods::POLICY_INFO, ()).await.map(|info| info.generation), lifecycle.list().iter().find(|module| module.name == name).map(|module| module.state));
+    eprintln!("device fixture before reinit health: {:?}; module state: {:?}", proxy.call::<PolicyInfo>(names::methods::POLICY_INFO, ()).await.map(|info| info.generation), lifecycle.list().iter().find(|module| module.name == name).map(|module| module.state.clone()));
     // Reinitialize with unchanged callback-bound configuration. The SDK still advances
     // its runtime generation and invalidates handles issued by the previous generation.
     lifecycle
