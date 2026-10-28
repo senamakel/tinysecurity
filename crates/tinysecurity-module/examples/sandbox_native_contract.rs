@@ -121,7 +121,7 @@ async fn load_bound_module(
     let module = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let Some(peer) = host.name_owner(names::INTERFACE).await? {
-                return Ok(peer);
+                return Ok::<_, tinybus::Error>(peer);
             }
             tokio::task::yield_now().await;
         }
