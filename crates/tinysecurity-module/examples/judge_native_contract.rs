@@ -217,7 +217,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .is_err()
     );
     let info: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
-    assert_eq!(info.generation, 2);
+    assert_eq!(info.generation, 1);
     verify_info(&info, &stub)?;
     verify_retained_scoring(&proxy, &stub).await?;
     prompt_failure.store(true, Ordering::SeqCst);
