@@ -185,6 +185,22 @@ fn batch(tail: u64, kind: AuditKind2) -> AuditSinkRequest2 {
         }],
     }
 }
+fn verify_digest_rejection(
+    host: &ModuleHost,
+    path: &std::path::Path,
+    allowlist: &std::path::Path,
+    name: &str,
+    digest: &str,
+    config: &ModuleConfig,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    std::fs::write(allowlist, format!("\"{name}\" = \"{}\"\n", "0".repeat(64)))?;
+    assert!(
+        host.load_file_with_config(path, serde_json::to_value(config)?)
+            .is_err()
+    );
+    std::fs::write(allowlist, format!("\"{name}\" = \"{digest}\"\n"))?;
+    Ok(())
+}
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let path = std::path::PathBuf::from(
@@ -218,12 +234,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         audit: Some(audit_config(true)),
         ..ModuleConfig::default()
     };
-    std::fs::write(&allowlist, format!("\"{name}\" = \"{}\"\n", "0".repeat(64)))?;
-    assert!(
-        host.load_file_with_config(&path, serde_json::to_value(&config)?)
-            .is_err()
-    );
-    std::fs::write(&allowlist, format!("\"{name}\" = \"{digest}\"\n"))?;
+    verify_digest_rejection(&host, &path, &allowlist, name, &digest, &config)?;
     let callback_path: tinybus::ObjectPath = callback_names2::OBJECT_PATH.parse()?;
     let binding = host
         .prepare_host_callbacks(vec![HostCallbackEndpoint {
