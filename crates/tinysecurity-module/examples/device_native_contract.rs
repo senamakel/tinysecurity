@@ -47,7 +47,7 @@ async fn load_bound_module(
     lifecycle: &ModuleHost,
     library: &std::path::Path,
     host: &Connection,
-    mut configuration: ModuleConfig,
+    configuration: ModuleConfig,
     store: Arc<Mutex<fixture::store::DiskStore>>,
 ) -> std::result::Result<
     (
@@ -718,20 +718,8 @@ async fn generation_boundary(
     handles: (String, String),
 ) -> std::result::Result<String, Box<dyn std::error::Error>> {
     let (key, stale_tunnel) = handles;
-    // Actual SDK reinit retains the callback peer/registrations while advancing generation.
-    for scope in &mut configuration
-        .device
-        .as_mut()
-        .ok_or("fixture config")?
-        .scopes
-    {
-        scope.static_secret = None;
-    }
-    configuration
-        .device
-        .as_mut()
-        .ok_or("fixture config")?
-        .max_handles = 16;
+    // Reinitialize with unchanged callback-bound configuration. The SDK still advances
+    // its runtime generation and invalidates handles issued by the previous generation.
     lifecycle
         .reinitialize(name, serde_json::to_value(configuration)?)
         .await?;
