@@ -569,7 +569,7 @@ async fn serve_approvals_with(
     let redactor = tinysecurity::Redactor::new(&RedactorConfig {
         secrets: vec![Secret("fake-judge-key".into())],
     })?;
-    let clients = crate::approval_callbacks::ApprovalClients::new(
+    let clients = crate::approval_callbacks::ApprovalClients::new_for_test(
         module,
         Some(host_peer.as_str()),
         &config,

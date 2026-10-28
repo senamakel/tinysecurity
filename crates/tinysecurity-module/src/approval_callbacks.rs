@@ -57,7 +57,7 @@ impl ApprovalStoreClient {
     /// Build a client for unit tests that exercise callback semantics on an
     /// unauthenticated `MemoryBus` mock. Production always uses confidential calls.
     #[cfg(test)]
-    fn new_for_test(
+    pub(crate) fn new_for_test(
         connection: tinybus::Connection,
         peer: Option<&str>,
         config: &ApprovalConfig2,
@@ -193,9 +193,6 @@ impl ApprovalClients {
         audit: &AuditConfig2,
         redactor: &tinysecurity::Redactor,
     ) -> tinybus::Result<Self> {
-        #[cfg(test)]
-        let store = ApprovalStoreClient::new_for_test(connection.clone(), peer, config)?;
-        #[cfg(not(test))]
         let store = ApprovalStoreClient::new(connection.clone(), peer, config)?;
         let binding = PeerBinding::new(peer)?;
         let runtime = RuntimeAudit {
@@ -226,6 +223,20 @@ impl ApprovalClients {
             runtime,
             pins: StreamPins::default(),
         })
+    }
+    /// Build a client for unit tests that use unauthenticated `MemoryBus` mocks.
+    /// Production and binding-backed tests always use confidential callback calls.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        connection: &tinybus::Connection,
+        peer: Option<&str>,
+        config: &ApprovalConfig2,
+        audit: &AuditConfig2,
+        redactor: &tinysecurity::Redactor,
+    ) -> tinybus::Result<Self> {
+        let mut clients = Self::new(connection, peer, config, audit, redactor)?;
+        clients.store.test_ordinary_calls = true;
+        Ok(clients)
     }
     /// Build the audit client of a runtime subject: its own persisted stream, always
     /// forwarded to the host sink so no extra native journal is opened.
