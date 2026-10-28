@@ -16,6 +16,8 @@ pub(crate) struct ApprovalStoreClient {
     peer: tinybus::BusName,
     timeout_ms: u32,
     scopes: RwLock<Vec<SubjectScope>>,
+    #[cfg(test)]
+    test_ordinary_calls: bool,
 }
 impl std::fmt::Debug for ApprovalStoreClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -48,7 +50,21 @@ impl ApprovalStoreClient {
             peer,
             timeout_ms: config.timeout_ms,
             scopes: RwLock::new(scopes),
+            #[cfg(test)]
+            test_ordinary_calls: false,
         })
+    }
+    /// Build a client for unit tests that exercise callback semantics on an
+    /// unauthenticated `MemoryBus` mock. Production always uses confidential calls.
+    #[cfg(test)]
+    fn new_for_test(
+        connection: tinybus::Connection,
+        peer: Option<&str>,
+        config: &ApprovalConfig2,
+    ) -> tinybus::Result<Self> {
+        let mut client = Self::new(connection, peer, config)?;
+        client.test_ordinary_calls = true;
+        Ok(client)
     }
     fn scope(&self, scope: &SubjectScope) -> Result<()> {
         if self
@@ -91,9 +107,19 @@ impl ApprovalStoreClient {
         request: ApprovalLoadRequest2,
     ) -> Result<ApprovalLoadResponse2> {
         self.scope(&request.scope)?;
-        let response = self
-            .proxy(callback_names2::APPROVAL_STORE)?
-            .call(callback_names2::LOAD, (request.clone(),))
+        let proxy = self.proxy(callback_names2::APPROVAL_STORE)?;
+        #[cfg(test)]
+        let response = if self.test_ordinary_calls {
+            proxy.call(callback_names2::LOAD, (request.clone(),)).await
+        } else {
+            proxy
+                .call_confidential(callback_names2::LOAD, (request.clone(),))
+                .await
+        }
+        .map_err(|_| Error::Unavailable)?;
+        #[cfg(not(test))]
+        let response = proxy
+            .call_confidential(callback_names2::LOAD, (request.clone(),))
             .await
             .map_err(|_| Error::Unavailable)?;
         request
@@ -103,9 +129,19 @@ impl ApprovalStoreClient {
     }
     pub(crate) async fn cas(&self, request: ApprovalCasRequest2) -> Result<ApprovalCasResponse2> {
         self.scope(&request.scope)?;
-        let response = self
-            .proxy(callback_names2::APPROVAL_STORE)?
-            .call(callback_names2::CAS, (request.clone(),))
+        let proxy = self.proxy(callback_names2::APPROVAL_STORE)?;
+        #[cfg(test)]
+        let response = if self.test_ordinary_calls {
+            proxy.call(callback_names2::CAS, (request.clone(),)).await
+        } else {
+            proxy
+                .call_confidential(callback_names2::CAS, (request.clone(),))
+                .await
+        }
+        .map_err(|_| Error::Unavailable)?;
+        #[cfg(not(test))]
+        let response = proxy
+            .call_confidential(callback_names2::CAS, (request.clone(),))
             .await
             .map_err(|_| Error::Unavailable)?;
         request
@@ -157,6 +193,9 @@ impl ApprovalClients {
         audit: &AuditConfig2,
         redactor: &tinysecurity::Redactor,
     ) -> tinybus::Result<Self> {
+        #[cfg(test)]
+        let store = ApprovalStoreClient::new_for_test(connection.clone(), peer, config)?;
+        #[cfg(not(test))]
         let store = ApprovalStoreClient::new(connection.clone(), peer, config)?;
         let binding = PeerBinding::new(peer)?;
         let runtime = RuntimeAudit {
