@@ -32,9 +32,10 @@ fn locked<T>(
     store: &Arc<Mutex<store::DiskStore>>,
     f: impl FnOnce(&mut store::DiskStore) -> tinybus::Result<T>,
 ) -> tinybus::Result<T> {
-    f(&mut store
+    let mut store = store
         .lock()
-        .map_err(|_| tinybus::Error::failed("native approval store unavailable"))?)
+        .map_err(|_| tinybus::Error::failed("native approval store unavailable"))?;
+    f(&mut store)
 }
 
 const TENANT: &str = "7777777777777777777777777777777b";
@@ -188,7 +189,7 @@ async fn main() -> std::result::Result<(), Failure> {
         ..Default::default()
     };
     let store = Arc::new(Mutex::new(store::DiskStore::open(&journal)?));
-    let callback_path = callback_names2::OBJECT_PATH.parse()?;
+    let callback_path: tinybus::ObjectPath = callback_names2::OBJECT_PATH.parse()?;
     let endpoint = |interface: &str, members: &[&str]| -> tinybus::Result<HostCallbackEndpoint> {
         Ok(HostCallbackEndpoint {
             path: callback_path.clone(),
