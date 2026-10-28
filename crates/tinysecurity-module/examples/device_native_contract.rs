@@ -47,7 +47,7 @@ async fn load_bound_module(
     lifecycle: &ModuleHost,
     library: &std::path::Path,
     host: &Connection,
-    configuration: ModuleConfig,
+    mut configuration: ModuleConfig,
     store: Arc<Mutex<fixture::store::DiskStore>>,
 ) -> std::result::Result<
     (
@@ -711,7 +711,7 @@ async fn native_protocols(
 async fn generation_boundary(
     lifecycle: &ModuleHost,
     name: &str,
-    mut configuration: ModuleConfig,
+    configuration: ModuleConfig,
     proxy: &HostCallbackProxy,
     store: &Arc<Mutex<fixture::store::DiskStore>>,
     sequence: &mut u64,
