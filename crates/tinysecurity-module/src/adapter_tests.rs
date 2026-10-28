@@ -1410,7 +1410,6 @@ async fn verify_direct_credential_transfers(
                 },),
             )
             .await?;
-        eprintln!("native {text}: {prompt:?}; {tool:?}; {decision:?}");
         outcomes.push((prompt, tool, decision));
     }
     for (prompt, tool, decision) in outcomes {
