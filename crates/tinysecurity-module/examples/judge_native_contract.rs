@@ -194,6 +194,16 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .set(proxy.clone())
         .map_err(|_| "fixture module proxy already initialized")?;
     assert!(proxy.attestation().await?.is_some());
+    let mut non_opted = begin(1, 1);
+    non_opted.request.caller.origin = Origin::Copilot;
+    let off: EvaluateApprovalResponse2 = proxy
+        .call(names::methods::EVALUATE_APPROVAL2, (non_opted,))
+        .await?;
+    assert!(matches!(
+        off.decision.verdict,
+        Verdict::RequireApproval { .. }
+    ));
+    assert!(stub.requests.lock().map_err(|_| "stub")?.is_empty());
     verify_scoring(&proxy, &stub).await?;
     verify_fallback(&proxy, &stub, &store).await?;
     verify_matrix(&proxy, &stub).await?;
