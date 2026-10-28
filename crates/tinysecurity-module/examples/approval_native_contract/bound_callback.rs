@@ -63,6 +63,7 @@ impl Interface for Callback {
         }
         match member.as_str() {
             callback_names2::LOAD => {
+                eprintln!("scope fixture: store load callback");
                 let (request,): (ApprovalLoadRequest2,) = serde_json::from_value(args)?;
                 self.scope(&request.scope)?;
                 serde_json::to_value(
@@ -74,6 +75,7 @@ impl Interface for Callback {
                 .map_err(Into::into)
             }
             callback_names2::CAS => {
+                eprintln!("scope fixture: store cas callback");
                 let (request,): (ApprovalCasRequest2,) = serde_json::from_value(args)?;
                 self.scope(&request.scope)?;
                 serde_json::to_value(

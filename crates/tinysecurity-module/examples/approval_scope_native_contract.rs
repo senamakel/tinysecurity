@@ -99,6 +99,7 @@ struct Sink;
 #[tinybus::interface(name = "ai.tinyhumans.tinysecurity.AuditSink2")]
 impl Sink {
     async fn append(&self, request: AuditSinkRequest2) -> tinybus::Result<AuditSinkResponse2> {
+        eprintln!("scope fixture: audit append {}", request.events.len());
         std::future::ready(Ok(AuditSinkResponse2 {
             scope: request.scope,
             stream_id: request.stream_id,
