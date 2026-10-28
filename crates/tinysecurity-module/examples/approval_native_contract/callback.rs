@@ -2,13 +2,10 @@
 use super::{audit, store::DiskStore};
 use async_trait::async_trait;
 use std::sync::{
-    Arc, Mutex, OnceLock,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
-use tinybus::{
-    CallContext, Interface, InterfaceName, MemberName,
-    module::{HostCallbackGuard, HostCallbackProxy},
-};
+use tinybus::{BusName, CallContext, Connection, Interface, InterfaceName, MemberName};
 use tinysecurity_bus::{
     ApprovalCasRequest2, ApprovalChoice2, ApprovalDeliveryRequest2, ApprovalDeliveryResponse2,
     ApprovalLifecycle2, ApprovalLoadRequest2, ApprovalPurgeSessionRequest2,
@@ -17,8 +14,8 @@ use tinysecurity_bus::{
 };
 #[derive(Clone)]
 pub(crate) struct Callback {
-    pub(crate) guard: HostCallbackGuard,
-    pub(crate) module_proxy: Arc<OnceLock<HostCallbackProxy>>,
+    pub(crate) module: BusName,
+    pub(crate) host: Connection,
     pub(crate) interface: InterfaceName,
     pub(crate) scope: SubjectScope,
     pub(crate) store: Arc<Mutex<DiskStore>>,
@@ -59,7 +56,7 @@ impl Interface for Callback {
         args: serde_json::Value,
         context: &CallContext,
     ) -> tinybus::Result<serde_json::Value> {
-        if !self.guard.authorizes(context) {
+        if context.authenticated_sender() != Some(&self.module) {
             return Err(tinybus::Error::failed("fixture wrong peer"));
         }
         match member.as_str() {
@@ -135,10 +132,8 @@ impl Interface for Callback {
                     };
                     // The store lock has dropped before reentering the single-worker module.
                     let decided: ApprovalRow2 = self
-                        .module_proxy
-                        .get()
-                        .ok_or_else(|| tinybus::Error::failed("fixture module unavailable"))?
-                        .clone()
+                        .host
+                        .proxy(self.module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
                         .with_timeout(std::time::Duration::from_secs(3))
                         .call(
                             names::methods::DECIDE2,
