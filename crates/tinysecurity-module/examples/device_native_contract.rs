@@ -723,10 +723,13 @@ async fn callback_configuration_fence(
         scope.static_secret = None;
     }
     changed.device.as_mut().ok_or("fixture config")?.max_handles = 16;
-    let reinit_error = lifecycle
+    let reinit_error = match lifecycle
         .reinitialize(name, serde_json::to_value(changed)?)
         .await
-        .expect_err("callback-bound configuration changes are refused");
+    {
+        Ok(_) => return Err("callback-bound configuration change was accepted".into()),
+        Err(error) => error,
+    };
     assert!(
         reinit_error
             .to_string()
