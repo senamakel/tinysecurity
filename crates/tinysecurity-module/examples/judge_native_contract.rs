@@ -1,6 +1,8 @@
 //! Loaded native Jev scoring against a literal-loopback mock and durable callbacks.
 #[path = "approval_native_contract/callback.rs"]
 mod callback;
+#[path = "approval_native_contract/bound_callback.rs"]
+mod bound_callback;
 #[path = "approval_native_contract/namespace.rs"]
 mod namespace;
 #[path = "approval_native_contract/store.rs"]
