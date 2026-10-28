@@ -175,7 +175,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     interface: interface.parse()?,
                     scope: scope.clone(),
                     store: store.clone(),
-                    reentrant: Arc::new(AtomicBool::new(true)),
+                    reentrant: Arc::new(AtomicBool::new(false)),
                     prompt_failure: prompt_failure.clone(),
                 },
             )
