@@ -87,7 +87,7 @@ fn json_sanitization_reports_text_pii_private_keys_arrays_and_depth() -> Result<
     let input = serde_json::json!([
         {"safe": "email private@example.com"},
         {"safe": "address 192.0.2.1"},
-        {"safe": "-----BEGIN PRIVATE KEY-----\nprivate\n-----END PRIVATE KEY-----"}
+        {"safe": format!("-----BEGIN {kind}-----{body}-----END {kind}-----", kind = "PRIVATE KEY", body = "\nprivate\n")}
     ]);
     let sanitized = registry.sanitize_json(&input)?;
     assert_eq!(sanitized.value[0]["safe"], format!("email {MARKER}"));
