@@ -388,12 +388,13 @@ fn an_earlier_approval_requirement_never_masks_a_later_hard_denial() -> Result<(
 }
 
 #[test]
-fn redundant_protected_paths_in_the_denylist_keep_the_unconditional_floor() -> Result<()> {
-    let dir = tempfile::tempdir().expect("policy workspace");
+fn redundant_protected_paths_in_the_denylist_keep_the_unconditional_floor()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
     let action = dir.path().join("action");
     let workspace = dir.path().join("state");
-    std::fs::create_dir(&action).expect("action root");
-    std::fs::create_dir(&workspace).expect("state root");
+    std::fs::create_dir(&action)?;
+    std::fs::create_dir(&workspace)?;
     let protected = action.join(".ssh").join("id_rsa");
     for enabled in [false, true] {
         let config = ModuleConfig {
