@@ -36,6 +36,9 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Test release authorization policy
+        run: python .github/scripts/release_policy_tests.py
+
       # The opt-in Linux Secret Service adapter links libdbus when all features
       # are enabled; install its development headers for the Linux validation jobs.
       - name: Install Linux Secret Service build dependency

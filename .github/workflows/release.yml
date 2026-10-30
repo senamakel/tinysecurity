@@ -29,9 +29,8 @@ env:
 jobs:
   prepare:
     name: Prepare release
-    # Migration releases are cut from the fork epic branch. Keep releases
-    # confined to the senamakel fork, including the regular fork main flow.
-    if: ${{ github.repository == 'senamakel/tinysecurity' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/epic/8369-security-migration') }}
+    # Published module releases come only from the canonical default branch.
+    if: ${{ github.repository == 'tinyhumansai/tinysecurity' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     outputs:
       crate_name: ${{ steps.version.outputs.crate_name }}
