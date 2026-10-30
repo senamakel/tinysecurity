@@ -97,11 +97,17 @@ fn json_sanitization_reports_text_pii_private_keys_arrays_and_depth() -> Result<
     assert_eq!(sanitized.report.pii_redactions, 1);
     assert_eq!(sanitized.report.blocked_secret_hits, 1);
 
-    let mut deep = serde_json::Value::Null;
-    for _ in 0..=MAX_DEPTH {
-        deep = serde_json::Value::Array(vec![deep]);
+    let mut boundary = serde_json::Value::Null;
+    for _ in 0..MAX_DEPTH {
+        boundary = serde_json::Value::Array(vec![boundary]);
     }
-    let deep = registry.sanitize_json(&deep)?;
+    let at_limit = registry.sanitize_json(&boundary)?;
+    assert_eq!(at_limit.report.depth_redactions, 0);
+    assert!(!at_limit.report.changed());
+
+    // The root is depth zero: one more array visits its leaf at MAX_DEPTH + 1.
+    let beyond_limit = serde_json::Value::Array(vec![boundary]);
+    let deep = registry.sanitize_json(&beyond_limit)?;
     assert_eq!(deep.report.depth_redactions, 1);
     assert!(deep.report.changed());
     Ok(())
