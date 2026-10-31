@@ -87,7 +87,7 @@ impl PolicyService {
                     .map_err(|error| failure(&error))?;
                 tokio::task::spawn_blocking(move || {
                     scope
-                        .check(&request)
+                        .gate(&request.command, request.declared_class)
                         .map(PermissionResult2::Command)
                         .map_err(|error| failure(&error))
                 })
