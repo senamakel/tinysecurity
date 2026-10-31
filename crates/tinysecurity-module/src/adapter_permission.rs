@@ -78,7 +78,7 @@ impl PolicyService {
                 })
                 .await
             }
-            PermissionRequest2::CheckCommand(request) => {
+            PermissionRequest2::GateCommand(request) => {
                 let scope = self
                     .commands
                     .lock()

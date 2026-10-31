@@ -19,8 +19,8 @@ pub enum PermissionRequest2 {
     CheckPath(crate::PathCheckRequest),
     /// Check an ordered batch against its registered scope.
     CheckPaths(crate::PathBatchRequest2),
-    /// Apply the registered command permission policy.
-    CheckCommand(crate::CommandRequest),
+    /// Check command policy without reserving an action; execution still needs its own reservation.
+    GateCommand(crate::CommandRequest),
     /// Inspect the registered hourly budget without spending.
     PeekBudget(crate::BudgetRequest2),
     /// Apply the descriptor-level disclosure policy.

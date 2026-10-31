@@ -355,7 +355,7 @@ async fn required_audit_path_permission_exposes_a_result_only_after_a_durable_re
             kind: PathCheckKind::ResolvedRead,
             paths: vec![read_path.clone(), root.path().join(".ssh/key")],
         }),
-        PermissionRequest2::CheckCommand(CommandRequest {
+        PermissionRequest2::GateCommand(CommandRequest {
             policy_id: command_policy.clone(),
             command: "pwd".into(),
             declared_class: None,
