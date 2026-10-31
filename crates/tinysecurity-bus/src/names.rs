@@ -83,6 +83,8 @@ pub mod methods {
     pub const CHECK: &str = "Check";
     /// `PolicyInfo` member.
     pub const POLICY_INFO: &str = "PolicyInfo";
+    /// Audit a typed native permission query before exposing its result.
+    pub const CHECK_PERMISSION_AUDITED2: &str = "CheckPermissionAudited2";
     /// Register an immutable filesystem policy scope.
     pub const REGISTER_PATH_POLICY: &str = "RegisterPathPolicy";
     /// Resolve and authorize an existing read path.
@@ -213,6 +215,7 @@ pub const METHODS: &[&str] = &[
     methods::CHECK,
     methods::EVALUATE_AUDITED2,
     methods::CHECK_AUDITED2,
+    methods::CHECK_PERMISSION_AUDITED2,
     methods::REGISTER_PATH_POLICY,
     methods::VALIDATE_PATH,
     methods::VALIDATE_PARENT,

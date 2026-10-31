@@ -12,6 +12,9 @@ use tinysecurity_bus::{
 #[path = "native_test_resolver.rs"]
 mod native_test_resolver;
 
+#[path = "adapter_permission.rs"]
+mod permission;
+
 static PATH_SCOPES: OnceLock<Arc<Mutex<PathPolicyRegistry>>> = OnceLock::new();
 static COMMAND_SCOPES: OnceLock<Arc<Mutex<CommandPolicyRegistry>>> = OnceLock::new();
 static SCOPED_POLICIES: OnceLock<Arc<Mutex<ScopedPolicyRegistry>>> = OnceLock::new();
@@ -495,6 +498,12 @@ impl PolicyService {
     }
     // Host-only configuration on a private, trusted in-process bus. This module
     // evaluates policy; it is not a public authentication or filesystem service.
+    async fn check_permission_audited2(
+        &self,
+        request: tinysecurity_bus::PermissionAuditRequest2,
+    ) -> BusResult<tinysecurity_bus::PermissionAuditResponse2> {
+        self.audited_permission(request).await
+    }
     async fn register_path_policy(
         &self,
         policy: tinysecurity_bus::PathPolicy,
@@ -2240,7 +2249,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "DeviceFrame2", "DevicePairing2", "RegisterDevicePairingScope2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "ListRecentDecisions2", "PurgeApprovalSession2", "RecordAuditError2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "GrantFlowTool2", "RevokeFlowTool2", "ListFlowTrust2", "GrantTool2", "RevokeTool2", "RevokeToolById2", "ListToolTrust2", "ImportTrustSource2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "RegisterSecretScope2", "RegisterSandboxScope2", "RetireSandboxScope2", "Audit2", "RecordAudit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "CheckPaths2", "ProtectedPath2", "ProtectedFloor2", "CredentialRoots2", "SpendAction2", "PeekBudget2", "ClassifyHostAction2", "PrivacyCheck2", "ClassifyProviderEndpoint2", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "AuthorizeBrowserDial", "ConsumeBrowserDial", "ValidateBrowserDial", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanPrompt2", "ScanToolDefinition"],
+    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "DeviceFrame2", "DevicePairing2", "RegisterDevicePairingScope2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "ListRecentDecisions2", "PurgeApprovalSession2", "RecordAuditError2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "GrantFlowTool2", "RevokeFlowTool2", "ListFlowTrust2", "GrantTool2", "RevokeTool2", "RevokeToolById2", "ListToolTrust2", "ImportTrustSource2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "RegisterSecretScope2", "RegisterSandboxScope2", "RetireSandboxScope2", "Audit2", "RecordAudit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "CheckPermissionAudited2", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "CheckPaths2", "ProtectedPath2", "ProtectedFloor2", "CredentialRoots2", "SpendAction2", "PeekBudget2", "ClassifyHostAction2", "PrivacyCheck2", "ClassifyProviderEndpoint2", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "AuthorizeBrowserDial", "ConsumeBrowserDial", "ValidateBrowserDial", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanPrompt2", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = ["ai.tinyhumans.tinysecurity.KeyringConsent2", "ai.tinyhumans.tinysecurity.SecretCipherConsumer2", "ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.DevicePairingHost2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],

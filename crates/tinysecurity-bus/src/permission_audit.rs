@@ -1,10 +1,15 @@
 //! Typed native permission checks with durable audit before a result is exposed.
 use serde::{Deserialize, Serialize};
 
-/// Permission operations supported by the audited native boundary. This closed
+/// Read-only permission operations supported by the audited native boundary. This closed
 /// vocabulary cannot invoke secret, approval, sandbox, or execution members.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "operation", content = "request", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "operation",
+    content = "request",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum PermissionRequest2 {
     /// Resolve and authorize an existing file.
     ValidatePath(crate::PathValidationRequest),
@@ -16,8 +21,6 @@ pub enum PermissionRequest2 {
     CheckPaths(crate::PathBatchRequest2),
     /// Apply the registered command permission policy.
     CheckCommand(crate::CommandRequest),
-    /// Reserve one action under the registered hourly budget.
-    SpendAction(crate::BudgetRequest2),
     /// Inspect the registered hourly budget without spending.
     PeekBudget(crate::BudgetRequest2),
     /// Apply the descriptor-level disclosure policy.
@@ -31,7 +34,12 @@ impl std::fmt::Debug for PermissionRequest2 {
 
 /// A computed permission result, exposed only after its audit is permitted.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "operation", content = "result", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "operation",
+    content = "result",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum PermissionResult2 {
     /// Result of existing-path or prospective-parent validation.
     Path(crate::PathValidationResult),
@@ -41,7 +49,7 @@ pub enum PermissionResult2 {
     Paths(crate::PathBatchResponse2),
     /// Result of the registered command check.
     Command(crate::CommandDecision),
-    /// Result of an action-budget peek or reservation.
+    /// Result of an action-budget peek.
     Budget(crate::BudgetDecision2),
     /// Result of the disclosure policy.
     Privacy(crate::PrivacyCheckResponse2),

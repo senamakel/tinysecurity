@@ -269,7 +269,6 @@ async fn scoped_audited_members_need_a_configured_audit_client()
     Ok(())
 }
 
-
 #[tokio::test]
 async fn required_audit_path_permission_exposes_a_result_only_after_a_durable_receipt()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -281,25 +280,39 @@ async fn required_audit_path_permission_exposes_a_result_only_after_a_durable_re
         host.unique_name().as_ref().map(tinybus::BusName::as_str),
     )?;
     let policy = Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?));
-    let required = service_for(policy.clone(), Some(Arc::new(
-        crate::callbacks::AuditClient::new_for_test(
-            module, binding, permission_audit_config(true),
+    let required = service_for(
+        policy.clone(),
+        Some(Arc::new(crate::callbacks::AuditClient::new_for_test(
+            module,
+            binding,
+            permission_audit_config(true),
             tinysecurity::Redactor::new(&RedactorConfig::default())?,
-        )?,
-    )));
+        )?)),
+    );
     let root = tempfile::tempdir()?;
-    let path_policy = required.register_path_policy(PathPolicy {
-        enabled: false, workspace_only: false,
-        workspace_dir: root.path().into(), action_dir: root.path().into(),
-        home_dir: None, forbidden_paths: vec![], trusted_roots: vec![],
-        reserved_paths: vec![], reserved_prefixes: vec![], readonly_paths: vec![],
-        reserved_names: vec![],
-    }).await?;
+    let path_policy = required
+        .register_path_policy(PathPolicy {
+            enabled: false,
+            workspace_only: false,
+            workspace_dir: root.path().into(),
+            action_dir: root.path().into(),
+            home_dir: None,
+            forbidden_paths: vec![],
+            trusted_roots: vec![],
+            reserved_paths: vec![],
+            reserved_prefixes: vec![],
+            readonly_paths: vec![],
+            reserved_names: vec![],
+        })
+        .await?;
     let path = PathValidationRequest {
-        policy_id: path_policy, path: root.path().join("uploads/file").display().to_string(),
+        policy_id: path_policy,
+        path: root.path().join("uploads/file").display().to_string(),
     };
-    assert!(required.validate_parent(path.clone()).await.is_err(),
-        "legacy unaudited permission must remain refused");
+    assert!(
+        required.validate_parent(path.clone()).await.is_err(),
+        "legacy unaudited permission must remain refused"
+    );
     let request = |id, tail| AuditedRequest2 {
         request: PermissionRequest2::ValidateParent(path.clone()),
         audit: correlation(id, tail),
@@ -307,13 +320,23 @@ async fn required_audit_path_permission_exposes_a_result_only_after_a_durable_re
     let lost = required.check_permission_audited2(request('a', 0)).await?;
     assert!(!lost.audit.permitted && lost.decision.is_none());
     let rows = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
-    host.serve_at(callback_names2::OBJECT_PATH.parse()?, PermissionAuditSink {
-        rows: rows.clone(), policy, change_generation: Arc::default(),
-    }).await?;
+    host.serve_at(
+        callback_names2::OBJECT_PATH.parse()?,
+        PermissionAuditSink {
+            rows: rows.clone(),
+            policy,
+            change_generation: Arc::default(),
+        },
+    )
+    .await?;
     let allowed = required.check_permission_audited2(request('b', 0)).await?;
     assert!(allowed.audit.permitted && allowed.audit.committed);
-    assert!(matches!(allowed.decision,
-        Some(PermissionResult2::Path(PathValidationResult::Allowed { .. }))));
+    assert!(matches!(
+        allowed.decision,
+        Some(PermissionResult2::Path(
+            PathValidationResult::Allowed { .. }
+        ))
+    ));
     let mut stale = request('c', 1);
     stale.audit.generation = 0;
     let stale = required.check_permission_audited2(stale).await?;
