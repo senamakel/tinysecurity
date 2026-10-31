@@ -129,6 +129,8 @@ pub mod methods {
     pub const CLASSIFY_COMMAND: &str = "ClassifyCommand";
     /// Noncacheable execution check and atomic action reservation.
     pub const CHECK_COMMAND: &str = "CheckCommand";
+    /// Command execution check whose decision is exposed only after its action reservation is audited (contract 1.35).
+    pub const CHECK_COMMAND_AUDITED2: &str = "CheckCommandAudited2";
     /// Register immutable host-only destination and data policy.
     pub const REGISTER_EGRESS_POLICY: &str = "RegisterEgressPolicy";
     /// Owner-bound pinned destination authorization.
@@ -235,6 +237,7 @@ pub const METHODS: &[&str] = &[
     methods::REGISTER_COMMAND_POLICY,
     methods::CLASSIFY_COMMAND,
     methods::CHECK_COMMAND,
+    methods::CHECK_COMMAND_AUDITED2,
     methods::REGISTER_EGRESS_POLICY,
     methods::SCOPED_URL_GUARD,
     methods::SCOPED_EGRESS_CHECK,

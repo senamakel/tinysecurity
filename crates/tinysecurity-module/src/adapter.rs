@@ -40,12 +40,32 @@ static SANDBOX: OnceLock<
 > = OnceLock::new();
 static ACTIVE: OnceLock<Arc<RwLock<Policy>>> = OnceLock::new();
 type BudgetReplayKey = (String, String, String, String, String);
-type BudgetReplayMap = HashMap<BudgetReplayKey, BudgetReplay>;
+type BudgetReplayMap = HashMap<BudgetReplayKey, AuditedReplay>;
+const MAX_AUDITED_REPLAYS: usize = 4096;
+const AUDITED_REPLAY_TTL: Duration = Duration::from_secs(3600);
+enum AuditedReplay {
+    Budget(BudgetReplay),
+    Command(CommandReplay),
+}
+impl AuditedReplay {
+    fn is_live(&self) -> bool {
+        match self {
+            Self::Budget(replay) => replay.reserved_at.elapsed() < AUDITED_REPLAY_TTL,
+            Self::Command(replay) => replay.cached_at.elapsed() < AUDITED_REPLAY_TTL,
+        }
+    }
+}
 #[derive(Clone)]
 struct BudgetReplay {
     request: tinysecurity_bus::ReserveActionBudgetAuditedRequest2,
     response: tinysecurity_bus::ReserveActionBudgetAuditedResponse2,
     reserved_at: Instant,
+}
+#[derive(Clone)]
+struct CommandReplay {
+    request: tinysecurity_bus::CheckCommandAuditedRequest2,
+    response: tinysecurity_bus::CheckCommandAuditedResponse2,
+    cached_at: Instant,
 }
 #[derive(Clone)]
 struct PolicyService {
@@ -197,6 +217,103 @@ impl PolicyService {
         };
         std::future::ready(Ok(decision)).await
     }
+    /// Evaluate one registered command and expose its noncacheable execution
+    /// decision only after the guarded action reservation has a durable receipt.
+    async fn check_command_audited(
+        &self,
+        request: tinysecurity_bus::CheckCommandAuditedRequest2,
+    ) -> BusResult<tinysecurity_bus::CheckCommandAuditedResponse2> {
+        let policy = self.read()?.clone();
+        let generation = policy.info().generation;
+        // Resolve current ownership before replay lookup. A cached allow cannot
+        // outlive the service's registration of the command scope.
+        let command_scope = self
+            .commands
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .get_owned(&request.request.policy_id)
+            .map_err(|error| failure(&error))?;
+        let denied = || tinysecurity_bus::CheckCommandAuditedResponse2 {
+            decision: None,
+            audit: tinysecurity_bus::AuditResponse2 {
+                permitted: false,
+                committed: false,
+                health: tinysecurity_bus::AuditHealth2::Denied,
+                receipt: None,
+            },
+        };
+        if request.audit.generation != generation {
+            return Ok(denied());
+        }
+
+        let audit_client = self
+            .audit
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("command audit unavailable"))?;
+        let audit_scope = audit_client.scope();
+        let replay_key = (
+            audit_scope.user.clone(),
+            audit_scope.workspace.clone(),
+            audit_scope.agent.clone(),
+            audit_client.stream_id().to_owned(),
+            request.audit.event_id.clone(),
+        );
+        let mut replays = self.budget_replays.lock().await;
+        replays.retain(|_, replay| replay.is_live());
+        if let Some(previous) = replays.get(&replay_key) {
+            if let AuditedReplay::Command(previous) = previous
+                && previous.request == request
+            {
+                return Ok(previous.response.clone());
+            }
+            return Err(tinybus::Error::failed(
+                "audited operation conflicts with a prior request",
+            ));
+        }
+        if replays.len() >= MAX_AUDITED_REPLAYS {
+            return Err(tinybus::Error::failed(
+                "audited operation replay cache is full",
+            ));
+        }
+
+        let checked_request = request.request.clone();
+        let (decision, spent) = tokio::task::spawn_blocking(move || {
+            command_scope
+                .check_guarded(&checked_request)
+                .map_err(|error| failure(&error))
+        })
+        .await
+        .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))??;
+        let audit = self
+            .audit_operation(
+                serde_json::to_value(&request.request)?,
+                serde_json::to_value(&decision)?,
+                request.audit.clone(),
+                generation,
+                policy.redactor(),
+                "command_execution_check",
+            )
+            .await?;
+        let committed = audit.permitted && audit.committed;
+        let response = tinysecurity_bus::CheckCommandAuditedResponse2 {
+            decision: committed.then_some(decision),
+            audit,
+        };
+        if committed {
+            if let Some(spent) = spent {
+                spent.commit();
+            }
+            replays.insert(
+                replay_key,
+                AuditedReplay::Command(CommandReplay {
+                    request,
+                    response: response.clone(),
+                    cached_at: Instant::now(),
+                }),
+            );
+        }
+        Ok(response)
+    }
     /// Reserve action-budget accounting after durably auditing the exact operation.
     /// This result is accounting only; it does not authorize a tool, command, path,
     /// approval, or other execution. The host must complete all such checks itself.
@@ -219,7 +336,7 @@ impl PolicyService {
         // Serialize reservations through their durable receipt. Identical concurrent
         // retries then observe the same completed reservation rather than spending twice.
         let mut replays = self.budget_replays.lock().await;
-        replays.retain(|_, replay| replay.reserved_at.elapsed() < Duration::from_secs(3600));
+        replays.retain(|_, replay| replay.is_live());
         let policy = self.read()?.clone();
         let generation = policy.info().generation;
         if request.audit.generation != generation {
@@ -234,11 +351,18 @@ impl PolicyService {
             .get_owned(&request.request.command_policy)
             .map_err(|error| failure(&error))?;
         if let Some(previous) = replays.get(&replay_key) {
-            if previous.request == request {
+            if let AuditedReplay::Budget(previous) = previous
+                && previous.request == request
+            {
                 return Ok(previous.response.clone());
             }
             return Err(tinybus::Error::failed(
-                "action budget operation conflicts with a prior reservation",
+                "audited operation conflicts with a prior request",
+            ));
+        }
+        if replays.len() >= MAX_AUDITED_REPLAYS {
+            return Err(tinybus::Error::failed(
+                "audited operation replay cache is full",
             ));
         }
         let max_per_hour = scope.max_actions_per_hour();
@@ -274,11 +398,11 @@ impl PolicyService {
             spent.commit();
             replays.insert(
                 replay_key,
-                BudgetReplay {
+                AuditedReplay::Budget(BudgetReplay {
                     request,
                     response: response.clone(),
                     reserved_at,
-                },
+                }),
             );
         }
         Ok(response)
@@ -806,6 +930,12 @@ impl PolicyService {
         tokio::task::spawn_blocking(move || scope.check(&request).map_err(|error| failure(&error)))
             .await
             .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+    }
+    async fn check_command_audited2(
+        &self,
+        request: tinysecurity_bus::CheckCommandAuditedRequest2,
+    ) -> BusResult<tinysecurity_bus::CheckCommandAuditedResponse2> {
+        self.check_command_audited(request).await
     }
 
     // Private host-only configuration. SubjectScope is a trusted-adapter claim,
@@ -2372,7 +2502,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "DeviceFrame2", "DevicePairing2", "RegisterDevicePairingScope2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "ListRecentDecisions2", "PurgeApprovalSession2", "RecordAuditError2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "GrantFlowTool2", "RevokeFlowTool2", "ListFlowTrust2", "GrantTool2", "RevokeTool2", "RevokeToolById2", "ListToolTrust2", "ImportTrustSource2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "RegisterSecretScope2", "RegisterSandboxScope2", "RetireSandboxScope2", "Audit2", "RecordAudit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "CheckPermissionAudited2", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "CheckPaths2", "ProtectedPath2", "ProtectedFloor2", "CredentialRoots2", "SpendAction2", "ReserveActionBudgetAudited2", "PeekBudget2", "ClassifyHostAction2", "PrivacyCheck2", "ClassifyProviderEndpoint2", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "AuthorizeBrowserDial", "ConsumeBrowserDial", "ValidateBrowserDial", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanPrompt2", "ScanToolDefinition"],
+    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "DeviceFrame2", "DevicePairing2", "RegisterDevicePairingScope2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "ListRecentDecisions2", "PurgeApprovalSession2", "RecordAuditError2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "GrantFlowTool2", "RevokeFlowTool2", "ListFlowTrust2", "GrantTool2", "RevokeTool2", "RevokeToolById2", "ListToolTrust2", "ImportTrustSource2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "RegisterSecretScope2", "RegisterSandboxScope2", "RetireSandboxScope2", "Audit2", "RecordAudit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "CheckPermissionAudited2", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "CheckPaths2", "ProtectedPath2", "ProtectedFloor2", "CredentialRoots2", "SpendAction2", "ReserveActionBudgetAudited2", "PeekBudget2", "ClassifyHostAction2", "PrivacyCheck2", "ClassifyProviderEndpoint2", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "CheckCommandAudited2", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "AuthorizeBrowserDial", "ConsumeBrowserDial", "ValidateBrowserDial", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanPrompt2", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = ["ai.tinyhumans.tinysecurity.KeyringConsent2", "ai.tinyhumans.tinysecurity.SecretCipherConsumer2", "ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.DevicePairingHost2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],

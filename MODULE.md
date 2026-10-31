@@ -524,7 +524,18 @@ reconciliation. Legacy unaudited permissions continue to refuse calls when audit
 is required. Hosts serialize correlations against the configured stream and must
 check both `audit.permitted` and `audit.committed` before using a result.
 
-## Audited action-budget reservations (contract 1.35)
+## Audited command execution and action-budget reservations (contract 1.35)
+
+`CheckCommandAudited2` evaluates a command under its currently registered
+command scope and returns the exact existing `CommandDecision` only after a
+durable audit receipt. An Allow carries a guarded action reservation: audit
+failure, cancellation, or a stale policy generation refunds it; a committed
+receipt commits the reservation. Exact retries return the same decision and
+receipt, while changed requests using the same event id are refused. Current
+scope ownership is checked before replay lookup. Read-only commands retain the
+command policy's existing Allow and accounting behavior; the separate
+`CheckPermissionAudited2::GateCommand` remains a non-reserving authorization
+query.
 
 `ReserveActionBudgetAudited2` takes a `BudgetRequest2` and stable
 `AuditCorrelation2`. It reserves only the registered command scope's hourly

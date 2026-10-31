@@ -87,17 +87,15 @@ async fn required_audit_gates_command_allow_and_exact_replay_reserves_once()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut policy = command_fixture()?;
     policy.autonomy = CommandAutonomy::ReadOnly;
-    let (broker, service, host, rows, command_policy) =
-        service_with_command_policy(policy).await?;
+    let (broker, service, host, rows, command_policy) = service_with_command_policy(policy).await?;
 
     let request = audited_command(command_policy.clone(), "pwd", 'a', 0, 1);
     // A read command is allowed in a read-only scope by the command policy;
     // a generic read-only budget denial would change CheckCommand semantics.
-    let unavailable = service
+    assert!(service
         .check_command_audited2(request.clone())
-        .await?;
-    assert!(unavailable.decision.is_none());
-    assert!(!unavailable.audit.permitted && !unavailable.audit.committed);
+        .await
+        .is_err());
 
     // A failed audit must refund the command's pending hourly reservation.
     host.serve_at(
@@ -110,22 +108,22 @@ async fn required_audit_gates_command_allow_and_exact_replay_reserves_once()
     )
     .await?;
     let allowed = service.check_command_audited2(request.clone()).await?;
-    assert_eq!(allowed.decision.as_ref().map(|decision| decision.gate), Some(CommandGate::Allow));
+    assert_eq!(
+        allowed.decision.as_ref().map(|decision| decision.gate),
+        Some(CommandGate::Allow)
+    );
     assert!(allowed.audit.permitted && allowed.audit.committed);
-    assert_eq!(service.check_command_audited2(request.clone()).await?, allowed);
+    assert_eq!(
+        service.check_command_audited2(request.clone()).await?,
+        allowed
+    );
 
     let conflict = audited_command(command_policy, "whoami", 'a', 0, 1);
     assert!(service.check_command_audited2(conflict).await.is_err());
 
     // A fresh audit identity reaches the already-consumed single action slot.
     let limited = service
-        .check_command_audited2(audited_command(
-            request.request.policy_id,
-            "pwd",
-            'b',
-            1,
-            1,
-        ))
+        .check_command_audited2(audited_command(request.request.policy_id, "pwd", 'b', 1, 1))
         .await?;
     let decision = limited.decision.expect("audited rate-limit result");
     assert_eq!(decision.gate, CommandGate::Block);
@@ -158,7 +156,10 @@ async fn stale_generation_and_unowned_policy_never_replay_command_allow()
 
     let request = audited_command(command_policy, "pwd", 'd', 0, 1);
     let allowed = service.check_command_audited2(request.clone()).await?;
-    assert_eq!(allowed.decision.as_ref().map(|decision| decision.gate), Some(CommandGate::Allow));
+    assert_eq!(
+        allowed.decision.as_ref().map(|decision| decision.gate),
+        Some(CommandGate::Allow)
+    );
 
     // Replays are scoped to the PolicyService that owns the registered policy.
     let isolated = PolicyService {
@@ -199,7 +200,10 @@ async fn cancellation_during_command_audit_refunds_the_pending_execution()
     // The exact retry receives the durable decision, and cancellation did not
     // consume the one available action before that receipt could be committed.
     let retry = service.check_command_audited2(request).await?;
-    assert_eq!(retry.decision.as_ref().map(|decision| decision.gate), Some(CommandGate::Allow));
+    assert_eq!(
+        retry.decision.as_ref().map(|decision| decision.gate),
+        Some(CommandGate::Allow)
+    );
     assert!(retry.audit.permitted && retry.audit.committed);
     broker.abort();
     Ok(())
