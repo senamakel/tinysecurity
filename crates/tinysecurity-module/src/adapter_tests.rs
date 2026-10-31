@@ -5,6 +5,8 @@ use tinybus::{Interface, broker::Broker, transport::memory::MemoryBus};
 use tinysecurity_bus::*;
 #[path = "adapter_approval_tests.rs"]
 pub(super) mod approval_tests;
+#[path = "adapter_budget_audit_tests.rs"]
+mod budget_audit_tests;
 #[path = "adapter_gap_policy_tests.rs"]
 mod gap_policy_tests;
 #[path = "adapter_host_tool_tests.rs"]
@@ -13,8 +15,6 @@ mod host_tool_tests;
 mod record_audit_tests;
 #[path = "adapter_scoped_audit_tests.rs"]
 mod scoped_audit_tests;
-#[path = "adapter_budget_audit_tests.rs"]
-mod budget_audit_tests;
 #[tokio::test]
 async fn parsing_a_reply_returns_intent_without_minting_permission()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -446,6 +446,7 @@ fn only_implemented_members_are_advertised() -> std::result::Result<(), Box<dyn 
         extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
         scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
         signals: None,
+        budget_replays: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
     assert_eq!(service.name().as_str(), names::INTERFACE);
     assert_eq!(
@@ -484,6 +485,7 @@ async fn native_dispatch_rejects_malformed_args_and_serves_ordered_checks()
                 extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
                 scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
                 signals: None,
+                budget_replays: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             },
         )
         .await?;
@@ -951,6 +953,7 @@ async fn blocked_filesystem_query_does_not_block_policy_info_or_another_scope()
         extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
         scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
         signals: None,
+        budget_replays: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
     let bus = MemoryBus::new();
     let broker = Broker::new().spawn(bus.clone());
@@ -1030,6 +1033,7 @@ async fn blocked_registration_does_not_block_policy_info_or_another_scope()
         extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
         scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
         signals: None,
+        budget_replays: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
     let bus = MemoryBus::new();
     let broker = Broker::new().spawn(bus.clone());
@@ -1454,6 +1458,7 @@ async fn native_egress_dispatch_binds_scope_and_denies_legacy_or_generic_local_c
                 extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
                 scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
                 signals: None,
+                budget_replays: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             },
         )
         .await?;
@@ -1556,6 +1561,7 @@ async fn native_open_public_policy_and_credentials_only_redaction_dispatch()
                 extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
                 scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
                 signals: None,
+                budget_replays: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             },
         )
         .await?;
@@ -1760,6 +1766,7 @@ async fn consumption_work_runs_off_the_sole_sdk_worker_without_registry_locks()
         extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
         scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
         signals: None,
+        budget_replays: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
     let subject = SubjectScope {
         user: "user".into(),
@@ -2037,6 +2044,7 @@ async fn redact_with_removes_call_literals_and_refuses_bad_ones_without_echo()
         extended: Arc::new(tinysecurity::ExtendedRedactors::new()),
         scoped: Arc::new(Mutex::new(ScopedPolicyRegistry::default())),
         signals: None,
+        budget_replays: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
     let redacted = service
         .redact_with(tinysecurity_bus::RedactWithRequest {

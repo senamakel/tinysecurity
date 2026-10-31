@@ -86,7 +86,19 @@ fn audited_reservation_reuses_the_stable_audit_event_as_operation_identity()
             permitted: true,
             committed: true,
             health: crate::AuditHealth2::Healthy,
-            receipt: None,
+            receipt: Some(crate::AuditSinkResponse2 {
+                scope: crate::SubjectScope {
+                    user: "user".into(),
+                    workspace: "workspace".into(),
+                    agent: "agent".into(),
+                },
+                stream_id: "s".repeat(32),
+                new_tail: 5,
+                events: vec![crate::AuditEventReceipt2 {
+                    event_id: "0123456789abcdef0123456789abcdef".into(),
+                    sequence: 5,
+                }],
+            }),
         },
     };
     let wire = serde_json::to_value(response)?;

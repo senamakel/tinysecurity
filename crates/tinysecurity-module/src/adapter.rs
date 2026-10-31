@@ -1,11 +1,14 @@
 //! SDK-configured native policy service, with no lifecycle RPC members.
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::time::{Duration, Instant};
 use tinybus::{Connection, Result as BusResult};
 use tinysecurity::{
     CommandPolicyRegistry, EgressPolicyRegistry, PathPolicyRegistry, Policy, ScopedPolicyRegistry,
 };
 use tinysecurity_bus::{
-    CheckRequest, CheckResponse, Decision, EvaluateRequest, ModuleConfig, PolicyInfo, names,
+    BudgetDecision2, CheckRequest, CheckResponse, CommandAutonomy, Decision, EvaluateRequest,
+    ModuleConfig, PolicyInfo, names,
 };
 
 #[cfg(all(feature = "native-security-tests", debug_assertions))]
@@ -36,6 +39,14 @@ static SANDBOX: OnceLock<
     )>,
 > = OnceLock::new();
 static ACTIVE: OnceLock<Arc<RwLock<Policy>>> = OnceLock::new();
+type BudgetReplayKey = (String, String, String, String, String);
+type BudgetReplayMap = HashMap<BudgetReplayKey, BudgetReplay>;
+#[derive(Clone)]
+struct BudgetReplay {
+    request: tinysecurity_bus::ReserveActionBudgetAuditedRequest2,
+    response: tinysecurity_bus::ReserveActionBudgetAuditedResponse2,
+    reserved_at: Instant,
+}
 #[derive(Clone)]
 struct PolicyService {
     sandbox_clock: Arc<dyn tinysecurity::approval::Clock>,
@@ -54,6 +65,7 @@ struct PolicyService {
     extended: Arc<tinysecurity::ExtendedRedactors>,
     scoped: Arc<Mutex<ScopedPolicyRegistry>>,
     signals: Option<Connection>,
+    budget_replays: Arc<tokio::sync::Mutex<BudgetReplayMap>>,
 }
 fn failure(error: &tinysecurity_bus::Error) -> tinybus::Error {
     tinybus::Error::failed(error.to_string())
@@ -99,6 +111,25 @@ impl PolicyService {
         generation: u64,
         redactor: tinysecurity::Redactor,
     ) -> BusResult<tinysecurity_bus::AuditResponse2> {
+        self.audit_operation(
+            request,
+            result,
+            correlation,
+            generation,
+            redactor,
+            "permission",
+        )
+        .await
+    }
+    async fn audit_operation(
+        &self,
+        request: serde_json::Value,
+        result: serde_json::Value,
+        correlation: tinysecurity_bus::AuditCorrelation2,
+        generation: u64,
+        redactor: tinysecurity::Redactor,
+        attribution: &str,
+    ) -> BusResult<tinysecurity_bus::AuditResponse2> {
         use tinysecurity_bus::{
             AuditEvent2, AuditHealth2, AuditKind2, AuditResponse2, AuditSinkRequest2,
         };
@@ -127,7 +158,7 @@ impl PolicyService {
                 event_id: correlation.event_id,
                 generation,
                 kind: AuditKind2::Shell,
-                attribution: "permission".into(),
+                attribution: attribution.into(),
                 arguments_json: permission_payload(serde_json::json!([request, result]))?,
                 rule_ids: vec![],
             }],
@@ -147,7 +178,6 @@ impl PolicyService {
         request: tinysecurity_bus::BudgetRequest2,
         spend: bool,
     ) -> BusResult<tinysecurity_bus::BudgetDecision2> {
-        use tinysecurity_bus::{BudgetDecision2, CommandAutonomy};
         self.require_unbound_permission()?;
         let scope = self
             .commands
@@ -166,6 +196,92 @@ impl PolicyService {
             BudgetDecision2::Allow
         };
         std::future::ready(Ok(decision)).await
+    }
+    /// Reserve action-budget accounting after durably auditing the exact operation.
+    /// This result is accounting only; it does not authorize a tool, command, path,
+    /// approval, or other execution. The host must complete all such checks itself.
+    async fn reserve_audited_budget(
+        &self,
+        request: tinysecurity_bus::ReserveActionBudgetAuditedRequest2,
+    ) -> BusResult<tinysecurity_bus::ReserveActionBudgetAuditedResponse2> {
+        let audit_client = self
+            .audit
+            .as_ref()
+            .ok_or_else(|| tinybus::Error::failed("action budget audit unavailable"))?;
+        let audit_scope = audit_client.scope();
+        let replay_key = (
+            audit_scope.user.clone(),
+            audit_scope.workspace.clone(),
+            audit_scope.agent.clone(),
+            audit_client.stream_id().to_owned(),
+            request.audit.event_id.clone(),
+        );
+        // Serialize reservations through their durable receipt. Identical concurrent
+        // retries then observe the same completed reservation rather than spending twice.
+        let mut replays = self.budget_replays.lock().await;
+        replays.retain(|_, replay| replay.reserved_at.elapsed() < Duration::from_secs(3600));
+        let policy = self.read()?.clone();
+        let generation = policy.info().generation;
+        if request.audit.generation != generation {
+            return Err(tinybus::Error::failed(
+                "stale action budget audit generation",
+            ));
+        }
+        let scope = self
+            .commands
+            .lock()
+            .map_err(|_| failure(&tinysecurity_bus::Error::Faulted))?
+            .get_owned(&request.request.command_policy)
+            .map_err(|error| failure(&error))?;
+        if let Some(previous) = replays.get(&replay_key) {
+            if previous.request == request {
+                return Ok(previous.response.clone());
+            }
+            return Err(tinybus::Error::failed(
+                "action budget operation conflicts with a prior reservation",
+            ));
+        }
+        let max_per_hour = scope.max_actions_per_hour();
+        let (decision, spent, reserved_at) = if !scope.enabled() {
+            (BudgetDecision2::Allow, None, None)
+        } else if scope.autonomy() == CommandAutonomy::ReadOnly {
+            (BudgetDecision2::ReadOnlyMode, None, None)
+        } else if let Some(spent) = scope.reserve_guarded() {
+            (BudgetDecision2::Allow, Some(spent), Some(Instant::now()))
+        } else {
+            (BudgetDecision2::RateLimited { max_per_hour }, None, None)
+        };
+        let audit = self
+            .audit_operation(
+                serde_json::to_value(&request.request)?,
+                serde_json::to_value(&decision)?,
+                request.audit.clone(),
+                generation,
+                policy.redactor(),
+                "action_budget_reservation",
+            )
+            .await?;
+        if !audit.permitted || !audit.committed {
+            return Err(tinybus::Error::failed("action budget audit did not commit"));
+        }
+        let response = tinysecurity_bus::ReserveActionBudgetAuditedResponse2 { decision, audit };
+        if let Some(spent) = spent {
+            let reserved_at = reserved_at.ok_or_else(|| {
+                tinybus::Error::failed("action budget reservation timestamp unavailable")
+            })?;
+            // No await occurs between keeping the ledger reservation and publishing
+            // its replay result, so cancellation cannot create an uncached committed spend.
+            spent.commit();
+            replays.insert(
+                replay_key,
+                BudgetReplay {
+                    request,
+                    response: response.clone(),
+                    reserved_at,
+                },
+            );
+        }
+        Ok(response)
     }
     async fn run_path<T, F>(&self, id: tinysecurity_bus::PathPolicyId, operation: F) -> BusResult<T>
     where
@@ -597,6 +713,12 @@ impl PolicyService {
         request: tinysecurity_bus::BudgetRequest2,
     ) -> BusResult<tinysecurity_bus::BudgetDecision2> {
         self.budget_decision(request, true).await
+    }
+    async fn reserve_action_budget_audited2(
+        &self,
+        request: tinysecurity_bus::ReserveActionBudgetAuditedRequest2,
+    ) -> BusResult<tinysecurity_bus::ReserveActionBudgetAuditedResponse2> {
+        self.reserve_audited_budget(request).await
     }
     async fn peek_budget2(
         &self,
@@ -1750,6 +1872,7 @@ fn service_for(
             SCOPED_POLICIES.get_or_init(|| Arc::new(Mutex::new(ScopedPolicyRegistry::default()))),
         ),
         signals: None,
+        budget_replays: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     }
 }
 fn configured_approvals(
@@ -2249,7 +2372,7 @@ tinybus_module::module_export! {
     config = ModuleConfig,
     worker_threads = 1,
     provides = ["ai.tinyhumans.tinysecurity.Policy"],
-    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "DeviceFrame2", "DevicePairing2", "RegisterDevicePairingScope2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "ListRecentDecisions2", "PurgeApprovalSession2", "RecordAuditError2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "GrantFlowTool2", "RevokeFlowTool2", "ListFlowTrust2", "GrantTool2", "RevokeTool2", "RevokeToolById2", "ListToolTrust2", "ImportTrustSource2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "RegisterSecretScope2", "RegisterSandboxScope2", "RetireSandboxScope2", "Audit2", "RecordAudit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "CheckPermissionAudited2", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "CheckPaths2", "ProtectedPath2", "ProtectedFloor2", "CredentialRoots2", "SpendAction2", "PeekBudget2", "ClassifyHostAction2", "PrivacyCheck2", "ClassifyProviderEndpoint2", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "AuthorizeBrowserDial", "ConsumeBrowserDial", "ValidateBrowserDial", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanPrompt2", "ScanToolDefinition"],
+    methods = ["EvaluateSecretCipher2", "ExecuteSecretCipher2", "EvaluateSecret2", "ExecuteSecret2", "PasswordCrypt2", "KeyringAccess2", "PairingControl2", "EvaluateDevice2", "ExecuteDevice2", "DeviceFrame2", "DevicePairing2", "RegisterDevicePairingScope2", "Plan", "Plan2", "EvaluateSandboxApproval2", "ConsumeSandboxPlan2", "ImportApprovalHistory2", "ParseReply", "EvaluateApproval2", "Decide2", "ConsumeApproval2", "RecordExecution2", "ListApprovals2", "ListRecentDecisions2", "PurgeApprovalSession2", "RecordAuditError2", "CancelApproval2", "ExpireApproval2", "PreauthorizeFlow2", "GrantFlowTool2", "RevokeFlowTool2", "ListFlowTrust2", "GrantTool2", "RevokeTool2", "RevokeToolById2", "ListToolTrust2", "ImportTrustSource2", "RegisterApprovalScope2", "ReplaceApprovalScope2", "RetireApprovalScope2", "RegisterSecretScope2", "RegisterSandboxScope2", "RetireSandboxScope2", "Audit2", "RecordAudit2", "Evaluate", "Check", "EvaluateAudited2", "CheckAudited2", "PolicyInfo", "RegisterPolicy", "SupersedePolicy", "EvaluateScoped", "CheckScoped", "ScopedPolicyInfo", "EvaluateScopedAudited", "CheckScopedAudited", "CheckPermissionAudited2", "RegisterPathPolicy", "ValidatePath", "ValidateParent", "CheckPath", "CheckPaths2", "ProtectedPath2", "ProtectedFloor2", "CredentialRoots2", "SpendAction2", "PeekBudget2", "ReserveActionBudgetAudited2", "ClassifyHostAction2", "PrivacyCheck2", "ClassifyProviderEndpoint2", "RegisterCommandPolicy", "ClassifyCommand", "CheckCommand", "RegisterEgressPolicy", "ScopedUrlGuard", "ScopedEgressCheck", "ConsumeEgressAuthorization", "AuthorizeBrowserDial", "ConsumeBrowserDial", "ValidateBrowserDial", "UrlGuard", "EgressCheck", "Redact", "RedactWith", "ScanPrompt", "ScanPrompt2", "ScanToolDefinition"],
     signals = ["PolicyChanged"],
     requires = [],
     optional = ["ai.tinyhumans.tinysecurity.KeyringConsent2", "ai.tinyhumans.tinysecurity.SecretCipherConsumer2", "ai.tinyhumans.tinysecurity.SecretBackend2", "ai.tinyhumans.tinysecurity.DevicePairingHost2", "ai.tinyhumans.tinysecurity.AuditSink2", "ai.tinyhumans.tinysecurity.ApprovalStore2", "ai.tinyhumans.tinysecurity.ApprovalPrompt2"],

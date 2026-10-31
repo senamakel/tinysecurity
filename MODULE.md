@@ -523,3 +523,19 @@ receipt withholds the result. The separate audit evidence remains available for
 reconciliation. Legacy unaudited permissions continue to refuse calls when audit
 is required. Hosts serialize correlations against the configured stream and must
 check both `audit.permitted` and `audit.committed` before using a result.
+
+## Audited action-budget reservations (contract 1.35)
+
+`ReserveActionBudgetAudited2` takes a `BudgetRequest2` and stable
+`AuditCorrelation2`. It reserves only the registered command scope's hourly
+action accounting. It is not an execution permit: the host must independently
+complete tool, path, command, approval, and other authorization checks before
+dispatching any operation.
+
+The module returns the budget decision only with a committed audit receipt. The
+audit event id identifies this accounting operation; exact retries return the
+same committed result without reserving again, while reuse with changed request
+or correlation is refused. A failed or indeterminate audit drops the pending
+reservation. Replay records live no longer than the in-memory action ledger.
+Hosts must keep the correlation stable for a retry and serialize audit stream
+tails as required by the configured sink.
