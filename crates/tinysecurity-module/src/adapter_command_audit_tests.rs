@@ -53,7 +53,7 @@ async fn service_with_command_policy(
     policy: CommandPolicy,
 ) -> std::result::Result<
     (
-        tokio::task::JoinHandle<()>,
+        tokio::task::JoinHandle<tinybus::Result<()>>,
         PolicyService,
         Connection,
         Arc<Mutex<std::collections::BTreeMap<String, AuditSinkRequest2>>>,

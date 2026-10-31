@@ -87,9 +87,17 @@ impl RegisteredCommandPolicy {
     /// # Errors
     /// Rejects oversized input or poisoned accounting state.
     pub fn check(&self, request: &CommandRequest) -> Result<CommandDecision> {
-        let (decision, spent) = self.check_guarded(request)?;
-        if let Some(spent) = spent {
-            spent.commit();
+        let mut decision = self.scope.evaluate(request)?;
+        if decision.gate != CommandGate::Allow || !self.scope.policy().enabled {
+            return Ok(decision);
+        }
+        let mut actions = self.budget.actions.lock().map_err(|_| Error::Faulted)?;
+        let now = self.budget.prune(&mut actions);
+        if actions.len() >= self.scope.policy().max_actions_per_hour as usize {
+            decision.gate = CommandGate::Block;
+            decision.denial = Some(CommandDenial::RateLimit);
+        } else {
+            actions.push_back(now);
         }
         Ok(decision)
     }
