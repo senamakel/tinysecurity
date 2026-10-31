@@ -127,6 +127,10 @@ fn audited_native_permission_vocabulary_rejects_execution_and_unknown_fields()
     let decoded: crate::PermissionAuditRequest2 = serde_json::from_value(value.clone())?;
     assert_eq!(serde_json::to_value(decoded)?, value);
     assert!(!format!("{request:?}").contains("workspace"));
+    assert_eq!(
+        format!("{:?}", request.request),
+        "PermissionRequest2([REDACTED])"
+    );
     let mut stateful = value.clone();
     stateful["request"]["operation"] = serde_json::json!("spend_action");
     assert!(serde_json::from_value::<crate::PermissionAuditRequest2>(stateful).is_err());

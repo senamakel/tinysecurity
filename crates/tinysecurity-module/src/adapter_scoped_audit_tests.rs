@@ -338,11 +338,12 @@ async fn required_audit_path_permission_exposes_a_result_only_after_a_durable_re
         ))
     ));
     verify_audited_native_queries(&required, root.path(), &path).await?;
+    verify_audited_budget_queries(&required).await?;
     let mut stale = request('c', 8);
     stale.audit.generation = 0;
     let stale = required.check_permission_audited2(stale).await?;
     assert!(!stale.audit.permitted && stale.decision.is_none());
-    assert_eq!(rows.lock().map_err(|_| "fixture rows")?.len(), 8);
+    assert_eq!(rows.lock().map_err(|_| "fixture rows")?.len(), 11);
     broker.abort();
     Ok(())
 }
@@ -425,6 +426,55 @@ async fn verify_audited_native_queries(
                 return Err(format!("unexpected audited permission result: {result:?}").into());
             }
         }
+    }
+    Ok(())
+}
+
+async fn verify_audited_budget_queries(
+    required: &PolicyService,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    for (index, (enabled, autonomy, limit, expected)) in [
+        (false, CommandAutonomy::Full, 1, BudgetDecision2::Allow),
+        (
+            true,
+            CommandAutonomy::ReadOnly,
+            1,
+            BudgetDecision2::ReadOnlyMode,
+        ),
+        (
+            true,
+            CommandAutonomy::Full,
+            0,
+            BudgetDecision2::RateLimited { max_per_hour: 0 },
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let command_policy = required
+            .register_command_policy(CommandPolicy {
+                enabled,
+                autonomy,
+                max_actions_per_hour: limit,
+                ..command_fixture()?
+            })
+            .await?;
+        let request = AuditedRequest2 {
+            request: PermissionRequest2::PeekBudget(BudgetRequest2 { command_policy }),
+            audit: AuditCorrelation2 {
+                event_id: format!("{:032x}", index + 64),
+                expected_tail: u64::try_from(index)? + 8,
+                generation: 1,
+            },
+        };
+        let response = required.check_permission_audited2(request.clone()).await?;
+        assert!(response.audit.permitted && response.audit.committed);
+        assert_eq!(response.decision, Some(PermissionResult2::Budget(expected)));
+        assert_eq!(
+            required.check_permission_audited2(request).await?,
+            response,
+            "an exact audited replay must not spend or change the budget"
+        );
     }
     Ok(())
 }
