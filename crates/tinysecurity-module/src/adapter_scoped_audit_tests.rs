@@ -337,7 +337,22 @@ async fn required_audit_path_permission_exposes_a_result_only_after_a_durable_re
             PathValidationResult::Allowed { .. }
         ))
     ));
-    let read_path = root.path().join("read.txt");
+    verify_audited_native_queries(&required, root.path(), &path).await?;
+    let mut stale = request('c', 8);
+    stale.audit.generation = 0;
+    let stale = required.check_permission_audited2(stale).await?;
+    assert!(!stale.audit.permitted && stale.decision.is_none());
+    assert_eq!(rows.lock().map_err(|_| "fixture rows")?.len(), 8);
+    broker.abort();
+    Ok(())
+}
+
+async fn verify_audited_native_queries(
+    required: &PolicyService,
+    root: &std::path::Path,
+    path: &PathValidationRequest,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let read_path = root.join("read.txt");
     std::fs::write(&read_path, "fixture")?;
     let command_policy = required.register_command_policy(command_fixture()?).await?;
     let queries = [
@@ -353,7 +368,7 @@ async fn required_audit_path_permission_exposes_a_result_only_after_a_durable_re
         PermissionRequest2::CheckPaths(PathBatchRequest2 {
             policy_id: path.policy_id.clone(),
             kind: PathCheckKind::ResolvedRead,
-            paths: vec![read_path.clone(), root.path().join(".ssh/key")],
+            paths: vec![read_path.clone(), root.join(".ssh/key")],
         }),
         PermissionRequest2::GateCommand(CommandRequest {
             policy_id: command_policy.clone(),
@@ -370,7 +385,7 @@ async fn required_audit_path_permission_exposes_a_result_only_after_a_durable_re
         }),
         PermissionRequest2::ValidateParent(PathValidationRequest {
             policy_id: path.policy_id.clone(),
-            path: root.path().join(".ssh/key").display().to_string(),
+            path: root.join(".ssh/key").display().to_string(),
         }),
     ];
     for (index, query) in queries.into_iter().enumerate() {
@@ -398,22 +413,18 @@ async fn required_audit_path_permission_exposes_a_result_only_after_a_durable_re
             )
             | (4, Some(PermissionResult2::Budget(BudgetDecision2::Allow))) => {}
             (2, Some(PermissionResult2::Paths(result))) => {
-                assert_eq!(result.allowed, [true, false])
+                assert_eq!(result.allowed, [true, false]);
             }
             (5, Some(PermissionResult2::Privacy(result))) => {
-                assert_eq!(result.decision.verdict, Verdict::Allow)
+                assert_eq!(result.decision.verdict, Verdict::Allow);
             }
             (6, Some(PermissionResult2::Path(PathValidationResult::Denied { category }))) => {
-                assert_eq!(category, PathErrorCategory::Protected)
+                assert_eq!(category, PathErrorCategory::Protected);
             }
-            (_, result) => panic!("unexpected audited permission result: {result:?}"),
+            (_, result) => {
+                return Err(format!("unexpected audited permission result: {result:?}").into());
+            }
         }
     }
-    let mut stale = request('c', 8);
-    stale.audit.generation = 0;
-    let stale = required.check_permission_audited2(stale).await?;
-    assert!(!stale.audit.permitted && stale.decision.is_none());
-    assert_eq!(rows.lock().map_err(|_| "fixture rows")?.len(), 8);
-    broker.abort();
     Ok(())
 }

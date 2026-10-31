@@ -503,3 +503,22 @@ calls with the same key do not recompile the rule set; an evicted registry is
 rebuilt on demand. The member is confidential: the literals are not logged or
 observable on the bus.
 
+
+
+## Audited native permission queries (contract 1.34)
+
+`CheckPermissionAudited2` takes `PermissionAuditRequest2`: the original typed
+`PermissionRequest2` and a stable `AuditCorrelation2`. It supports path and
+prospective-parent validation, individual and batched path checks, command gates,
+budget peeks, and descriptor privacy decisions. This closed vocabulary cannot
+invoke secret, approval, sandbox, execution, or action-reservation members.
+Command gates do not reserve an action; execution still needs its own reservation.
+
+The module computes the result from its registered scopes, derives and sanitizes
+the audit payload itself, and returns `PermissionAuditResponse2`. Its `decision`
+is present only when the matching event is committed and permitted under the
+current policy generation. Audit loss, stale generation, or an indeterminate
+receipt withholds the result. The separate audit evidence remains available for
+reconciliation. Legacy unaudited permissions continue to refuse calls when audit
+is required. Hosts serialize correlations against the configured stream and must
+check both `audit.permitted` and `audit.committed` before using a result.
