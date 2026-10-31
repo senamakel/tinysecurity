@@ -124,37 +124,39 @@ struct OrderedAuditSink {
 #[tinybus::interface(name = "ai.tinyhumans.tinysecurity.AuditSink2")]
 impl OrderedAuditSink {
     async fn append(&self, batch: AuditSinkRequest2) -> tinybus::Result<AuditSinkResponse2> {
-        let mut tail = self
-            .tail
-            .lock()
-            .map_err(|_| tinybus::Error::failed("fixture tail"))?;
-        let event = batch
-            .events
-            .first()
-            .ok_or_else(|| tinybus::Error::failed("fixture event"))?;
-        let mut rows = self
-            .rows
-            .lock()
-            .map_err(|_| tinybus::Error::failed("fixture rows"))?;
-        if let Some(previous) = rows.get(&event.event_id) {
-            if previous != &batch {
-                return Err(tinybus::Error::failed("fixture conflict"));
+        let response = {
+            let mut tail = self
+                .tail
+                .lock()
+                .map_err(|_| tinybus::Error::failed("fixture tail"))?;
+            let event = batch
+                .events
+                .first()
+                .ok_or_else(|| tinybus::Error::failed("fixture event"))?;
+            let mut rows = self
+                .rows
+                .lock()
+                .map_err(|_| tinybus::Error::failed("fixture rows"))?;
+            if let Some(previous) = rows.get(&event.event_id) {
+                if previous != &batch {
+                    return Err(tinybus::Error::failed("fixture conflict"));
+                }
+            } else {
+                if batch.expected_tail != *tail || event.sequence != (*tail).saturating_add(1) {
+                    return Err(tinybus::Error::failed("fixture tail conflict"));
+                }
+                *tail = event.sequence;
+                rows.insert(event.event_id.clone(), batch.clone());
             }
-        } else {
-            if batch.expected_tail != *tail || event.sequence != (*tail).saturating_add(1) {
-                return Err(tinybus::Error::failed("fixture tail conflict"));
+            AuditSinkResponse2 {
+                scope: batch.scope,
+                stream_id: batch.stream_id,
+                new_tail: event.sequence,
+                events: vec![AuditEventReceipt2 {
+                    event_id: event.event_id.clone(),
+                    sequence: event.sequence,
+                }],
             }
-            *tail = event.sequence;
-            rows.insert(event.event_id.clone(), batch.clone());
-        }
-        let response = AuditSinkResponse2 {
-            scope: batch.scope,
-            stream_id: batch.stream_id,
-            new_tail: event.sequence,
-            events: vec![AuditEventReceipt2 {
-                event_id: event.event_id.clone(),
-                sequence: event.sequence,
-            }],
         };
         std::future::ready(Ok(response)).await
     }

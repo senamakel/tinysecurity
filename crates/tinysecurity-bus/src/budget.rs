@@ -3,9 +3,10 @@
 //!
 //! Acting tools that run without an `Evaluate` call (MCP dispatch, cron, flows,
 //! direct runs) need the same hourly ledger shell runs and harness tools spend.
-//! `SpendAction2` reserves one action, `PeekBudget2` only reads it. Both resolve a
-//! registered command scope, so the autonomy tier and the ledger are the scope's
-//! and the host keeps no counter of its own.
+//! The legacy `SpendAction2` member reserves when required audit is off;
+//! `ReserveActionBudgetAudited2` reserves with a committed audit receipt;
+//! `PeekBudget2` only reads. All resolve a registered command scope, so the
+//! autonomy tier and ledger remain scope-owned.
 use crate::{CommandClass, CommandPolicyId, ToolPermission};
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +33,7 @@ pub type ReserveActionBudgetAuditedResponse2 = crate::AuditedResponse2<BudgetDec
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum BudgetDecision2 {
-    /// The tier may act and the ledger has room. `SpendAction2` reserved one action.
+    /// The tier may act and the ledger has room. A spend operation reserved one action.
     Allow,
     /// The scope's autonomy tier is read-only and enforcement is on; nothing is spent.
     ReadOnlyMode,
