@@ -124,7 +124,7 @@ async fn required_audit_gates_command_allow_and_exact_replay_reserves_once()
     let limited = service
         .check_command_audited2(audited_command(request.request.policy_id, "pwd", 'b', 1, 1))
         .await?;
-    let decision = limited.decision.expect("audited rate-limit result");
+    let decision = limited.decision.ok_or("audited rate-limit result missing")?;
     assert_eq!(decision.gate, CommandGate::Block);
     assert_eq!(decision.denial, Some(CommandDenial::RateLimit));
     assert!(limited.audit.permitted && limited.audit.committed);

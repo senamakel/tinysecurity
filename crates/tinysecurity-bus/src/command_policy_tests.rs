@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn audited_command_check_preserves_the_typed_request_wire_shape() {
+fn audited_command_check_preserves_the_typed_request_wire_shape() -> Result<(), serde_json::Error> {
     let request = CheckCommandAuditedRequest2 {
         request: CommandRequest {
             policy_id: CommandPolicyId("scope".into()),
@@ -16,7 +16,7 @@ fn audited_command_check_preserves_the_typed_request_wire_shape() {
     };
 
     assert_eq!(
-        serde_json::to_value(&request).unwrap(),
+        serde_json::to_value(&request)?,
         serde_json::json!({
             "request": {
                 "policy_id": "scope",
@@ -31,4 +31,5 @@ fn audited_command_check_preserves_the_typed_request_wire_shape() {
         })
     );
     assert!(!format!("{request:?}").contains("pwd"));
+    Ok(())
 }
