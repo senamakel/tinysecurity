@@ -110,7 +110,8 @@ fn scoped_audited_wire_wraps_the_scoped_request_with_correlation_and_rejects_for
 }
 
 #[test]
-fn audited_native_permission_vocabulary_rejects_execution_and_unknown_fields() {
+fn audited_native_permission_vocabulary_rejects_execution_and_unknown_fields()
+-> Result<(), Box<dyn std::error::Error>> {
     let request = crate::PermissionAuditRequest2 {
         request: crate::PermissionRequest2::ValidateParent(crate::PathValidationRequest {
             policy_id: crate::PathPolicyId("fixture-path".into()),
@@ -122,9 +123,9 @@ fn audited_native_permission_vocabulary_rejects_execution_and_unknown_fields() {
             generation: 1,
         },
     };
-    let value = serde_json::to_value(&request).unwrap();
-    let decoded: crate::PermissionAuditRequest2 = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+    let value = serde_json::to_value(&request)?;
+    let decoded: crate::PermissionAuditRequest2 = serde_json::from_value(value.clone())?;
+    assert_eq!(serde_json::to_value(decoded)?, value);
     assert!(!format!("{request:?}").contains("workspace"));
     let mut stateful = value.clone();
     stateful["request"]["operation"] = serde_json::json!("spend_action");
@@ -132,4 +133,5 @@ fn audited_native_permission_vocabulary_rejects_execution_and_unknown_fields() {
     let mut injected = value;
     injected["request"]["authorized"] = serde_json::json!(true);
     assert!(serde_json::from_value::<crate::PermissionAuditRequest2>(injected).is_err());
+    Ok(())
 }
