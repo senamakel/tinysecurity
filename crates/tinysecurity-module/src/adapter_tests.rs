@@ -13,6 +13,8 @@ mod host_tool_tests;
 mod record_audit_tests;
 #[path = "adapter_scoped_audit_tests.rs"]
 mod scoped_audit_tests;
+#[path = "adapter_budget_audit_tests.rs"]
+mod budget_audit_tests;
 #[tokio::test]
 async fn parsing_a_reply_returns_intent_without_minting_permission()
 -> std::result::Result<(), Box<dyn std::error::Error>> {

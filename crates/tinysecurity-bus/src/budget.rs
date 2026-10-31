@@ -17,6 +17,16 @@ pub struct BudgetRequest2 {
     pub command_policy: CommandPolicyId,
 }
 
+/// Reserve one action while binding the operation to committed audit evidence.
+///
+/// The event id is also the operation id: callers must reuse the complete request
+/// unchanged when reconciling a lost response. The module rejects reuse of that id
+/// with a different command scope or audit correlation.
+pub type ReserveActionBudgetAuditedRequest2 = crate::AuditedRequest2<BudgetRequest2>;
+
+/// Audited action-budget reservation; an allow is returned only with a committed receipt.
+pub type ReserveActionBudgetAuditedResponse2 = crate::AuditedResponse2<BudgetDecision2>;
+
 /// Outcome of a budget query. Never carries a count or a payload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]

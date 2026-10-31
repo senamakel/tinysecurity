@@ -105,6 +105,8 @@ pub mod methods {
     pub const SPEND_ACTION2: &str = "SpendAction2";
     /// Read a registered command scope's hourly ledger without spending (contract 1.22).
     pub const PEEK_BUDGET2: &str = "PeekBudget2";
+    /// Reserve one action with an exact, committed audit receipt (contract 1.35).
+    pub const RESERVE_ACTION_BUDGET_AUDITED2: &str = "ReserveActionBudgetAudited2";
     /// Informational class of a host action by permission and external effect (contract 1.22).
     pub const CLASSIFY_HOST_ACTION2: &str = "ClassifyHostAction2";
     /// Descriptor-level privacy decision for a transfer with no pinned destination (contract 1.22).
@@ -226,6 +228,7 @@ pub const METHODS: &[&str] = &[
     methods::CREDENTIAL_ROOTS2,
     methods::SPEND_ACTION2,
     methods::PEEK_BUDGET2,
+    methods::RESERVE_ACTION_BUDGET_AUDITED2,
     methods::CLASSIFY_HOST_ACTION2,
     methods::PRIVACY_CHECK2,
     methods::CLASSIFY_PROVIDER_ENDPOINT2,
