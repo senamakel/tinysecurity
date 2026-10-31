@@ -92,10 +92,9 @@ async fn required_audit_gates_command_allow_and_exact_replay_reserves_once()
     let request = audited_command(command_policy.clone(), "pwd", 'a', 0, 1);
     // A read command is allowed in a read-only scope by the command policy;
     // a generic read-only budget denial would change CheckCommand semantics.
-    assert!(service
-        .check_command_audited2(request.clone())
-        .await
-        .is_err());
+    let unavailable = service.check_command_audited2(request.clone()).await?;
+    assert!(unavailable.decision.is_none());
+    assert!(!unavailable.audit.permitted && !unavailable.audit.committed);
 
     // A failed audit must refund the command's pending hourly reservation.
     host.serve_at(
