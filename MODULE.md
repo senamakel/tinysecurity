@@ -104,13 +104,14 @@ platforms and five distro variants, then produces platform archives,
 modules.toml and checksum.toml. Its verifier requires all sixteen archives and
 checks every manifest digest against the hosted release files.
 
-For OpenHuman migration #8369, the `senamakel/tinysecurity` epic publishes the
-additive contract 1.x line as package version 0.18.0. It does not include
-`tinyhumansai/tinysecurity#43`, whose `abandoned` outcome changes the wire
-contract to 2.0; that breaking contract change remains a separate decision.
-The release is dispatched from `epic/8369-security-migration` on the fork, and
-the release workflow only permits release jobs in the `senamakel/tinysecurity`
-repository.
+The OpenHuman migration #8369 roll-up keeps the additive contract 1.x line.
+The proposed `abandoned` outcome in `tinyhumansai/tinysecurity#43` changes the
+wire contract to 2.0 and remains a separate change.
+
+Releases are dispatched only from canonical `tinyhumansai/tinysecurity` on
+`main`, after the module changes merge. Fork repositories and epic branches
+cannot enter the release job; the CI release-policy regression checks those
+repository/ref combinations.
 
 ```sh
 cargo run -p tinysecurity-module --example verify_module -- <native-library>
