@@ -205,3 +205,26 @@ fn a_kernel_jail_still_wins_when_one_is_available() -> Res {
     assert_eq!(planned.minimum_isolation, IsolationLevel2::Kernel);
     Ok(())
 }
+
+#[test]
+fn a_files_only_plan_keeps_the_process_floor_when_the_scope_turns_isolation_off() -> Res {
+    // With the operator's setting off, or neither the agent's mode nor the configuration
+    // asking for isolation, a files-only plan must still be folder confinement with its
+    // credential denials, never an unconfined-looking plan with an empty deny list.
+    let (_dir, scope, request) = operator()?;
+    let mut off = scope.clone();
+    off.environment = SandboxSetting2::Disabled;
+    let mut unasked = scope;
+    unasked.agent_mode = SandboxSetting2::Disabled;
+    unasked.configured = SandboxSetting2::Disabled;
+    for scope in [off, unasked] {
+        let planned = engine(scope)?
+            .plan(&request, 1, 100)?
+            .artifact
+            .ok_or("no artifact")?;
+        assert_eq!(planned.executor_id, "tinybox-jail");
+        assert_eq!(planned.minimum_isolation, IsolationLevel2::Process);
+        assert_ne!(planned.deny_read, Vec::<std::path::PathBuf>::new());
+    }
+    Ok(())
+}
