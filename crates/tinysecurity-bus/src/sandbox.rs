@@ -253,6 +253,7 @@ impl std::fmt::Debug for SandboxPlanRequest2 {
 /// request that sets one (`deny_unknown_fields`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)] // independent wire flags, each absent when off
 pub struct SandboxPlanOptions2 {
     /// The backend the owner's configuration prefers. The module plans onto an eligible
     /// executor of this backend first; it never makes an ineligible executor eligible.
