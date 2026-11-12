@@ -189,6 +189,9 @@ opt-level = 3
 [profile.dev.package."x25519-dalek"]
 opt-level = 3
 
+[profile.dev.package.zeroize]
+opt-level = 3
+
 [profile.release]
 # Cross-crate optimization and smaller, faster binaries for release builds.
 lto = "thin"
