@@ -2133,6 +2133,17 @@ fn reusable_grant<'a>(
     })
 }
 
+/// Rows a scope may hold before a new tool, flow or import grant is refused:
+/// below the 1024 the module's load contract accepts, so ordinary approvals keep
+/// a margin. Shared by the tool, flow-trust and import-trust grant paths.
+pub(crate) const PRODUCTION_MAX_SCOPE_ROWS: usize = 960;
+
+/// The cap the engine enforces. Unit tests run against a small cap so filling a
+/// scope to its limit takes a handful of grants rather than 960; the refusal
+/// logic under test is the same comparison either way, and the production value
+/// is pinned by `engine::tests::the_production_scope_row_cap_is_960`.
+pub(crate) const MAX_SCOPE_ROWS: usize = if cfg!(test) { 8 } else { PRODUCTION_MAX_SCOPE_ROWS };
+
 #[path = "engine_flow_trust.rs"]
 mod flow_trust;
 #[path = "engine_import_trust.rs"]
