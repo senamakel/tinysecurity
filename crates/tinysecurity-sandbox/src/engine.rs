@@ -537,7 +537,11 @@ impl Engine {
         if request.accept_process_isolation && mandatory {
             return Err(SandboxDenial2::Floor);
         }
+        // A files-only plan is admitted only as folder confinement: whatever the scope's
+        // settings say, it keeps the process floor (and so its credential denials), and
+        // the relaxed constraints never reach a selection pass that demands no isolation.
         let isolation = mandatory
+            || request.options.filesystem_only
             || (facts.environment != SandboxSetting2::Disabled
                 && (facts.agent_mode == SandboxSetting2::Enabled
                     || facts.configured == SandboxSetting2::Enabled));
