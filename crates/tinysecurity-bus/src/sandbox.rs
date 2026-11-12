@@ -272,6 +272,15 @@ pub struct SandboxPlanOptions2 {
     /// that sets it is refused (`floor`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub host_run: bool,
+    /// Confine the spawn's files only (contract 2.2). The plan requires the executor to
+    /// enforce the filesystem grants exactly and does not ask it to enforce a network
+    /// rule, so a folder jail that declares no network enforcement and no process
+    /// isolation (Landlock) may serve it. Planned only for a trusted operator source of a
+    /// local deployment and origin that accepted process isolation and asks for the host
+    /// network its scope grants (`operator_host_network`); any other request that sets it
+    /// is refused (`floor`, or `invalid_request` for the network or a host run).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub filesystem_only: bool,
 }
 impl SandboxPlanOptions2 {
     /// Whether every option is off (the 1.21 shape of a request).
