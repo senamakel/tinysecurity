@@ -354,8 +354,9 @@ network: the constraints are `filesystem` (plus `subprocesses` or resource bound
 request asks for them), never `network`. So a folder jail that enforces the filesystem
 exactly but declares no network enforcement and no process isolation (TinyBox's Landlock
 jail) may serve it, in the process-level pass, with `minimum_isolation` `process` (folder
-confinement, never a kernel claim). A best-effort filesystem and the `noop` backend never
-serve it, and an executor that meets the kernel floor is still preferred.
+confinement, never a kernel claim), whatever the scope's `environment`, `agent_mode` and
+`configured` settings say, so its credential denials always apply. A best-effort filesystem
+and the `noop` backend never serve it, and an executor that meets the kernel floor is still preferred.
 
 The module admits the option only for a trusted operator source of a non-`SaaS` deployment
 and origin whose request set `accept_process_isolation` (else `floor`), asking for
