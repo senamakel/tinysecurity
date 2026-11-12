@@ -1675,7 +1675,10 @@ async fn a_revoked_tool_cannot_cross_the_scope_row_cap_when_regranted() -> Resul
         crate::engine::MAX_SCOPE_ROWS
     );
     assert_eq!(
-        owner.grant_tool(tool_grant(7, "tool-0", CAP + 2)).await.err(),
+        owner
+            .grant_tool(tool_grant(7, "tool-0", CAP + 2))
+            .await
+            .err(),
         Some(Error::Unavailable)
     );
     assert_eq!(

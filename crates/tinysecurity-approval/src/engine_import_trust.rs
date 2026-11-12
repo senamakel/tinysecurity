@@ -12,7 +12,6 @@ use tinysecurity_bus::{
     ImportTrustSourceRequest2, TOOL_TRUST_LIFETIME_MS2,
 };
 
-
 struct ImportPlan {
     attribution: &'static str,
     choice: ApprovalChoice2,

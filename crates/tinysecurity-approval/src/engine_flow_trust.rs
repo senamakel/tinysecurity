@@ -20,7 +20,6 @@ use tinysecurity_bus::{
 const ATTRIBUTION: &str = "flow-trust-grant";
 pub(super) const IMPORT_ATTRIBUTION: &str = "flow-trust-import";
 
-
 /// Digest of the exact `(flow, tool)` pair, domain-separated from every call digest.
 pub(super) fn trust_key(flow_id: &str, tool: &str) -> String {
     let mut bytes = Vec::with_capacity(flow_id.len() + tool.len() + 8);
