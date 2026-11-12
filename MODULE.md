@@ -337,6 +337,18 @@ refuses a 1.21 module, and a 1.21 module rejects a request that sets an option
   `deny_subprocesses` is `unsupported`. The plan is audited, staged and admitted exactly once like any other, and
   `ConsumeSandboxPlan2` re-derives it from the request, so a request that does not ask for
   the host run cannot reuse it.
+- **A files-only jail.** `options.files_only` says the operator's own command accepts a
+  jail that confines only the filesystem and runs on the host's network (Linux Landlock,
+  which has no network rule and no process isolation). For a request for the host network
+  the plan then requires no network enforcement, and on the trusted-folder pass an executor
+  that enforces the filesystem exactly qualifies without process isolation; the artifact's
+  `minimum_isolation` is `process` and its constraints are the filesystem alone. A request
+  for no network still needs an executor that enforces it, an executor with a best-effort
+  filesystem never qualifies, and a kernel executor that meets the floor still wins. It is
+  honoured only with `accept_process_isolation` for a `trusted_host` source outside `SaaS`;
+  anything else that sets it is refused (`floor`). `ConsumeSandboxPlan2` re-derives the plan,
+  so a request that does not set it cannot reuse a files-only artifact. See
+  [the files-only spec](docs/specs/sandbox-plan-files-only.md).
 
 Latency: all three are in-memory decisions inside the existing `Plan2` and
 `ConsumeSandboxPlan2` calls (no new member, no I/O besides the audit append those calls

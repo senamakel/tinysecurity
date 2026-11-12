@@ -253,6 +253,7 @@ impl std::fmt::Debug for SandboxPlanRequest2 {
 /// request that sets one (`deny_unknown_fields`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)] // independent wire flags, one per planning request
 pub struct SandboxPlanOptions2 {
     /// The backend the owner's configuration prefers. The module plans onto an eligible
     /// executor of this backend first; it never makes an ineligible executor eligible.
@@ -272,6 +273,16 @@ pub struct SandboxPlanOptions2 {
     /// that sets it is refused (`floor`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub host_run: bool,
+    /// The operator's own command accepts a jail that confines only the filesystem
+    /// (Linux Landlock) and runs on the host's network. A request for the host network
+    /// then needs no network enforcement, and on the trusted-folder pass an executor
+    /// that enforces the filesystem exactly qualifies without process isolation.
+    /// Honoured only with `accept_process_isolation` for a trusted host source outside
+    /// `SaaS`; any other request that sets it is refused (`floor`). A request for no
+    /// network still needs an executor that enforces it. An older module refuses a
+    /// request that sets it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub files_only: bool,
 }
 impl SandboxPlanOptions2 {
     /// Whether every option is off (the 1.21 shape of a request).

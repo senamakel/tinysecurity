@@ -141,8 +141,26 @@ fn minimum_isolation(
         IsolationLevel2::Process
     }
 }
+/// Whether the request accepted a jail that confines only the filesystem on the host's
+/// network: nothing would enforce a network rule for it, so none is required.
+fn files_only_host_network(request: &SandboxPlanRequest2) -> bool {
+    request.options.files_only && request.network == NetworkPolicy::Host
+}
+/// Whether `executor` may run a trusted-folder (process-level) plan: it isolates the
+/// process, or the request accepted a files-only jail and the executor enforces the
+/// filesystem exactly (Linux Landlock).
+fn qualifies_for_trusted_folder(
+    executor: &SandboxExecutor2,
+    request: &SandboxPlanRequest2,
+) -> bool {
+    executor.isolation != IsolationLevel2::None
+        || (request.options.files_only && supports(executor, SandboxConstraint2::Filesystem))
+}
 fn requirements(request: &SandboxPlanRequest2) -> Vec<SandboxConstraint2> {
-    let mut constraints = vec![SandboxConstraint2::Filesystem, SandboxConstraint2::Network];
+    let mut constraints = vec![SandboxConstraint2::Filesystem];
+    if !files_only_host_network(request) {
+        constraints.push(SandboxConstraint2::Network);
+    }
     for (required, constraint) in [
         (
             request.limits.cpu_millicores.is_some(),
@@ -215,7 +233,7 @@ fn pick<'a>(
             e.available
                 && (!isolation
                     || if process_level {
-                        e.isolation != IsolationLevel2::None
+                        qualifies_for_trusted_folder(e, request)
                     } else {
                         suitable_for_untrusted(e)
                     })
@@ -488,6 +506,11 @@ impl Engine {
         }
         let grants = grants::admit(facts, &scope.paths, &request.grants)?;
         if request.accept_process_isolation && mandatory {
+            return Err(SandboxDenial2::Floor);
+        }
+        // A files-only jail is trusted folder confinement for the operator's own
+        // command, never for a plan that must be isolated.
+        if request.options.files_only && (mandatory || !request.accept_process_isolation) {
             return Err(SandboxDenial2::Floor);
         }
         let isolation = mandatory
@@ -824,7 +847,7 @@ impl Engine {
                 && !suitable_for_untrusted(executor))
             || (artifact.minimum_isolation == IsolationLevel2::Process
                 && (!request.accept_process_isolation
-                    || executor.isolation == IsolationLevel2::None))
+                    || !qualifies_for_trusted_folder(executor, request)))
             || artifact.generation != generation
             || now_ms >= artifact.expires_at_ms
             || artifact.executor_id != executor.executor_id
@@ -896,6 +919,9 @@ pub(crate) fn denied(generation: u64, reason: SandboxDenial2) -> SandboxPlanResp
 #[cfg(test)]
 #[path = "executor_choice_tests.rs"]
 mod executor_choice_tests;
+#[cfg(test)]
+#[path = "files_only_tests.rs"]
+mod files_only_tests;
 #[cfg(test)]
 #[path = "operator_options_tests.rs"]
 mod operator_options_tests;

@@ -32,7 +32,7 @@ fn engine(scope: SandboxScope2) -> std::result::Result<Engine, Box<dyn std::erro
     })?)
 }
 
-/// A Linux Landlock jail as TinyBox reports it: the filesystem only, no process
+/// A Linux Landlock jail as `TinyBox` reports it: the filesystem only, no process
 /// isolation, nothing for the network.
 fn landlock(filesystem: ConstraintEnforcement2) -> SandboxExecutor2 {
     SandboxExecutor2 {
