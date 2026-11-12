@@ -140,6 +140,6 @@ fn runtime_secret_scope_registration_carries_an_optional_isolated_cipher()
         .remove("registration_id");
     forged["cipher"]["subject"] = serde_json::json!({ "user": "caller" });
     assert!(serde_json::from_value::<RegisterSecretScopeRequest2>(forged).is_err());
-    assert_eq!(crate::CONTRACT_VERSION, (2, 1));
+    assert_eq!(crate::CONTRACT_VERSION, (2, 2));
     Ok(())
 }

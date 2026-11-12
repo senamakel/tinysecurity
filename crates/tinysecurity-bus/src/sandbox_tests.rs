@@ -371,6 +371,7 @@ fn plan_options_have_a_pinned_wire_form() -> std::result::Result<(), Box<dyn std
         require_preferred_backend: true,
         no_workspace: true,
         host_run: true,
+        filesystem_only: true,
     };
     assert_eq!(
         serde_json::to_value(&options).required()?,
@@ -379,6 +380,7 @@ fn plan_options_have_a_pinned_wire_form() -> std::result::Result<(), Box<dyn std
             "require_preferred_backend": true,
             "no_workspace": true,
             "host_run": true,
+            "filesystem_only": true,
         })
     );
     assert_eq!(
@@ -389,6 +391,12 @@ fn plan_options_have_a_pinned_wire_form() -> std::result::Result<(), Box<dyn std
     let back: SandboxPlanOptions2 =
         serde_json::from_value(serde_json::json!({"host_run": true})).required()?;
     assert!(back.host_run && back.preferred_backend.is_none());
+    // A request that does not ask for a files-only plan keeps the 2.1 wire shape, so an
+    // older module still reads it; one that asks is refused by an older module.
+    assert!(!back.filesystem_only);
+    let files: SandboxPlanOptions2 =
+        serde_json::from_value(serde_json::json!({"filesystem_only": true})).required()?;
+    assert!(files.filesystem_only && !files.host_run);
     Ok(())
 }
 

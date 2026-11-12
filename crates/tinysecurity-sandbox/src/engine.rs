@@ -142,7 +142,12 @@ fn minimum_isolation(
     }
 }
 fn requirements(request: &SandboxPlanRequest2) -> Vec<SandboxConstraint2> {
-    let mut constraints = vec![SandboxConstraint2::Filesystem, SandboxConstraint2::Network];
+    let mut constraints = vec![SandboxConstraint2::Filesystem];
+    // A files-only plan (admitted by `filesystem_only_admitted`) runs with the host
+    // network its scope grants, so there is no network rule to ask the executor for.
+    if !request.options.filesystem_only {
+        constraints.push(SandboxConstraint2::Network);
+    }
     for (required, constraint) in [
         (
             request.limits.cpu_millicores.is_some(),
@@ -167,6 +172,42 @@ fn requirements(request: &SandboxPlanRequest2) -> Vec<SandboxConstraint2> {
         }
     }
     constraints
+}
+/// Whether `executor`, which claims no process isolation, may still serve a files-only
+/// plan: it enforces every requested constraint exactly (the filesystem above all), so
+/// it is a folder jail such as Landlock, not a launcher that confines nothing.
+fn folder_jail_for_files_only(
+    request: &SandboxPlanRequest2,
+    executor: &SandboxExecutor2,
+    constraints: &[SandboxConstraint2],
+) -> bool {
+    request.options.filesystem_only
+        && executor.backend != SandboxBackend::Noop
+        && constraints.contains(&SandboxConstraint2::Filesystem)
+        && constraints.iter().all(|c| supports(executor, *c))
+}
+/// Admit a files-only request (contract 2.2), or say why not. Only a trusted operator
+/// source of a local deployment and origin, whose request accepted process isolation,
+/// may ask; and it must ask for the host network its scope grants, because a plan that
+/// asks the executor for no network rule cannot promise less network than that.
+fn filesystem_only_admitted(
+    request: &SandboxPlanRequest2,
+    facts: &SandboxScope2,
+    mandatory: bool,
+) -> std::result::Result<(), SandboxDenial2> {
+    if !request.options.filesystem_only {
+        return Ok(());
+    }
+    if mandatory || !request.accept_process_isolation {
+        return Err(SandboxDenial2::Floor);
+    }
+    if request.network != NetworkPolicy::Host
+        || !facts.operator_host_network
+        || facts.network_ceiling != NetworkPolicy::Host
+    {
+        return Err(SandboxDenial2::InvalidRequest);
+    }
+    Ok(())
 }
 /// Choose the executor. An executor that meets the kernel-isolation floor with every
 /// constraint exactly enforced always wins; only when the request accepted process
@@ -216,12 +257,13 @@ fn pick<'a>(
                 && (!isolation
                     || if process_level {
                         e.isolation != IsolationLevel2::None
+                            || folder_jail_for_files_only(request, e, constraints)
                     } else {
                         suitable_for_untrusted(e)
                     })
                 && e.backend != SandboxBackend::Noop
                 && constraints.iter().all(|c| {
-                    if process_level {
+                    if process_level && !request.options.filesystem_only {
                         supports_best_effort(e, *c)
                     } else {
                         supports(e, *c)
@@ -465,6 +507,11 @@ impl Engine {
         let mandatory = facts.deployment == SandboxDeployment2::Saas
             || matches!(facts.origin, Origin::Saas | Origin::Unlabelled)
             || source.trust != SourceTrust::TrustedHost;
+        // A run on the host confines nothing, so it cannot be a files-only plan.
+        if request.options.filesystem_only && request.options.host_run {
+            return Err(SandboxDenial2::InvalidRequest);
+        }
+        filesystem_only_admitted(request, facts, mandatory)?;
         if request.options.host_run {
             return Self::host_run(
                 request, facts, source, mandatory, generation, now_ms, &operation,
@@ -490,7 +537,11 @@ impl Engine {
         if request.accept_process_isolation && mandatory {
             return Err(SandboxDenial2::Floor);
         }
+        // A files-only plan is admitted only as folder confinement: whatever the scope's
+        // settings say, it keeps the process floor (and so its credential denials), and
+        // the relaxed constraints never reach a selection pass that demands no isolation.
         let isolation = mandatory
+            || request.options.filesystem_only
             || (facts.environment != SandboxSetting2::Disabled
                 && (facts.agent_mode == SandboxSetting2::Enabled
                     || facts.configured == SandboxSetting2::Enabled));
@@ -824,14 +875,17 @@ impl Engine {
                 && !suitable_for_untrusted(executor))
             || (artifact.minimum_isolation == IsolationLevel2::Process
                 && (!request.accept_process_isolation
-                    || executor.isolation == IsolationLevel2::None))
+                    || (executor.isolation == IsolationLevel2::None
+                        && !folder_jail_for_files_only(request, executor, &artifact.constraints))))
             || artifact.generation != generation
             || now_ms >= artifact.expires_at_ms
             || artifact.executor_id != executor.executor_id
             || artifact.capability_id != executor.capability_id
             || !executor.available
             || !artifact.constraints.iter().all(|c| {
-                if artifact.minimum_isolation == IsolationLevel2::Process {
+                if artifact.minimum_isolation == IsolationLevel2::Process
+                    && !request.options.filesystem_only
+                {
                     supports_best_effort(executor, *c)
                 } else {
                     supports(executor, *c)
@@ -896,6 +950,9 @@ pub(crate) fn denied(generation: u64, reason: SandboxDenial2) -> SandboxPlanResp
 #[cfg(test)]
 #[path = "executor_choice_tests.rs"]
 mod executor_choice_tests;
+#[cfg(test)]
+#[path = "filesystem_only_tests.rs"]
+mod filesystem_only_tests;
 #[cfg(test)]
 #[path = "operator_options_tests.rs"]
 mod operator_options_tests;
