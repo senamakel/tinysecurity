@@ -9,7 +9,7 @@ use tinysecurity_bus::ConstraintSupport2;
 type Res = std::result::Result<(), Box<dyn std::error::Error>>;
 
 /// A folder jail that enforces the filesystem exactly and declares nothing else: no
-/// network enforcement and no process isolation, as TinyBox reports Landlock.
+/// network enforcement and no process isolation, as `TinyBox` reports Landlock.
 fn landlock() -> SandboxExecutor2 {
     SandboxExecutor2 {
         executor_id: "tinybox-jail".into(),
@@ -72,7 +72,7 @@ fn a_files_only_operator_plan_runs_in_a_folder_jail_with_the_host_network() -> R
     // asked of the executor.
     assert_eq!(planned.minimum_isolation, IsolationLevel2::Process);
     assert_eq!(planned.constraints, vec![SandboxConstraint2::Filesystem]);
-    assert!(!planned.grants.is_empty());
+    assert_ne!(planned.grants, Vec::new());
     let artifact = engine.stage(planned, 100)?;
     engine.activate(&artifact, 1, 100)?;
     assert!(engine.validate(&request, &artifact, 1, 100, &scope.executors[0])?);
