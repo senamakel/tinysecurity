@@ -343,6 +343,27 @@ Latency: all three are in-memory decisions inside the existing `Plan2` and
 already make), so they keep the budget of those calls: p50 <= 1 ms, p99 <= 10 ms excluding
 the audit callback.
 
+## Files-only plans (contract 2.2)
+
+Additive: `SandboxPlanOptions2.filesystem_only` defaults to off and is absent from the wire
+when off, so a 2.1 host keeps its behaviour and fingerprints; a 2.1 module refuses a request
+that sets it (`deny_unknown_fields`). A 2.2 host refuses a 2.1 module.
+
+A files-only plan asks the executor to enforce the filesystem grants and nothing about the
+network: the constraints are `filesystem` (plus `subprocesses` or resource bounds when the
+request asks for them), never `network`. So a folder jail that enforces the filesystem
+exactly but declares no network enforcement and no process isolation (TinyBox's Landlock
+jail) may serve it, in the process-level pass, with `minimum_isolation` `process` (folder
+confinement, never a kernel claim). A best-effort filesystem and the `noop` backend never
+serve it, and an executor that meets the kernel floor is still preferred.
+
+The module admits the option only for a trusted operator source of a non-`SaaS` deployment
+and origin whose request set `accept_process_isolation` (else `floor`), asking for
+`NetworkPolicy::Host` under a scope with `operator_host_network` and a `host` ceiling (else
+`invalid_request`: a plan that asks no network rule of its executor cannot promise less
+network). A host run cannot be files-only (`invalid_request`). `ConsumeSandboxPlan2`
+re-derives the plan, so a request without the option cannot reuse a files-only artifact.
+
 ## Host-recorded audit events (contract 1.21)
 
 Additive. `Audit2` accepts only the module's init-time scope and stream, which a host that
