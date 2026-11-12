@@ -51,7 +51,10 @@ fn engine(scope: SandboxScope2) -> std::result::Result<Engine, Box<dyn std::erro
     })?)
 }
 
-fn denial(scope: SandboxScope2, request: &SandboxPlanRequest2) -> std::result::Result<Option<SandboxDenial2>, Box<dyn std::error::Error>> {
+fn denial(
+    scope: SandboxScope2,
+    request: &SandboxPlanRequest2,
+) -> std::result::Result<Option<SandboxDenial2>, Box<dyn std::error::Error>> {
     Ok(engine(scope)?.plan(request, 1, 100)?.denial)
 }
 
@@ -126,7 +129,10 @@ fn a_files_only_plan_cannot_promise_no_network() -> Res {
     for network in [NetworkPolicy::None, NetworkPolicy::EgressProxy] {
         let (_dir, scope, mut request) = operator()?;
         request.network = network;
-        assert_eq!(denial(scope, &request)?, Some(SandboxDenial2::InvalidRequest));
+        assert_eq!(
+            denial(scope, &request)?,
+            Some(SandboxDenial2::InvalidRequest)
+        );
     }
     Ok(())
 }
@@ -135,7 +141,10 @@ fn a_files_only_plan_cannot_promise_no_network() -> Res {
 fn a_files_only_plan_needs_the_scope_to_grant_the_host_network() -> Res {
     let (_dir, mut scope, request) = operator()?;
     scope.operator_host_network = false;
-    assert_eq!(denial(scope, &request)?, Some(SandboxDenial2::InvalidRequest));
+    assert_eq!(
+        denial(scope, &request)?,
+        Some(SandboxDenial2::InvalidRequest)
+    );
     Ok(())
 }
 
@@ -145,7 +154,10 @@ fn a_files_only_plan_is_not_a_run_on_the_host() -> Res {
     scope.environment = SandboxSetting2::Disabled;
     request.options.host_run = true;
     request.grants.clear();
-    assert_eq!(denial(scope, &request)?, Some(SandboxDenial2::InvalidRequest));
+    assert_eq!(
+        denial(scope, &request)?,
+        Some(SandboxDenial2::InvalidRequest)
+    );
     Ok(())
 }
 
