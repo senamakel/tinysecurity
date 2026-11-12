@@ -371,6 +371,7 @@ fn plan_options_have_a_pinned_wire_form() -> std::result::Result<(), Box<dyn std
         require_preferred_backend: true,
         no_workspace: true,
         host_run: true,
+        files_only: true,
     };
     assert_eq!(
         serde_json::to_value(&options).required()?,
@@ -379,6 +380,7 @@ fn plan_options_have_a_pinned_wire_form() -> std::result::Result<(), Box<dyn std
             "require_preferred_backend": true,
             "no_workspace": true,
             "host_run": true,
+            "files_only": true,
         })
     );
     assert_eq!(
@@ -389,6 +391,10 @@ fn plan_options_have_a_pinned_wire_form() -> std::result::Result<(), Box<dyn std
     let back: SandboxPlanOptions2 =
         serde_json::from_value(serde_json::json!({"host_run": true})).required()?;
     assert!(back.host_run && back.preferred_backend.is_none());
+    assert!(!back.files_only);
+    let back: SandboxPlanOptions2 =
+        serde_json::from_value(serde_json::json!({"files_only": true})).required()?;
+    assert!(back.files_only && !back.is_default());
     Ok(())
 }
 
