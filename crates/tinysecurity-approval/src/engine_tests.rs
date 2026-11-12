@@ -2536,9 +2536,7 @@ mod engine_scopes_tests;
 #[test]
 fn the_production_scope_row_cap_is_960() {
     // Unit tests enforce a small cap (`MAX_SCOPE_ROWS`) so the cap tests stay
-    // fast; this pins the value every non-test build enforces, and keeps it below
-    // the 1024 rows the module's scope load contract accepts.
+    // fast; this pins the value every non-test build enforces. The bound against
+    // the 1024-row load contract is a compile-time assertion beside the constant.
     assert_eq!(crate::engine::PRODUCTION_MAX_SCOPE_ROWS, 960);
-    assert!(crate::engine::PRODUCTION_MAX_SCOPE_ROWS < 1024);
-    assert!(crate::engine::MAX_SCOPE_ROWS < crate::engine::PRODUCTION_MAX_SCOPE_ROWS);
 }

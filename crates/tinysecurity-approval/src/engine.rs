@@ -2143,6 +2143,8 @@ pub(crate) const PRODUCTION_MAX_SCOPE_ROWS: usize = 960;
 /// logic under test is the same comparison either way, and the production value
 /// is pinned by `engine::tests::the_production_scope_row_cap_is_960`.
 pub(crate) const MAX_SCOPE_ROWS: usize = if cfg!(test) { 8 } else { PRODUCTION_MAX_SCOPE_ROWS };
+const _: () = assert!(PRODUCTION_MAX_SCOPE_ROWS < 1024);
+const _: () = assert!(MAX_SCOPE_ROWS <= PRODUCTION_MAX_SCOPE_ROWS);
 
 #[path = "engine_flow_trust.rs"]
 mod flow_trust;
